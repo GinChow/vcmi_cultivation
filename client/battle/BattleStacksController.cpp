@@ -297,6 +297,34 @@ std::shared_ptr<IImage> BattleStacksController::getStackAmountBox(const CStack *
 
 void BattleStacksController::showStackAmountBox(Canvas & canvas, const CStack * stack)
 {
+	if(stack->unitSlot() == SlotID::COMMANDER_SLOT_PLACEHOLDER && !stack->isClone())
+	{
+		// 肉身使用常驻名牌和生命条，普通军队仍显示人数框。
+		const auto center = owner.fieldController->hexPositionLocal(stack->getPosition()).center();
+		const auto name = stack->unitType()->getNameSingularTranslated();
+		const int width = std::max(88, static_cast<int>(ENGINE->renderHandler().loadFont(EFonts::FONT_TINY)->getStringWidth(name)) + 26);
+		const Rect plate(center.x - width / 2, center.y + 9, width, 28);
+		const ColorRGBA background = stack->unitSide() == BattleSide::ATTACKER ? ColorRGBA(69, 20, 20) : ColorRGBA(20, 35, 69);
+		canvas.drawColor(plate, background);
+		canvas.drawBorder(plate, Colors::METALLIC_GOLD, 2);
+		canvas.drawText(Point(center.x + 6, plate.y + 8), EFonts::FONT_TINY, Colors::BRIGHT_YELLOW, ETextAlignment::CENTER, name);
+
+		// 金冠与阵营底色在缩放后仍能区分英雄、普通兵和幻象。
+		const Point crown(plate.x + 5, plate.y + 5);
+		const std::array<Point, 6> points = {crown + Point(0, 0), crown + Point(3, 3), crown + Point(6, -2), crown + Point(9, 3), crown + Point(12, 0), crown + Point(10, 7)};
+		for(size_t i = 1; i < points.size(); ++i)
+			canvas.drawLine(points[i - 1], points[i], Colors::BRIGHT_YELLOW, Colors::BRIGHT_YELLOW);
+		canvas.drawLine(crown + Point(0, 0), crown + Point(2, 7), Colors::BRIGHT_YELLOW, Colors::BRIGHT_YELLOW);
+		canvas.drawLine(crown + Point(2, 7), crown + Point(10, 7), Colors::BRIGHT_YELLOW, Colors::BRIGHT_YELLOW);
+
+		const auto health = std::max<int64_t>(0, getDisplayedStackHealth(stack));
+		const auto maximum = std::max<int64_t>(1, stack->getMaxHealth() * getDisplayedStackAmount(stack));
+		canvas.drawColor(Rect(plate.x + 3, plate.y + 17, plate.w - 6, 7), Colors::BLACK);
+		canvas.drawColor(Rect(plate.x + 3, plate.y + 17, (plate.w - 6) * std::min(health, maximum) / maximum, 7), ColorRGBA(35, 130, 55));
+		canvas.drawText(Point(center.x, plate.y + 21), EFonts::FONT_TINY, Colors::WHITE, ETextAlignment::CENTER, std::to_string(health) + "/" + std::to_string(maximum));
+		return;
+	}
+
 	auto amountBG = getDisplayedStackAmountBox(stack);
 
 	bool doubleWide = stack->doubleWide();
@@ -350,6 +378,10 @@ void BattleStacksController::showStackAmountBox(Canvas & canvas, const CStack * 
 
 void BattleStacksController::showStack(Canvas & canvas, const CStack * stack)
 {
+	if(stack->unitSlot() == SlotID::COMMANDER_SLOT_PLACEHOLDER && !stack->isClone()
+		&& !vstd::contains(mouseHoveredStacks, stack))
+		stackAnimation[stack->unitId()]->setBorderColor(stack->alive() ? AnimationControls::getGoldBorder() : AnimationControls::getNoBorder());
+
 	ColorRGBA effectColor = Colors::TRANSPARENCY;
 	uint8_t transparency = 255;
 	for(const auto & filter : stackFilterEffects)

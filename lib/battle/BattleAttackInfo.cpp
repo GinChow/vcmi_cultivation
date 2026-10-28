@@ -23,6 +23,7 @@ BattleAttackInfo::BattleAttackInfo(const battle::Unit * Attacker, const battle::
 BattleAttackInfo BattleAttackInfo::reverse() const
 {
 	BattleAttackInfo ret(defender, attacker, 0, false);
+	ret.isCounter = true;
 
 	ret.defenderPos = attackerPos;
 	ret.attackerPos = defenderPos;

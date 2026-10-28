@@ -44,6 +44,7 @@ public:
 	std::vector<RecordedCast> casts;
 	std::vector<CatapultAttack> catapultAttacks;
 	std::vector<BattleResult> battleResults;
+	std::vector<StacksInjured> injuries;
 
 	void setState(EServerState value) override { state = value; }
 	EServerState getState() const override { return state; }
@@ -96,6 +97,8 @@ public:
 
 	/// Applies a hero spell without creating a battle action
 	bool castOn(const CGHeroInstance * hero, SpellID spellID, const CStack * target) const;
+	/// 将施法测试置于肉身（无肉身时为本方军队）的行动回合。
+	void activateHeroCaster(const CGHeroInstance * hero) const;
 	/// Executes a hero spell battle action during an allied unit turn
 	bool castAsHero(const CGHeroInstance * hero, const SpellID & spellID, const CStack * target);
 

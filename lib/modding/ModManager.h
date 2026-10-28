@@ -37,6 +37,7 @@ class ModsPresetState : boost::noncopyable
 {
 	JsonNode modConfig;
 	JsonPath settingsPath; // which mod-settings file we read AND write
+	bool transient = false;
 
 	void createInitialPreset();
 	void importInitialPreset();
@@ -44,7 +45,7 @@ class ModsPresetState : boost::noncopyable
 	const JsonNode & getActivePresetConfig() const;
 
 public:
-	explicit ModsPresetState(bool useTestPreset = false);
+	explicit ModsPresetState(bool useTestPreset = false, const TModList & fixedMods = {});
 
 	void createNewPreset(const std::string & presetName);
 	void deletePreset(const std::string & presetName);
@@ -136,7 +137,7 @@ class DLL_LINKAGE ModManager : boost::noncopyable
 
 public:
 	/// newMods - installed mods to activate together with mods from active preset
-	ModManager(const JsonNode & repositoryList, bool useTestPreset = false, const TModList & newMods = {});
+	ModManager(const JsonNode & repositoryList, bool useTestPreset = false, const TModList & newMods = {}, const TModList & fixedMods = {});
 	ModManager();
 	~ModManager();
 

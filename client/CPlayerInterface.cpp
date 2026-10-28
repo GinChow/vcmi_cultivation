@@ -658,7 +658,7 @@ void CPlayerInterface::battleStart(const BattleID & battleID, const CCreatureSet
 	bool useQuickCombat = settings["adventure"]["quickCombat"].Bool() || GAME->map().getMap()->battleOnly;
 	bool forceQuickCombat = settings["adventure"]["forceQuickCombat"].Bool();
 
-	if ((replayAllowed && useQuickCombat) || forceQuickCombat)
+	if (!settings["session"]["manualBattle"].Bool() && ((replayAllowed && useQuickCombat) || forceQuickCombat))
 	{
 		prepareAutoFightingAI(battleID, army1, army2, tile, hero1, hero2, side);
 	}

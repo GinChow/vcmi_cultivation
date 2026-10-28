@@ -806,7 +806,7 @@ endif()
 
 add_subdirectory(lib)
 
-if (ENABLE_CLIENT OR ENABLE_TEST)
+if (ENABLE_CLIENT OR ENABLE_TEST OR ENABLE_SERVER)
 	add_subdirectory_with_folder("AI" AI)
 endif()
 
@@ -1039,3 +1039,7 @@ else()
 endif()
 
 include(CPack)
+
+if(ENABLE_SERVER AND ENABLE_BATTLE_AI)
+	add_subdirectory(simulator)
+endif()

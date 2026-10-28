@@ -38,6 +38,8 @@ Damages the unit, returning the actual damage dealt and the number of killed cre
 - param `battle`: [`Battle`](Battle.md) — Battle in which damage is dealt.
 - param `unit`: [`Unit`](Unit.md) — Target unit.
 - param `damage`: `integer` — Damage points to deal (will be clamped to remaining health).
+- param `source`: [`Unit?`](Unit.md) — Optional unit causing the damage.
+- param `mechanics`: [`SpellMechanics?`](SpellMechanics.md) — Optional spell context for damage attribution.
 
 - returns `integer, integer` — Damage actually dealt, and the count of killed creatures.
 

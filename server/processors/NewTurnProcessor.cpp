@@ -603,6 +603,8 @@ std::tuple<EWeekType, CreatureID, int> NewTurnProcessor::pickWeekType(bool newMo
 std::vector<SetMana> NewTurnProcessor::updateHeroesManaPoints()
 {
 	std::vector<SetMana> result;
+	if(gameHandler->gameInfo().getMapHeader()->battleOnly)
+		return result;
 
 	for (const auto & elem : gameHandler->gameState().players)
 	{

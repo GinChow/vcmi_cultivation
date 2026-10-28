@@ -220,7 +220,7 @@ EWindowMode ScreenHandler::getPreferredWindowMode() const
 	return EWindowMode::FULLSCREEN_BORDERLESS_WINDOWED;
 #else
 	const JsonNode & video = settings["video"];
-	bool fullscreen = video["fullscreen"].Bool();
+	bool fullscreen = video["fullscreen"].Bool() && !settings["session"]["manualBattle"].Bool();
 	bool realFullscreen = settings["video"]["realFullscreen"].Bool();
 
 	if (!fullscreen)

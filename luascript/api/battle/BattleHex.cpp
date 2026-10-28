@@ -25,6 +25,7 @@ namespace scripting::api
 
 void BattleHexProxy::registerMethods(MethodRegistrar & R)
 {
+	R.function<&BattleHexProxy::getDistanceTo>("getDistanceTo", {{"other", "Destination hex."}}, {}, "Returns the hex-grid distance to another tile, ignoring obstacles.");
 	R.method<&BattleHex::isValid>            ("isValid",     {}, "Returns true if this hex value identifies existing battlefield position.");
 	R.method<&BattleHex::isAvailable>        ("isAvailable", {}, "Returns true if the hex is on the battlefield and is not located in the first or last column, which are reserved for back tile of war machines and are not accessible for regular movement. NOTE: does NOT checks whether hex is blocked by obstacles or units");
 	R.function<&BattleHexProxy::getClosestTile>("getClosestTile",
@@ -41,6 +42,11 @@ void BattleHexProxy::registerMethods(MethodRegistrar & R)
 	R.method<&BattleHex::copyToWest>         ("copyToWest",      {}, "Returns the neighbouring hex one step west.");
 	R.method<&BattleHex::getX>               ("getX", {}, "Returns the column of this hex, from 0 at the left edge of the battlefield to 16 at the right one. The two edge columns only hold the heroes, so no unit ever stands there.");
 	R.method<&BattleHex::getY>               ("getY", {}, "Returns the row of this hex, from 0 at the top of the battlefield to 10 at the bottom. Odd rows are shifted half a hex to the right.");
+}
+
+int BattleHexProxy::getDistanceTo(const BattleHex & self, const BattleHex & other)
+{
+	return BattleHex::getDistance(self, other);
 }
 
 BattleHex BattleHexProxy::getClosestTile(const BattleHex & self, BattleSide side, const BattleHexArray & hexes)

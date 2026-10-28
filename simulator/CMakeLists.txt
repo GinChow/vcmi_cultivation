@@ -1,0 +1,7 @@
+add_executable(battle_sim main.cpp)
+target_link_libraries(battle_sim PRIVATE vcmi vcmiservercommon)
+target_include_directories(battle_sim PRIVATE ${CMAKE_SOURCE_DIR})
+vcmi_set_output_dir(battle_sim "")
+if(USING_CONAN)
+	vcmi_copy_conan_runtime_deps(battle_sim)
+endif()

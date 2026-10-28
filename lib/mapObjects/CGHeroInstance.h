@@ -268,6 +268,8 @@ public:
 
 	const CCommanderInstance * getCommander() const;
 	CCommanderInstance * getCommander();
+	/// 为场景配置英雄肉身；属性复用指定兵种及其 Bonus。
+	void setCommanderType(const CreatureID & type);
 
 	void initObj(IGameRandomizer & gameRandomizer) override;
 	void initHero(IGameRandomizer & gameRandomizer, bool isFake = false);

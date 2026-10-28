@@ -338,6 +338,11 @@ function Battle:getTowerShooterHex(part) end
 ---@class BattleHex
 local BattleHex = {}
 
+---Returns the hex-grid distance to another tile, ignoring obstacles.
+---@param other BattleHex # Destination hex.
+---@return integer
+function BattleHex:getDistanceTo(other) end
+
 ---Returns true if this hex value identifies existing battlefield position.
 ---@return boolean
 function BattleHex:isValid() end
@@ -439,8 +444,10 @@ function BattleServer:changeUnit(battle, unitState, healthDelta) end
 ---@param battle Battle # Battle in which damage is dealt.
 ---@param unit Unit # Target unit.
 ---@param damage integer # Damage points to deal (will be clamped to remaining health).
+---@param source Unit? # Optional unit causing the damage.
+---@param mechanics SpellMechanics? # Optional spell context for damage attribution.
 ---@return integer, integer # Damage actually dealt, and the count of killed creatures.
-function BattleServer:damageUnit(battle, unit, damage) end
+function BattleServer:damageUnit(battle, unit, damage, source, mechanics) end
 
 ---Removes the unit or its corpse from the battlefield.
 ---@param battle Battle # Battle the unit belongs to.

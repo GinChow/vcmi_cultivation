@@ -361,6 +361,12 @@ CCommanderInstance * CGHeroInstance::getCommander()
 	return commander.get();
 }
 
+void CGHeroInstance::setCommanderType(const CreatureID & type)
+{
+	commander = std::make_unique<CCommanderInstance>(cb, type);
+	commander->setArmy(getArmy());
+}
+
 void CGHeroInstance::initObj(IGameRandomizer & gameRandomizer)
 {
 	if (ID == Obj::HERO)
@@ -516,7 +522,8 @@ void CGHeroInstance::initHero(IGameRandomizer & gameRandomizer, bool isFake)
 	recreateSecondarySkillsBonuses();
 
 	movement = movementPointsLimit();
-	mana = manaLimit(); //after all bonuses are taken into account, make sure this line is the last one
+	if(mana == UNINITIALIZED_MANA)
+		mana = manaLimit();
 }
 
 void CGHeroInstance::initArmy(vstd::RNG & rand, IArmyDescriptor * dst)
@@ -1680,6 +1687,11 @@ void CGHeroInstance::serializeCommonOptions(JsonSerializeFormat & handler)
 {
 	handler.serializeString("biography", biographyCustomTextId);
 	handler.serializeInt("experience", exp, 0);
+	handler.serializeInt("mana", mana, UNINITIALIZED_MANA);
+	CreatureID commanderType = commander ? commander->getId() : CreatureID::NONE;
+	handler.serializeId("commander", commanderType);
+	if(!handler.saving && commanderType.hasValue())
+		setCommanderType(commanderType);
 
 	std::optional<si64> explicitLevel;
 	bool explicitLevelAddsSkills = true;

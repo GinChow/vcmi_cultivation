@@ -111,6 +111,15 @@ endif()
 vcmi_set_output_dir(vcmiclient "")
 enable_pch(vcmiclient)
 
+if(APPLE AND NOT IOS)
+	add_custom_command(TARGET vcmiclient POST_BUILD
+		COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:vcmiclient>/Battle Simulator.app/Contents/MacOS"
+		COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/BattleSimulator.Info.plist" "$<TARGET_FILE_DIR:vcmiclient>/Battle Simulator.app/Contents/Info.plist"
+		COMMAND ${CMAKE_COMMAND} -E create_symlink ../../../vcmiclient "$<TARGET_FILE_DIR:vcmiclient>/Battle Simulator.app/Contents/MacOS/vcmiclient"
+		VERBATIM
+	)
+endif()
+
 if(IOS)
 	add_custom_command(TARGET vcmiclient POST_BUILD
 		COMMAND ios/set_build_version.sh "$<TARGET_BUNDLE_CONTENT_DIR:vcmiclient>"

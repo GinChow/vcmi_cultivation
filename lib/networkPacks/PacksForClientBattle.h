@@ -194,6 +194,8 @@ struct BattleStackAttacked
 {
 	ui32 stackAttacked = 0;
 	ui32 attackerID = -1; ///< no unit; 0 is a valid unit id, so it cannot stand for "nobody"
+	BattleSide sourceSide = BattleSide::NONE;
+	bool sourceHero = false;
 	ui32 killedAmount = 0;
 	int64_t damageAmount = 0;
 	UnitChanges newState;
@@ -222,6 +224,11 @@ struct BattleStackAttacked
 	{
 		h & stackAttacked;
 		h & attackerID;
+		if(h.hasFeature(Handler::Version::BATTLE_DAMAGE_SOURCE))
+		{
+			h & sourceSide;
+			h & sourceHero;
+		}
 		h & newState;
 		h & flags;
 		h & killedAmount;

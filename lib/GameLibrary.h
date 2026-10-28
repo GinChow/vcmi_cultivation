@@ -112,7 +112,7 @@ public:
 	~GameLibrary();
 
 	/// initializes settings and filesystem
-	void initializeFilesystem(bool extractArchives, bool useTestPreset = false);
+	void initializeFilesystem(bool extractArchives, bool useTestPreset = false, const std::vector<std::string> & fixedMods = {});
 
 	/// Loads all game entities
 	void initializeLibrary();
@@ -131,7 +131,7 @@ public:
 	void loadFilesystem(bool extractArchives);
 
 	// loads filesystems of all mods
-	void loadModFilesystem(bool useTestPreset = false);
+	void loadModFilesystem(bool useTestPreset = false, const std::vector<std::string> & fixedMods = {});
 };
 
 extern DLL_LINKAGE GameLibrary * LIBRARY;

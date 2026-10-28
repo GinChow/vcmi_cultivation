@@ -212,6 +212,7 @@ bool IVCMIDirsUNIX::developmentMode() const
 	// We want to be able to run VCMI from single directory. E.g to run from build output directory
 	const bool hasConfigs = bfs::exists("config") && bfs::exists("Mods");
 	const bool hasBinaries = bfs::exists("vcmiclient")
+		|| bfs::exists("battle_sim")
 		|| bfs::exists("vcmiserver")
 		|| bfs::exists("vcmilobby")
 		|| bfs::exists("vcmieditor")

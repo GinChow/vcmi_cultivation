@@ -126,9 +126,18 @@ double ModsState::getInstalledModSizeMegabytes(const TModID & modName) const
 
 ///////////////////////////////////////////////////////////////////////////////
 
-ModsPresetState::ModsPresetState(bool useTestPreset)
+ModsPresetState::ModsPresetState(bool useTestPreset, const TModList & fixedMods)
 	: settingsPath(JsonPath::builtin(useTestPreset ? "config/testModSettings.json" : "config/modSettings.json"))
 {
+	if(!fixedMods.empty())
+	{
+		// 批量实验使用内存预设，不读取或写回用户选择的模组。
+		transient = true;
+		modConfig["activePreset"].String() = "simulation";
+		for(const auto & mod : fixedMods)
+			setModActive(mod, true);
+		return;
+	}
 	if(CResourceHandler::get("local")->existsResource(ResourcePath(settingsPath)))
 	{
 		modConfig = JsonNode(settingsPath);
@@ -316,6 +325,8 @@ void ModsPresetState::setValidatedChecksum(const TModID & modName, std::optional
 
 void ModsPresetState::saveConfigurationState() const
 {
+	if(transient)
+		return;
 	std::fstream file(CResourceHandler::get()->getResourceName(ResourcePath(settingsPath))->c_str(), std::ofstream::out | std::ofstream::trunc);
 	file << modConfig.toCompactString();
 }
@@ -482,17 +493,24 @@ ModManager::ModManager()
 {
 }
 
-ModManager::ModManager(const JsonNode & repositoryList, bool useTestPreset, const TModList & newMods)
+ModManager::ModManager(const JsonNode & repositoryList, bool useTestPreset, const TModList & newMods, const TModList & fixedMods)
 	: modsState(std::make_unique<ModsState>())
-	, modsPreset(std::make_unique<ModsPresetState>(useTestPreset))
+	, modsPreset(std::make_unique<ModsPresetState>(useTestPreset, fixedMods))
 {
 	modsStorage = std::make_unique<ModsStorage>(modsState->getInstalledMods(), repositoryList);
 
-	eraseMissingModsFromPreset();
-	addNewModsToPreset();
-
-	// Sync roe-demo enabled state with demo data presence
-	syncDemoModState();
+	if(fixedMods.empty())
+	{
+		eraseMissingModsFromPreset();
+		addNewModsToPreset();
+		syncDemoModState();
+	}
+	else
+	{
+		for(const auto & mod : fixedMods)
+			if(!vstd::contains(getInstalledValidMods(), mod))
+				throw std::runtime_error("Required simulation mod is unavailable: " + mod);
+	}
 
 	// resolved together with active mods, so that mods that depend on new mods are not disabled as broken
 	for(const auto & modID : newMods)

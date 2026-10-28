@@ -1435,6 +1435,7 @@ void BattleActionProcessor::applyBattleEffects(const CBattleInfoCallback & battl
 	bsa.stackAttacked = def->unitId();
 
 	BattleAttackInfo bai(attackerState.get(), def, distance, bat.shot());
+	bai.isCounter = bat.counter();
 	bai.deathBlow = bat.deathBlow();
 	bai.doubleDamage = bat.ballistaDoubleDmg();
 	// SoD: lucky strike only affects creature that was directly attacked; HotA: affects every target of a multi-target attack

@@ -26,6 +26,8 @@ class CMapGenOptions;
 class ITranslator;
 class CampaignState;
 class CMapInfo;
+class CMap;
+class IGameInfoCallback;
 struct PlayerInfo;
 class PlayerColor;
 
@@ -264,8 +266,12 @@ public:
 	std::array<bool, 2> warMachines;
 
 	std::array<bool, 2> spellBook;
+	std::array<CreatureID, 2> commanderType;
+	std::array<int32_t, 2> startingMana{{-1, -1}};
 
 	BattleOnlyModeStartInfo();
+	/// 为图形界面与无界面模拟器创建同一份仅战斗地图。
+	std::unique_ptr<CMap> createMap(IGameInfoCallback * callback, int seed) const;
 
 	void serializeJson(JsonSerializeFormat & handler);
 
@@ -281,5 +287,10 @@ public:
 		h & warMachines;
 		h & spellBook;
 		h & spells;
+		if(h.hasFeature(Handler::Version::BATTLE_SIMULATION_COMMANDERS))
+		{
+			h & commanderType;
+			h & startingMana;
+		}
 	}
 };

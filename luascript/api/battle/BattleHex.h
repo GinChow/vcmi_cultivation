@@ -30,6 +30,7 @@ public:
 	static void registerMethods(MethodRegistrar & R);
 
 	static BattleHex getClosestTile(const BattleHex & self, BattleSide side, const BattleHexArray & hexes);
+	static int getDistanceTo(const BattleHex & self, const BattleHex & other);
 };
 
 }

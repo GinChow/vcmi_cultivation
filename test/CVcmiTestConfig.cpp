@@ -20,7 +20,7 @@ void CVcmiTestConfig::SetUp()
 	// so tests are independent of the developer's active mods and never overwrite the real
 	// modSettings.json. The vcmi-test mod supplies all fixtures and flips on the HOTA map
 	// format needed by TinyH3MBuilder.
-	LIBRARY->initializeFilesystem(false, /*useTestPreset*/ true);
+	LIBRARY->initializeFilesystem(false, /*useTestPreset*/ true, {"vcmi", "vcmi-test", "cultivation"});
 	LIBRARY->initializeLibrary();
 }
 

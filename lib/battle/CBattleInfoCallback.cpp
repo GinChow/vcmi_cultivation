@@ -152,6 +152,21 @@ ESpellCastProblem CBattleInfoCallback::battleCanCastSpell(const spells::Caster *
 
 		if(!hero)
 			return ESpellCastProblem::NO_HERO_TO_CAST_SPELL;
+		if(hero->getCommander())
+		{
+			// 施法窗口跟随真实肉身的行动回合，界面、AI 与服务器共用校验。
+			const auto units = battleGetAllUnits();
+			const bool bodyAlive = std::any_of(units.begin(), units.end(), [side](const auto * unit)
+			{
+				return unit->unitSide() == side && unit->unitSlot() == SlotID::COMMANDER_SLOT_PLACEHOLDER && unit->alive() && !unit->isClone();
+			});
+			if(!bodyAlive)
+				return ESpellCastProblem::NO_HERO_TO_CAST_SPELL;
+			const auto * active = battleActiveUnit();
+			if(!active || !active->alive() || active->isClone() || active->unitSide() != side
+				|| active->unitSlot() != SlotID::COMMANDER_SLOT_PLACEHOLDER)
+				return ESpellCastProblem::INVALID;
+		}
 		if(!hero->canCastSpells())
 			return ESpellCastProblem::NO_SPELLBOOK;
 		if(battleCastSpells(side) >= hero->valOfBonuses(BonusType::HERO_SPELL_CASTS_PER_COMBAT_TURN))
@@ -1129,6 +1144,7 @@ DamageEstimation CBattleInfoCallback::calculateDmgRange(const BattleAttackInfo &
 	payload.defenderHex = info.defenderPos.isValid() ? info.defenderPos : info.defender->getPosition();
 	payload.chargeDistance = info.chargeDistance;
 	payload.shooting = info.shooting;
+	payload.isCounter = info.isCounter;
 	payload.luckyStrike = info.luckyStrike;
 	payload.unluckyStrike = info.unluckyStrike;
 	payload.deathBlow = info.deathBlow;

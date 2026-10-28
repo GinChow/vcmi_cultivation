@@ -208,7 +208,7 @@ void CServerHandler::startLocalServerAndConnect(bool connectToLobby)
 	// mobile apps can't spawn separate processes - only thread mode is available
 	serverRunner.reset(new ServerThreadRunner());
 #else
-	if (settings["server"]["useProcess"].Bool())
+	if (settings["server"]["useProcess"].Bool() && !settings["session"]["manualBattle"].Bool())
 		serverRunner.reset(new ServerProcessRunner());
 	else
 		serverRunner.reset(new ServerThreadRunner());
@@ -972,7 +972,14 @@ void CServerHandler::debugStartTest(std::string filename, bool save)
 	}
 	else
 	{
-		resetStateForLobby(EStartMode::NEW_GAME, ESelectionScreen::newGame, EServerMode::LOCAL, {});
+		std::vector<std::string> names;
+		if(settings["session"]["manualBattle"].Bool())
+		{
+			const auto name = settings["general"]["playerName"].String();
+			names = {name + " 1", name + " 2"};
+		}
+		resetStateForLobby(EStartMode::NEW_GAME, ESelectionScreen::newGame, EServerMode::LOCAL, names);
+		hotseatMode = names.size() > 1;
 		mapInfo->mapInit(filename);
 	}
 	if(settings["session"]["donotstartserver"].Bool())
@@ -991,9 +998,12 @@ void CServerHandler::debugStartTest(std::string filename, bool save)
 		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	}
 	// "Click" on color to remove us from it
-	setPlayer(myFirstColor());
-	while(myFirstColor() != PlayerColor::CANNOT_DETERMINE)
-		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	if(!settings["session"]["manualBattle"].Bool())
+	{
+		setPlayer(myFirstColor());
+		while(myFirstColor() != PlayerColor::CANNOT_DETERMINE)
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	}
 
 	while(true)
 	{

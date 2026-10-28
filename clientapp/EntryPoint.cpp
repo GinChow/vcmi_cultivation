@@ -44,6 +44,12 @@
 #include "../lib/GameLibrary.h"
 #include "../lib/ScopeGuard.h"
 #include "../lib/VCMIDirs.h"
+#include "../lib/StartInfo.h"
+#include "../lib/callback/EditorCallback.h"
+#include "../lib/mapping/CMap.h"
+#include "../lib/mapping/CMapService.h"
+#include "../lib/serializer/JsonDeserializer.h"
+#include <fstream>
 
 #include <boost/program_options.hpp>
 #include <vstd/StringUtils.h>
@@ -163,7 +169,7 @@ int main(int argc, char * argv[])
 
 #if !defined(VCMI_MOBILE)
 	// Correct working dir executable folder (not bundle folder) so we can use executable relative paths
-	boost::filesystem::current_path(boost::filesystem::system_complete(argv[0]).parent_path());
+	boost::filesystem::current_path(boost::filesystem::canonical(boost::filesystem::system_complete(argv[0])).parent_path());
 #endif
 	std::cout << "Starting... " << std::endl;
 	po::options_description opts("Allowed options");
@@ -173,6 +179,7 @@ int main(int argc, char * argv[])
 		("help,h", "display help and exit")
 		("version,v", "display version information and exit")
 		("testmap", po::value<std::string>(), "")
+		("battle-scenario", po::value<std::string>(), "open a cultivation JSON scenario for manual hotseat combat")
 		("testsave", po::value<std::string>(), "")
 		("logLocation", po::value<std::string>(), "new location for log files")
 		("spectate,s", "enable spectator interface for AI-only games")
@@ -259,7 +266,18 @@ int main(int argc, char * argv[])
 	try
 	{
 		LIBRARY = new GameLibrary;
-		LIBRARY->initializeFilesystem(false);
+		if(vm.count("battle-scenario"))
+		{
+			std::vector<std::string> mods = {"vcmi", "cultivation"};
+			if(boost::filesystem::exists(VCMIDirs::get().userDataPath() / "Mods/chinese-translation/mods/ChineseTrueTypeFonts/mod.json"))
+			{
+				mods.push_back("chinese-translation");
+				mods.push_back("chinese-translation.chinesetruetypefonts");
+			}
+			LIBRARY->initializeFilesystem(false, false, mods);
+		}
+		else
+			LIBRARY->initializeFilesystem(false);
 	}
 	catch (const DataLoadingException & e)
 	{
@@ -267,6 +285,7 @@ int main(int argc, char * argv[])
 	}
 
 	Settings session = settings.write["session"];
+	session["manualBattle"].Bool() = vm.count("battle-scenario") != 0;
 	auto setSettingBool = [&](const std::string & key, const std::string & arg) {
 		Settings s = settings.write(vstd::split(key, "/"));
 		if(vm.count(arg))
@@ -387,7 +406,31 @@ int main(int argc, char * argv[])
 		session["oneGoodAI"].Bool() = vm.count("oneGoodAI");
 		session["aiSolo"].Bool() = false;
 	
-		if(vm.count("testmap"))
+		if(vm.count("battle-scenario"))
+		{
+			const auto filename = vm["battle-scenario"].as<std::string>();
+			std::ifstream stream(filename);
+			if(!stream)
+				throw std::runtime_error("Cannot open battle scenario: " + filename);
+			const std::string contents((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+			JsonNode node(contents.data(), contents.size(), filename);
+			node.setModScope(ModScope::scopeGame());
+			JsonDeserializer decoder(nullptr, node);
+			BattleOnlyModeStartInfo scenario;
+			scenario.serializeJson(decoder);
+			if(scenario.selectedTown != FactionID::ANY || !scenario.selectedHero[0].hasValue() || !scenario.selectedHero[1].hasValue())
+				throw std::runtime_error("Manual battle requires two heroes and a field battlefield");
+			EditorCallback callback(nullptr);
+			auto map = scenario.createMap(&callback, 1);
+			const auto directory = VCMIDirs::get().userDataPath() / "Maps";
+			boost::filesystem::create_directories(directory);
+			CMapService().saveMap(map, directory / "CultivationManualBattle.vmap");
+			CResourceHandler::get()->updateFilteredFiles([](const std::string &) { return true; });
+			session["manualBattle"].Bool() = true;
+			session["onlyai"].Bool() = false;
+			GAME->server().debugStartTest("Maps/CultivationManualBattle", false);
+		}
+		else if(vm.count("testmap"))
 		{
 			session["testmap"].String() = vm["testmap"].as<std::string>();
 			session["onlyai"].Bool() = true;

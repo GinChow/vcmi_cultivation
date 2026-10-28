@@ -25,6 +25,7 @@
 #include "../battle/Unit.h"
 #include "../library/Bonus.h"
 #include "../library/Spell.h"
+#include "../spells/Mechanics.h"
 
 #include "../../LuaStack.h"
 #include "../../../lib/battle/SiegeInfo.h"
@@ -34,6 +35,7 @@
 #include "../../../lib/battle/CObstacleInstance.h"
 #include "../../../lib/battle/IBattleState.h"
 #include "../../../lib/CStack.h"
+#include "../../../lib/modding/IdentifierStorage.h"
 #include "../../../lib/spells/AbilityCaster.h"
 #include "../../../lib/bonuses/BonusList.h"
 #include "../../../lib/bonuses/Bonus.h"
@@ -81,7 +83,9 @@ void ServerCallbackProxy::registerMethods(MethodRegistrar & R)
 		{
 			{"battle", "Battle",  "Battle in which damage is dealt."},
 			{"unit",   "Unit",    "Target unit."},
-			{"damage", "integer", "Damage points to deal (will be clamped to remaining health)."}
+			{"damage", "integer", "Damage points to deal (will be clamped to remaining health)."},
+			{"source", "Unit?", "Optional unit causing the damage."},
+			{"mechanics", "SpellMechanics?", "Optional spell context for damage attribution."}
 		},
 		{"integer, integer", "Damage actually dealt, and the count of killed creatures."},
 		"Damages the unit, returning the actual damage dealt and the number of killed creatures.");
@@ -490,6 +494,25 @@ int ServerCallbackProxy::damageUnit(lua_State * L)
 	BattleStackAttacked bsa;
 	bsa.damageAmount = damageAmount;
 	bsa.stackAttacked = unit->unitId();
+	const battle::Unit * source = nullptr;
+	const spells::Mechanics * mechanics = nullptr;
+	if(S.stackSize() >= 5)
+		S.get(5, source);
+	if(S.stackSize() >= 6)
+		S.get(6, mechanics);
+	if(mechanics)
+	{
+		source = mechanics->getUnitCaster();
+		bsa.sourceSide = mechanics->getCasterSide();
+		bsa.sourceHero = mechanics->getHeroCaster() != nullptr;
+		bsa.spellID = mechanics->getSpellId();
+		bsa.flags |= BattleStackAttacked::SPELL_EFFECT;
+	}
+	if(source)
+	{
+		bsa.attackerID = source->unitId();
+		bsa.sourceSide = source->unitSide();
+	}
 	auto newState = unit->acquireState();
 	CStack::prepareAttacked(bsa, *object->getRNG(), newState);
 
@@ -522,6 +545,28 @@ int ServerCallbackProxy::healUnit(lua_State * L)
 	S.get(5, healLevel);
 	S.get(6, healPower);
 
+	// 修仙场景的复活额度附着在本方肉身上，所有标准治疗脚本共用此入口。
+	const auto budgetId = LIBRARY->identifiers()->getIdentifier("cultivation", "bonus", "RESURRECTION_BUDGET", true);
+	const auto usedId = LIBRARY->identifiers()->getIdentifier("cultivation", "bonus", "RESURRECTION_USED", true);
+	const auto escapedId = LIBRARY->identifiers()->getIdentifier("cultivation", "bonus", "SOUL_ESCAPED", true);
+	const battle::Unit * budgetHolder = nullptr;
+	if(healLevel != EHealLevel::HEAL && budgetId && usedId)
+	{
+		const auto holders = battle->battleGetUnitsIf([&](const auto * candidate)
+		{
+			return candidate->unitSide() == unit->unitSide() && candidate->hasBonusOfType(static_cast<BonusType>(*budgetId));
+		});
+		if(!holders.empty() && holders.front()->unitId() != unit->unitId())
+		{
+			budgetHolder = holders.front();
+			const auto remaining = std::max(0, budgetHolder->valOfBonuses(static_cast<BonusType>(*budgetId)) - budgetHolder->valOfBonuses(static_cast<BonusType>(*usedId)));
+			const int64_t woundedHealth = unit->getCount() * static_cast<int64_t>(unit->getMaxHealth()) - unit->getAvailableHealth();
+			healthDelta = std::min(healthDelta, woundedHealth + remaining * static_cast<int64_t>(unit->getMaxHealth()));
+		}
+		if(escapedId && unit->hasBonusOfType(static_cast<BonusType>(*escapedId)))
+			healthDelta = 0;
+	}
+
 	auto changedUnit = unit->acquire();
 	battle::HealInfo info = changedUnit->heal(healthDelta, healLevel, healPower);
 
@@ -535,6 +580,15 @@ int ServerCallbackProxy::healUnit(lua_State * L)
 	buc.changedStacks.push_back(uc);
 
 	object->apply(buc);
+
+	if(budgetHolder && info.resurrectedCount > 0)
+	{
+		Bonus spent(BonusDuration::ONE_BATTLE, static_cast<BonusType>(*usedId), BonusSource::OTHER, static_cast<int>(info.resurrectedCount), BonusSourceID());
+		SetStackEffect update;
+		update.battleID = battle->getBattle()->getBattleID();
+		update.toAdd.emplace_back(budgetHolder->unitId(), std::vector<Bonus>{spent});
+		object->apply(update);
+	}
 
 	S.clear();
 	S.push(info.healedHealthPoints);

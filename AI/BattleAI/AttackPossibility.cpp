@@ -452,7 +452,9 @@ AttackPossibility AttackPossibility::evaluate(
 						}
 						else
 						{
-							auto retaliationCollateral = state->battleEstimateDamage(defender, retaliated, 0);
+							BattleAttackInfo counterInfo(defender, retaliated, 0, false);
+							counterInfo.isCounter = true;
+							auto retaliationCollateral = state->battleEstimateDamage(counterInfo);
 							int64_t damageReceived = averageDmg(retaliationCollateral.damage);
 
 							vstd::amin(damageReceived, retaliated->getAvailableHealth());

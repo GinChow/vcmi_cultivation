@@ -50,6 +50,8 @@ void RecordingGameServer::applyPack(CPackForClient & pack)
 /// belonging to the next attack closes the window again.
 void RecordingGameServer::record(CPackForClient & pack)
 {
+	if(const auto * injury = dynamic_cast<const StacksInjured *>(&pack))
+		injuries.push_back(*injury);
 	if(const auto * catapultAttack = dynamic_cast<const CatapultAttack *>(&pack))
 	{
 		catapultAttacks.push_back(*catapultAttack);
@@ -256,6 +258,8 @@ void BattleTestFixture::giveArtifact(const CGHeroInstance * hero, ArtifactID art
 
 bool BattleTestFixture::castOn(const CGHeroInstance * hero, SpellID spellID, const CStack * target) const
 {
+	if(hero->getCommander())
+		activateHeroCaster(hero);
 	const CSpell * spell = spellID.toSpell();
 	spells::BattleCast cast(battle(), hero, spells::Mode::HERO, spell);
 	spells::Target destination;
@@ -271,19 +275,24 @@ bool BattleTestFixture::castOn(const CGHeroInstance * hero, SpellID spellID, con
 	return true;
 }
 
-bool BattleTestFixture::castAsHero(const CGHeroInstance * hero, const SpellID & spellID, const CStack * target)
+void BattleTestFixture::activateHeroCaster(const CGHeroInstance * hero) const
 {
 	const BattleSide side = hero == attackerSideHero ? BattleSide::ATTACKER : BattleSide::DEFENDER;
-
-	// Hero spell actions require an active allied unit.
 	for(const auto & unit : battle()->stacks)
 	{
-		if(unit->unitSide() == side && unit->alive())
+		if(unit->unitSide() == side && unit->alive() && !unit->isClone()
+			&& (!hero->getCommander() || unit->unitSlot() == SlotID::COMMANDER_SLOT_PLACEHOLDER))
 		{
 			battle()->activeStack = unit->unitId();
 			break;
 		}
 	}
+}
+
+bool BattleTestFixture::castAsHero(const CGHeroInstance * hero, const SpellID & spellID, const CStack * target)
+{
+	const BattleSide side = hero == attackerSideHero ? BattleSide::ATTACKER : BattleSide::DEFENDER;
+	activateHeroCaster(hero);
 
 	BattleAction action;
 	action.actionType = EActionType::HERO_SPELL;

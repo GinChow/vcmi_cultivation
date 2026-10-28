@@ -2,6 +2,14 @@
 
 Represents a single tile on the battlefield gridallows computing geometric relationships (distance, neighbours, line-of-sight) that don't rely on current state of a battlefield
 
+### getDistanceTo
+
+Returns the hex-grid distance to another tile, ignoring obstacles.
+
+- param `other`: [`BattleHex`](BattleHex.md) — Destination hex.
+
+- returns `integer`
+
 ### isValid
 
 Returns true if this hex value identifies existing battlefield position.
