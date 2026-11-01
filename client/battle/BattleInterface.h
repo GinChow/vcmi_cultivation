@@ -109,14 +109,13 @@ class BattleInterface
 	/// defender interface, not null if attacker is human in our vcmiclient
 	std::shared_ptr<CPlayerInterface> defenderInt;
 
-	/// if set to true, battle is still starting and waiting for intro sound to end / key press from player
+	/// True until battle opening initialization completes.
 	bool battleOpeningDelayActive;
 
 	/// ID of ongoing battle
 	BattleID battleID;
 
-	void playIntroSoundAndUnlockInterface();
-	void onIntroSoundPlayed();
+	void startBattleMusicAndUnlockInterface();
 public:
 	/// copy of initial armies (for result window)
 	const CCreatureSet *army1;

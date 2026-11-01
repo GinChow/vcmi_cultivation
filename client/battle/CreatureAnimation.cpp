@@ -63,8 +63,8 @@ float AnimationControls::getCreatureAnimationSpeed(const CCreature * creature, c
 	// possible new fields for creature format:
 	//split "Attack time" into "Shoot Time" and "Cast Time"
 
-	// base speed for all H3 animations on slow speed is 10 frames per second (or 100ms per frame)
-	const float baseSpeed = 10.f;
+	// H3 assets default to 10 FPS; denser sequences keep their duration via matching frame rates.
+	const float baseSpeed = creature->animation.frameRate;
 	const float speed = baseSpeed * getAnimationSpeedFactor();
 
 	switch (type)
@@ -106,7 +106,7 @@ float AnimationControls::getCreatureAnimationSpeed(const CCreature * creature, c
 
 	case ECreatureAnimType::TURN_L:
 	case ECreatureAnimType::TURN_R:
-		return speed;
+		return 10.f * getAnimationSpeedFactor();
 
 	case ECreatureAnimType::MOVE_START:
 	case ECreatureAnimType::MOVE_END:

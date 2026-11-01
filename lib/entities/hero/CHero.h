@@ -58,6 +58,7 @@ public:
 	std::string portraitSmall;
 	std::string portraitLarge;
 	AnimationPath battleImage;
+	double battleAnimationFrameRate = 10.0;
 
 	CHero();
 	virtual ~CHero();

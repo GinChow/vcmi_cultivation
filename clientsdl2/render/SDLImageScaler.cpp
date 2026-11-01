@@ -61,10 +61,9 @@ void SDLImageOptimizer::optimizeSurface(SDL_Surface * formatSourceSurface)
 		{
 			for (int x = 0; x < surf->w; ++x)
 			{
-				ColorRGBA color;
-				SDL_GetRGBA(CSDL_Ext::getPixel(surf, x, y), surf->format, &color.r, &color.g, &color.b, &color.a);
-
-				if (color.a != SDL_ALPHA_TRANSPARENT)
+				// 裁剪只需判断透明度；直接使用SDL像素格式的alpha掩码，避免逐像素颜色转换。
+				const bool opaque = surf->format->Amask == 0 || (CSDL_Ext::getPixel(surf, x, y) & surf->format->Amask) != 0;
+				if (opaque)
 				{
 					// opaque
 					top = std::min(top, y);

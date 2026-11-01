@@ -104,7 +104,7 @@ BattleInterface::BattleInterface(const BattleID & battleID, const CCreatureSet *
 	windowObject->blockUI(true);
 	windowObject->updateQueue();
 
-	playIntroSoundAndUnlockInterface();
+	startBattleMusicAndUnlockInterface();
 }
 
 bool BattleInterface::isInTacticsMode()
@@ -112,52 +112,12 @@ bool BattleInterface::isInTacticsMode()
 	return tacticianInterface && tacticianInterface->cb->getBattle(getBattleID())->battleGetTacticDist() > 0;
 }
 
-void BattleInterface::playIntroSoundAndUnlockInterface()
-{
-	auto onIntroPlayed = [this]()
-	{
-		// Make sure that battle have not ended while intro was playing AND that a different one has not started
-		if(GAME->interface()->battleInt.get() == this)
-			onIntroSoundPlayed();
-	};
-
-	auto bfieldType = getBattle()->battleGetBattlefieldType();
-	const auto & battlefieldSound = bfieldType.getInfo()->musicFilename;
-
-	std::vector<soundBase::soundID> battleIntroSounds =
-	{
-		soundBase::battle00, soundBase::battle01,
-		soundBase::battle02, soundBase::battle03, soundBase::battle04,
-		soundBase::battle05, soundBase::battle06, soundBase::battle07
-	};
-
-	int battleIntroSoundChannel = -1;
-
-	if (!battlefieldSound.empty())
-		battleIntroSoundChannel = ENGINE->sound().playSound(battlefieldSound);
-	else
-		battleIntroSoundChannel = ENGINE->sound().playSoundFromSet(battleIntroSounds);
-
-	if (battleIntroSoundChannel != -1)
-	{
-		ENGINE->sound().setCallback(battleIntroSoundChannel, onIntroPlayed);
-
-		// a replay is watched, not played - the intro is always skipped there
-		if (settings["gameTweaks"]["skipBattleIntroMusic"].Bool() || GAME->server().isReplayActive())
-			openingEnd();
-	}
-	else // failed to play sound
-	{
-		onIntroSoundPlayed();
-	}
-}
-
 bool BattleInterface::openingPlaying() const
 {
 	return battleOpeningDelayActive;
 }
 
-void BattleInterface::onIntroSoundPlayed()
+void BattleInterface::startBattleMusicAndUnlockInterface()
 {
 	if (openingPlaying())
 		openingEnd();

@@ -51,6 +51,7 @@ public:
 	void collectRenderableObjects(BattleRenderer & renderer);
 	void tick(uint32_t msPassed) override;
 
+	/// Position on the original 10 FPS spell-release timeline.
 	float getFrame() const;
 	void onPhaseFinished(const std::function<void()> &);
 

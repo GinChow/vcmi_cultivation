@@ -219,6 +219,12 @@
 					"required" : [ "attack", "walk", "idle" ],
 					"description" : "Length of several animations",
 					"properties" : {
+						"frameRate" : {
+							"type" : "number",
+							"minimum" : 1,
+							"maximum" : 120,
+							"description" : "Base action frame rate before battle speed scaling. Defaults to 10; does not change movement distance or idle frame rate."
+						},
 						"attack" : {
 							"type" : "number",
 							"description" : "attack"

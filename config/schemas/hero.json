@@ -38,6 +38,12 @@
 			"description" : "Custom animation to be used on battle, overrides hero class property",
 			"format" : "animationFile"
 		},
+		"battleAnimationFrameRate" : {
+			"type" : "number",
+			"minimum" : 1,
+			"maximum" : 120,
+			"description" : "Battle hero animation FPS; defaults to 10. Flag animation and spell timing remain unchanged."
+		},
 		"images" : {
 			"type" : "object",
 			"additionalProperties" : false,

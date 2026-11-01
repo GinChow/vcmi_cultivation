@@ -65,6 +65,11 @@ std::shared_ptr<CHero> CHeroHandler::loadFromJson(const std::string & scope, con
 	hero->portraitSmall = node["images"]["small"].String();
 	hero->portraitLarge = node["images"]["large"].String();
 	hero->battleImage = AnimationPath::fromJson(node["battleImage"]);
+	const double frameRate = node["battleAnimationFrameRate"].isNull() ? 10.0 : node["battleAnimationFrameRate"].Float();
+	if(frameRate >= 1 && frameRate <= 120)
+		hero->battleAnimationFrameRate = frameRate;
+	else
+		logMod->error("Mod %s: hero %s has invalid battleAnimationFrameRate (%f), using 10 FPS", scope, identifier, frameRate);
 
 	loadHeroArmy(hero.get(), node);
 	loadHeroSkills(hero.get(), node);

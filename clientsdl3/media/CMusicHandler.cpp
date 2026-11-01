@@ -344,7 +344,8 @@ bool MusicEntry::play()
 	if(!(loop--) && music) //already played once - return
 		return false;
 
-	if(!setName.empty())
+	// Keep the initially selected battle track for subsequent loops.
+	if(!setName.empty() && (setName != "battle" || currentName.empty()))
 	{
 		const auto & set = owner->musicsSet[setName];
 		const auto & iter = RandomGeneratorUtil::nextItem(set, CRandomGenerator::getDefault());

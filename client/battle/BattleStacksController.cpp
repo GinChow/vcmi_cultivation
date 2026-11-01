@@ -26,6 +26,7 @@
 #include "../gui/WindowHandler.h"
 #include "media/ISoundPlayer.h"
 #include "render/Canvas.h"
+#include "render/CAnimation.h"
 #include "render/Colors.h"
 #include "render/Graphics.h"
 #include "render/IFont.h"
@@ -35,6 +36,7 @@
 #include "../../lib/CRandomGenerator.h"
 #include "../../lib/CStack.h"
 #include "../../lib/GameLibrary.h"
+#include "../../lib/filesystem/Filesystem.h"
 #include "../../lib/battle/BattleAction.h"
 #include "../../lib/battle/BattleHex.h"
 #include "../../lib/battle/CPlayerBattleCallback.h"
@@ -87,6 +89,14 @@ BattleStacksController::BattleStacksController(BattleInterface & owner):
 	amountNegative   = ENGINE->renderHandler().loadImage(ImagePath::builtin("combatUnitNumberWindowNegative"), EImageBlitMode::COLORKEY);
 	amountEffNeutral = ENGINE->renderHandler().loadImage(ImagePath::builtin("combatUnitNumberWindowNeutral"), EImageBlitMode::COLORKEY);
 
+	const auto markerPath = AnimationPath::builtin("cultivation/active-unit");
+	if(CResourceHandler::get()->existsResource(markerPath.addPrefix("SPRITES/").toType<EResType::JSON>()))
+	{
+		activeUnitMarker = ENGINE->renderHandler().loadAnimation(markerPath, EImageBlitMode::SIMPLE);
+		for(size_t frame = 0; frame < activeUnitMarker->size(0); ++frame)
+			activeUnitMarker->getImage(frame, 0);
+	}
+
 	std::vector<const CStack*> stacks = owner.getBattle()->battleGetAllStacks(true);
 	for(const CStack * s : stacks)
 	{
@@ -132,6 +142,21 @@ void BattleStacksController::collectRenderableObjects(BattleRenderer & renderer)
 
 		auto layer = stackAnimation[stack->unitId()]->isDead() ? EBattleFieldLayer::CORPSES : EBattleFieldLayer::STACKS;
 		auto location = getStackCurrentPosition(stack);
+
+		if(activeUnitMarker && activeUnitMarker->size(0) && stack->alive()
+			&& !stack->isGhost() && stack == (activeStack ? activeStack : actingStack))
+		{
+			renderer.insert(EBattleFieldLayer::GROUND_OBSTACLES, location, [this, stack](BattleRenderer::RendererRef canvas)
+			{
+				auto image = activeUnitMarker->getImage(static_cast<size_t>(activeUnitMarkerFrame), 0);
+				auto center = owner.fieldController->hexPositionLocal(stack->getPosition()).center();
+				if(stack->doubleWide())
+					center = (center + owner.fieldController->hexPositionLocal(stack->occupiedHex()).center()) / 2;
+				// 服务端地格尚未更新时，使用动画位移让光环跟随角色移动。
+				center += stackAnimation.at(stack->unitId())->pos.topLeft() - getStackPositionAtHex(stack->getPosition(), stack);
+				canvas.draw(image, center + Point(0, -4) - image->dimensions() / 2);
+			});
+		}
 
 		renderer.insert(layer, location, [this, stack]( BattleRenderer::RendererRef renderer ){
 			showStack(renderer, stack);
@@ -239,8 +264,7 @@ void BattleStacksController::setActiveStack(const CStack *stack)
 
 	activeStack = stack;
 
-	if (activeStack) // update UI
-		stackAnimation[activeStack->unitId()]->setBorderColor(AnimationControls::getGoldBorder());
+	activeUnitMarkerFrame = 0.f;
 
 	owner.windowObject->blockUI(activeStack == nullptr);
 
@@ -378,10 +402,6 @@ void BattleStacksController::showStackAmountBox(Canvas & canvas, const CStack * 
 
 void BattleStacksController::showStack(Canvas & canvas, const CStack * stack)
 {
-	if(stack->unitSlot() == SlotID::COMMANDER_SLOT_PLACEHOLDER && !stack->isClone()
-		&& !vstd::contains(mouseHoveredStacks, stack))
-		stackAnimation[stack->unitId()]->setBorderColor(stack->alive() ? AnimationControls::getGoldBorder() : AnimationControls::getNoBorder());
-
 	ColorRGBA effectColor = Colors::TRANSPARENCY;
 	uint8_t transparency = 255;
 	for(const auto & filter : stackFilterEffects)
@@ -398,6 +418,8 @@ void BattleStacksController::showStack(Canvas & canvas, const CStack * stack)
 
 void BattleStacksController::tick(uint32_t msPassed)
 {
+	if(activeUnitMarker && activeUnitMarker->size(0))
+		activeUnitMarkerFrame = std::fmod(activeUnitMarkerFrame + msPassed * 0.015f, static_cast<float>(activeUnitMarker->size(0)));
 	updateHoveredStacks();
 	updateBattleAnimations(msPassed);
 }
@@ -789,6 +811,7 @@ void BattleStacksController::endAction(const BattleAction & action)
 
 	stackAmountBoxHidden.clear();
 	displayedStackSnapshot.clear();
+	actingStack = nullptr;
 
 	owner.windowObject->blockUI(activeStack == nullptr);
 	removeExpiredColorFilters();
@@ -796,6 +819,7 @@ void BattleStacksController::endAction(const BattleAction & action)
 
 void BattleStacksController::startAction(const BattleAction & action)
 {
+	actingStack = action.isUnitAction() ? owner.getBattle()->battleGetStackByID(action.stackNumber) : (activeStack ? activeStack : stackToActivate);
 	// if timer run out and we did not act in time - deactivate current stack
 	setActiveStack(nullptr);
 	removeExpiredColorFilters();
@@ -930,10 +954,7 @@ void BattleStacksController::updateHoveredStacks()
 		if (vstd::contains(newStacks, stack))
 			continue;
 
-		if (stack == activeStack)
-			stackAnimation[stack->unitId()]->setBorderColor(AnimationControls::getGoldBorder());
-		else
-			stackAnimation[stack->unitId()]->setBorderColor(AnimationControls::getNoBorder());
+		stackAnimation[stack->unitId()]->setBorderColor(AnimationControls::getNoBorder());
 	}
 
 	for(const auto * stack : newStacks)

@@ -879,6 +879,14 @@ void CCreatureHandler::loadJsonAnimation(CCreature * cre, const JsonNode & graph
 	cre->animation.timeBetweenFidgets = graphics["timeBetweenFidgets"].Float();
 
 	const JsonNode & animationTime = graphics["animationTime"];
+	const double frameRate = animationTime["frameRate"].isNull() ? 10.0 : animationTime["frameRate"].Float();
+	if(frameRate >= 1 && frameRate <= 120)
+		cre->animation.frameRate = frameRate;
+	else
+	{
+		logMod->error("Mod %s: creature %s has invalid graphics.animationTime.frameRate (%f), using 10 FPS", cre->modScope, cre->identifier, frameRate);
+		cre->animation.frameRate = 10.0;
+	}
 	cre->animation.walkAnimationTime = animationTime["walk"].Float();
 	cre->animation.idleAnimationTime = animationTime["idle"].Float();
 	cre->animation.attackAnimationTime = animationTime["attack"].Float();

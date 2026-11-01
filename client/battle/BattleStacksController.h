@@ -30,6 +30,7 @@ class CreatureAnimation;
 class BattleAnimation;
 class BattleRenderer;
 class IImage;
+class CAnimation;
 
 struct BattleStackFilterEffect
 {
@@ -52,6 +53,9 @@ class BattleStacksController
 	std::shared_ptr<IImage> amountNegative;
 	std::shared_ptr<IImage> amountPositive;
 	std::shared_ptr<IImage> amountEffNeutral;
+	std::shared_ptr<CAnimation> activeUnitMarker;
+	float activeUnitMarkerFrame = 0.f;
+	const CStack * actingStack = nullptr;
 
 	/// currently displayed animations <anim, initialized>
 	std::vector<BattleAnimation *> currentAnimations;

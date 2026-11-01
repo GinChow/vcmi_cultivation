@@ -42,7 +42,7 @@ void BattleHero::tick(uint32_t msPassed)
 
 	float timePassed = msPassed / 1000.f;
 
-	flagCurrentFrame += currentSpeed * timePassed;
+	flagCurrentFrame += (currentSpeed > 0.f ? 10.f : 0.f) * timePassed;
 	currentFrame += currentSpeed * timePassed;
 
 	if(flagCurrentFrame >= flagAnimation->size(0))
@@ -81,13 +81,13 @@ void BattleHero::pause()
 
 void BattleHero::play()
 {
-	//H3 speed: 10 fps ( 100 ms per frame)
-	currentSpeed = 10.f;
+	currentSpeed = hero->getHeroType()->battleAnimationFrameRate;
 }
 
 float BattleHero::getFrame() const
 {
-	return currentFrame;
+	// Spell release uses the original 10 FPS timeline regardless of asset sampling.
+	return currentFrame * 10.f / hero->getHeroType()->battleAnimationFrameRate;
 }
 
 void BattleHero::collectRenderableObjects(BattleRenderer & renderer)

@@ -90,6 +90,7 @@ public:
 
 	struct CreatureAnimation
 	{
+		double frameRate = 10.0;
 		double timeBetweenFidgets, idleAnimationTime,
 			   walkAnimationTime, attackAnimationTime;
 		int upperRightMissileOffsetX, rightMissileOffsetX, lowerRightMissileOffsetX,
