@@ -71,6 +71,16 @@ Rect ScreenHandler::convertLogicalPointsToWindow(const Rect & input) const
 {
 	Rect result;
 
+#if defined(VCMI_MAC) && SDL_VERSION_ATLEAST(2, 0, 18)
+	const int scaling = getScalingFactor();
+	int x1, y1;
+	SDL_RenderLogicalToWindow(mainRenderer, input.x * scaling, input.y * scaling, &result.x, &result.y);
+	SDL_RenderLogicalToWindow(mainRenderer, (input.x + input.w) * scaling, (input.y + input.h) * scaling, &x1, &y1);
+	result.w = x1 - result.x;
+	result.h = y1 - result.y;
+	return result;
+#endif
+
 	// FIXME: use SDL_RenderLogicalToWindow instead? Needs to be tested on ios
 
 	float scaleX, scaleY;
@@ -445,6 +455,8 @@ void ScreenHandler::initializeScreenBuffers()
 #endif
 
 	auto logicalSize = getPreferredLogicalResolution() * getScalingFactor();
+	const auto outputSize = getRenderResolution();
+	logGlobal->info("Render buffers: %dx%d, output: %dx%d, asset scale: %dx, interface scale: %d%%", logicalSize.x, logicalSize.y, outputSize.x, outputSize.y, getScalingFactor(), getInterfaceScalingPercentage());
 	SDL_RenderSetLogicalSize(mainRenderer, logicalSize.x, logicalSize.y);
 
 	screen = SDL_CreateRGBSurface(0, logicalSize.x, logicalSize.y, 32, rmask, gmask, bmask, amask);
@@ -472,6 +484,10 @@ SDL_Window * ScreenHandler::createWindowImpl(Point dimensions, int flags, bool c
 {
 	int displayIndex = getPreferredDisplayIndex();
 	int positionFlags = center ? SDL_WINDOWPOS_CENTERED_DISPLAY(displayIndex) : SDL_WINDOWPOS_UNDEFINED_DISPLAY(displayIndex);
+
+#ifdef VCMI_MAC
+	flags |= SDL_WINDOW_ALLOW_HIGHDPI;
+#endif
 
 	return SDL_CreateWindow(GameConstants::VCMI_PROJECT_NAME_VERSIONED, positionFlags, positionFlags, dimensions.x, dimensions.y, flags);
 }
@@ -524,7 +540,8 @@ bool ScreenHandler::onScreenResize(bool keepWindowResolution)
 		if (getPreferredWindowMode() != EWindowMode::WINDOWED)
 			return false;
 
-		auto res = getRenderResolution();
+		Point res;
+		SDL_GetWindowSize(mainWindow, &res.x, &res.y);
 
 		if (res.x < heroes3Resolution.x || res.y < heroes3Resolution.y)
 			return false;

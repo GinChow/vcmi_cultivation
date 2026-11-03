@@ -28,6 +28,8 @@ private:
 	std::vector<std::shared_ptr<CLabel>> labels;
 
 	BattleInterface & owner;
+	bool jadeTheme = false;
+	bool horizontal = false;
 
 	static void changeSelectedSpell(int index, SpellID newSpell);
 

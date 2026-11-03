@@ -48,6 +48,7 @@ struct BattleStackFilterEffect
 class BattleStacksController
 {
 	BattleInterface & owner;
+	bool jadeTheme = false;
 
 	std::shared_ptr<IImage> amountNormal;
 	std::shared_ptr<IImage> amountNegative;

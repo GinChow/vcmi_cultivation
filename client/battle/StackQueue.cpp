@@ -37,6 +37,7 @@ StackQueue::StackQueue(bool Embedded, BattleInterface & owner)
 	, embedded(Embedded)
 {
 	OBJECT_CONSTRUCTION;
+	jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
 
 	uint32_t queueSize = QUEUE_SIZE_BIG;
 
@@ -54,11 +55,11 @@ StackQueue::StackQueue(bool Embedded, BattleInterface & owner)
 	else
 	{
 		pos.w = 800;
-		pos.h = 85;
+		pos.h = jadeTheme ? 60 : 85;
 		pos.x += 0;
 		pos.y -= pos.h;
 
-		background = std::make_shared<CFilledTexture>(ImagePath::builtin("DIBOXBCK"), Rect(0, 0, pos.w, pos.h));
+		background = std::make_shared<CFilledTexture>(ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/texture" : "DIBOXBCK"), Rect(0, 0, pos.w, pos.h));
 	}
 
 	stackBoxes.resize(queueSize);
@@ -125,7 +126,7 @@ StackQueue::StackBox::StackBox(StackQueue * owner)
 	, owner(owner)
 {
 	OBJECT_CONSTRUCTION;
-	background = std::make_shared<CPicture>(ImagePath::builtin(owner->embedded ? "StackQueueSmall" : "StackQueueLarge"));
+	background = std::make_shared<CPicture>(ImagePath::builtin(owner->jadeTheme ? (owner->embedded ? "cultivation/ui/jade/queue-small" : "cultivation/ui/jade/queue") : (owner->embedded ? "StackQueueSmall" : "StackQueueLarge")));
 
 	pos.w = background->pos.w;
 	pos.h = background->pos.h;
@@ -133,13 +134,18 @@ StackQueue::StackBox::StackBox(StackQueue * owner)
 	if(owner->embedded)
 	{
 		icon = std::make_shared<CAnimImage>(AnimationPath::builtin("CPRSMALL"), 0, 0, 5, 2);
-		amount = std::make_shared<CLabel>(pos.w/2, pos.h - 7, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE);
+		amount = std::make_shared<CLabel>(pos.w/2, pos.h - 7, FONT_SMALL, ETextAlignment::CENTER, owner->jadeTheme ? ColorRGBA(243, 240, 231) : Colors::WHITE);
 		roundRect = std::make_shared<TransparentFilledRectangle>(Rect(0, 0, 2, 48), ColorRGBA(0, 0, 0, 255), ColorRGBA(0, 255, 0, 255));
 	}
 	else
 	{
 		icon = std::make_shared<CAnimImage>(AnimationPath::builtin("TWCRPORT"), 0, 0, 9, 1);
-		amount = std::make_shared<CLabel>(pos.w/2, pos.h - 8, FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE);
+		if(owner->jadeTheme)
+		{
+			icon->setScale(Point(40, 42));
+			icon->moveBy(Point(11, 3));
+		}
+		amount = std::make_shared<CLabel>(pos.w/2, pos.h - 8, owner->jadeTheme ? FONT_SMALL : FONT_MEDIUM, ETextAlignment::CENTER, owner->jadeTheme ? ColorRGBA(243, 240, 231) : Colors::WHITE);
 		roundRect = std::make_shared<TransparentFilledRectangle>(Rect(0, 0, 15, 18), ColorRGBA(0, 0, 0, 255), ColorRGBA(241, 216, 120, 255));
 		round = std::make_shared<CLabel>(6, 9, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE);
 
@@ -217,6 +223,9 @@ std::optional<uint32_t> StackQueue::StackBox::getBoundUnitID() const
 
 bool StackQueue::StackBox::isBoundUnitHighlighted() const
 {
+	const auto * active = owner->owner.stacksController->getActiveStack();
+	if(owner->jadeTheme && active && owner->stackBoxes.front().get() == this && boundUnitID == active->unitId())
+		return true;
 	auto unitIdsToHighlight = owner->owner.stacksController->getHoveredStacksUnitIds();
 	return vstd::contains(unitIdsToHighlight, getBoundUnitID());
 }
@@ -224,9 +233,15 @@ bool StackQueue::StackBox::isBoundUnitHighlighted() const
 void StackQueue::StackBox::showAll(Canvas & to)
 {
 	CIntObject::showAll(to);
+	if(owner->jadeTheme && boundUnitID)
+	{
+		const auto * unit = owner->owner.getBattle()->battleGetUnitByID(*boundUnitID);
+		if(unit)
+			to.drawColor(Rect(pos.x + 5, pos.y + pos.h - 17, pos.w - 10, 2), unit->unitSide() == BattleSide::ATTACKER ? ColorRGBA(100, 132, 119) : ColorRGBA(164, 67, 54));
+	}
 
 	if(isBoundUnitHighlighted())
-		to.drawBorder(background->pos, Colors::CYAN, 2);
+		to.drawBorder(background->pos, owner->jadeTheme ? ColorRGBA(164, 67, 54) : Colors::CYAN, 2);
 }
 
 void StackQueue::StackBox::show(Canvas & to)
@@ -234,7 +249,7 @@ void StackQueue::StackBox::show(Canvas & to)
 	CIntObject::show(to);
 
 	if(isBoundUnitHighlighted())
-		to.drawBorder(background->pos, Colors::CYAN, 2);
+		to.drawBorder(background->pos, owner->jadeTheme ? ColorRGBA(164, 67, 54) : Colors::CYAN, 2);
 }
 
 BattleHex StackQueue::StackBox::getBoundUnitHex() const

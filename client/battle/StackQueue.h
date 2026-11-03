@@ -58,6 +58,7 @@ class StackQueue : public CIntObject
 	std::shared_ptr<CFilledTexture> background;
 	std::vector<std::shared_ptr<StackBox>> stackBoxes;
 	BattleInterface & owner;
+	bool jadeTheme = false;
 
 	int32_t getSiegeShooterIconID() const;
 

@@ -32,6 +32,8 @@ class UnitActionPanel;
 class BattleWindow : public InterfaceObjectConfigurable
 {
 	BattleInterface & owner;
+	bool jadeTheme = false;
+	bool horizontalQuickSpells = false;
 
 	std::shared_ptr<StackQueue> queue;
 	std::shared_ptr<BattleConsole> console;

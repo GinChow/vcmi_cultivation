@@ -41,13 +41,14 @@ BattleResultWindow::BattleResultWindow(const BattleResult & br, CPlayerInterface
 	: owner(_owner)
 {
 	OBJECT_CONSTRUCTION;
+	const bool jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
 
 	background = std::make_shared<CPicture>(ImagePath::builtin("CPRESULT"));
 	background->setPlayerColor(owner.playerID);
 	pos = center(background->pos);
 
 	exit = std::make_shared<CButton>(Point(384, 505), AnimationPath::builtin("iok6432.def"), std::make_pair("", ""), [this](){ bExitf();}, EShortcut::GLOBAL_ACCEPT);
-	exit->setBorderColor(Colors::METALLIC_GOLD);
+	exit->setBorderColor(jadeTheme ? ColorRGBA(154, 176, 161) : Colors::METALLIC_GOLD);
 
 	auto battle = owner.cb->getBattle(br.battleID);
 	const auto * attackerPlayer = GAME->server().client->gameInfo().getPlayerState(battle->sideToPlayer(BattleSide::ATTACKER));
@@ -59,7 +60,7 @@ BattleResultWindow::BattleResultWindow(const BattleResult & br, CPlayerInterface
 	if((allowReplay || owner.cb->getStartInfo()->extraOptionsInfo.unlimitedReplay) && onlyOnePlayerHuman)
 	{
 		repeat = std::make_shared<CButton>(Point(24, 505), AnimationPath::builtin("icn6432.def"), std::make_pair("", ""), [this](){ bRepeatf();}, EShortcut::GLOBAL_CANCEL);
-		repeat->setBorderColor(Colors::METALLIC_GOLD);
+		repeat->setBorderColor(jadeTheme ? ColorRGBA(154, 176, 161) : Colors::METALLIC_GOLD);
 		labels.push_back(std::make_shared<CLabel>(232, 520, FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->translate("vcmi.battleResultsWindow.applyResultsLabel")));
 	}
 
@@ -160,7 +161,14 @@ BattleResultWindow::BattleResultWindow(const BattleResult & br, CPlayerInterface
 	auto resources = getResources(br);
 
 	description = std::make_shared<CTextBox>(resources.resultText.toString(&GAME->translator()), Rect(69, 203, 330, 68), 0, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE);
-	videoPlayer = std::make_shared<VideoWidget>(Point(107, 70), resources.prologueVideo, resources.loopedVideo, false);
+	if(jadeTheme)
+	{
+		const bool won = br.winner == battle->battleGetMySide();
+		resultArtwork = std::make_shared<CPicture>(ImagePath::builtin(won ? "cultivation/ui/y700-windows/victory" : "cultivation/ui/y700-windows/defeat"), 195, 75);
+		labels.push_back(std::make_shared<CLabel>(235, 177, FONT_BIG, ETextAlignment::CENTER, ColorRGBA(243, 240, 231), LIBRARY->generaltexth->translate(won ? "cultivation.windows.victory" : "cultivation.windows.defeat")));
+	}
+	else
+		videoPlayer = std::make_shared<VideoWidget>(Point(107, 70), resources.prologueVideo, resources.loopedVideo, false);
 
 	ENGINE->music().playMusic(resources.musicName, false, true);
 }

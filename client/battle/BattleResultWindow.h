@@ -42,6 +42,7 @@ private:
 	std::vector<std::shared_ptr<CAnimImage>> icons;
 	std::shared_ptr<CTextBox> description;
 	std::shared_ptr<VideoWidget> videoPlayer;
+	std::shared_ptr<CPicture> resultArtwork;
 	CPlayerInterface & owner;
 
 	BattleResultResources getResources(const BattleResult & br);

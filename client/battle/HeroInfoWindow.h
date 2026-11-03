@@ -15,6 +15,7 @@
 
 class CLabel;
 class CAnimImage;
+class TransparentFilledRectangle;
 
 struct InfoAboutHero;
 
@@ -24,6 +25,8 @@ private:
 	std::shared_ptr<CPicture> background;
 	std::vector<std::shared_ptr<CLabel>> labels;
 	std::vector<std::shared_ptr<CAnimImage>> icons;
+	std::shared_ptr<TransparentFilledRectangle> manaTrack;
+	std::shared_ptr<TransparentFilledRectangle> manaFill;
 
 public:
 	HeroInfoBasicPanel(const InfoAboutHero & hero, const Point * position, bool initializeBackground = true);

@@ -149,6 +149,7 @@ CSpellWindow::CSpellWindow(const CGHeroInstance * _myHero, CPlayerInterface * _m
 	openOnBattleSpells(openOnBattleSpells),
 	onSpellSelect(onSpellSelect),
 	isBigSpellbook(settings["gameTweaks"]["enableLargeSpellbook"].Bool()),
+	jadeTheme(JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool()),
 	spellsPerPage(24),
 	offL(-11),
 	offR(195),
@@ -204,8 +205,8 @@ CSpellWindow::CSpellWindow(const CGHeroInstance * _myHero, CPlayerInterface * _m
 	if(settings["general"]["enableUiEnhancements"].Bool())
 	{
 		const ColorRGBA rectangleColor = ColorRGBA(0, 0, 0, 75);
-		const ColorRGBA borderColor = ColorRGBA(128, 100, 75);
-		const ColorRGBA grayedColor = ColorRGBA(158, 130, 105);
+		const ColorRGBA borderColor = jadeTheme ? ColorRGBA(100, 132, 119) : ColorRGBA(128, 100, 75);
+		const ColorRGBA grayedColor = jadeTheme ? ColorRGBA(178, 190, 176) : ColorRGBA(158, 130, 105);
 		searchBoxRectangle = std::make_shared<TransparentFilledRectangle>(r.resize(1), rectangleColor, borderColor);
 		searchBoxDescription = std::make_shared<CLabel>(r.center().x, r.center().y, FONT_SMALL, ETextAlignment::CENTER, grayedColor, LIBRARY->generaltexth->translate("vcmi.spellBook.search"));
 
@@ -236,7 +237,7 @@ CSpellWindow::CSpellWindow(const CGHeroInstance * _myHero, CPlayerInterface * _m
 		schoolTabCustom.push_back(std::make_shared<CAnimImage>(LIBRARY->spellSchoolHandler->getById(customSpellSchools[i])->getSchoolBookmarkPath(), i == 0 ? 0 : 1, 0, isBigSpellbook ? 0 : 15, yStart + ((yEnd - yStart) * i) / denom));
 	schoolPicture = std::make_shared<CAnimImage>(AnimationPath::builtin("Schools"), 0, 0, 117 + offL, 74 + offT);
 
-	mana = std::make_shared<CLabel>(435 + (isBigSpellbook ? 159 : 0), 426 + offB, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, std::to_string(myHero->mana));
+	mana = std::make_shared<CLabel>(435 + (isBigSpellbook ? 159 : 0), 426 + offB, FONT_SMALL, ETextAlignment::CENTER, jadeTheme ? ColorRGBA(243, 240, 231) : Colors::YELLOW, std::to_string(myHero->mana));
 
 	if(isBigSpellbook)
 		statusBar = CGStatusBar::create(400, 587);
@@ -628,14 +629,14 @@ void CSpellWindow::setCurrentPage(int value)
 void CSpellWindow::turnPageLeft()
 {
 	OBJECT_CONSTRUCTION;
-	if(settings["video"]["spellbookAnimation"].Bool() && !isBigSpellbook)
+	if(settings["video"]["spellbookAnimation"].Bool() && !isBigSpellbook && !jadeTheme)
 		video = std::make_shared<VideoWidgetOnce>(Point(13, 14), VideoPath::builtin("PGTRNLFT.SMK"), false, this);
 }
 
 void CSpellWindow::turnPageRight()
 {
 	OBJECT_CONSTRUCTION;
-	if(settings["video"]["spellbookAnimation"].Bool() && !isBigSpellbook)
+	if(settings["video"]["spellbookAnimation"].Bool() && !isBigSpellbook && !jadeTheme)
 		video = std::make_shared<VideoWidgetOnce>(Point(13, 14), VideoPath::builtin("PGTRNRGH.SMK"), false, this);
 }
 
@@ -883,7 +884,7 @@ void CSpellWindow::SpellArea::setSpell(const CSpell * spell)
 		}
 		else
 		{
-			firstLineColor = Colors::YELLOW;
+			firstLineColor = owner->jadeTheme ? ColorRGBA(201, 210, 194) : Colors::YELLOW;
 			secondLineColor = Colors::WHITE;
 		}
 

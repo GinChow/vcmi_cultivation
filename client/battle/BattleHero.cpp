@@ -92,6 +92,10 @@ float BattleHero::getFrame() const
 
 void BattleHero::collectRenderableObjects(BattleRenderer & renderer)
 {
+	// Cultivation commanders represent the hero on the battlefield; keep spell animation timing alive.
+	if(hero->getCommander() && hero->getHeroType()->getJsonKey().starts_with("cultivation:"))
+		return;
+
 	auto hex = defender ? BattleHex(GameConstants::BFIELD_WIDTH-1) : BattleHex(0);
 
 	renderer.insert(EBattleFieldLayer::HEROES, hex, [this](BattleRenderer::RendererRef canvas)

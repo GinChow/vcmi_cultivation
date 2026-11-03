@@ -406,9 +406,9 @@ void CMessage::drawBorder(PlayerColor playerColor, Canvas & to, int w, int h, in
 	{
 
 		// Top border
-		to.draw(box[6], Point(start_x, y));
+		to.draw(box[6], Point(start_x, y), Rect(0, 0, std::min(box[6]->width(), stop_x - start_x), box[6]->height()));
 		// Bottom border
-		to.draw(box[7], Point(start_x, bottom_y));
+		to.draw(box[7], Point(start_x, bottom_y), Rect(0, 0, std::min(box[7]->width(), stop_x - start_x), box[7]->height()));
 
 		start_x += box[6]->width();
 	}
@@ -421,9 +421,9 @@ void CMessage::drawBorder(PlayerColor playerColor, Canvas & to, int w, int h, in
 	{
 
 		// Left border
-		to.draw(box[4], Point(x, start_y));
+		to.draw(box[4], Point(x, start_y), Rect(0, 0, box[4]->width(), std::min(box[4]->height(), stop_y - start_y)));
 		// Right border
-		to.draw(box[5], Point(right_x, start_y));
+		to.draw(box[5], Point(right_x, start_y), Rect(0, 0, box[5]->width(), std::min(box[5]->height(), stop_y - start_y)));
 
 		start_y += box[4]->height();
 	}

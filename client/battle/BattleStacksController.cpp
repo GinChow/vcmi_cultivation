@@ -84,6 +84,7 @@ BattleStacksController::BattleStacksController(BattleInterface & owner):
 	animIDhelper(0)
 {
 	//preparing graphics for displaying amounts of creatures
+	jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
 	amountNormal     = ENGINE->renderHandler().loadImage(ImagePath::builtin("combatUnitNumberWindowDefault"), EImageBlitMode::COLORKEY);
 	amountPositive   = ENGINE->renderHandler().loadImage(ImagePath::builtin("combatUnitNumberWindowPositive"), EImageBlitMode::COLORKEY);
 	amountNegative   = ENGINE->renderHandler().loadImage(ImagePath::builtin("combatUnitNumberWindowNegative"), EImageBlitMode::COLORKEY);
@@ -164,7 +165,7 @@ void BattleStacksController::collectRenderableObjects(BattleRenderer & renderer)
 
 		if (stackNeedsAmountBox(stack))
 		{
-			renderer.insert(EBattleFieldLayer::STACK_AMOUNTS, location, [this, stack]( BattleRenderer::RendererRef renderer ){
+			renderer.insert(EBattleFieldLayer::STACK_AMOUNTS, jadeTheme ? BattleHex::HEX_AFTER_ALL : location, [this, stack]( BattleRenderer::RendererRef renderer ){
 				showStackAmountBox(renderer, stack);
 			});
 		}
@@ -326,26 +327,31 @@ void BattleStacksController::showStackAmountBox(Canvas & canvas, const CStack * 
 		// 肉身使用常驻名牌和生命条，普通军队仍显示人数框。
 		const auto center = owner.fieldController->hexPositionLocal(stack->getPosition()).center();
 		const auto name = stack->unitType()->getNameSingularTranslated();
-		const int width = std::max(88, static_cast<int>(ENGINE->renderHandler().loadFont(EFonts::FONT_TINY)->getStringWidth(name)) + 26);
-		const Rect plate(center.x - width / 2, center.y + 9, width, 28);
-		const ColorRGBA background = stack->unitSide() == BattleSide::ATTACKER ? ColorRGBA(69, 20, 20) : ColorRGBA(20, 35, 69);
+		const auto font = ENGINE->renderHandler().loadFont(EFonts::FONT_TINY);
+		const int lineHeight = font->getLineHeight();
+		const int nameHeight = std::max(17, lineHeight + 4);
+		const int healthHeight = std::max(14, lineHeight + 2);
+		const int width = std::max(100, static_cast<int>(font->getStringWidth(name)) + 30);
+		const Rect plate(center.x - width / 2, center.y + 9, width, nameHeight + healthHeight + 4);
+		const ColorRGBA background = jadeTheme ? ColorRGBA(32, 37, 36) : (stack->unitSide() == BattleSide::ATTACKER ? ColorRGBA(69, 20, 20) : ColorRGBA(20, 35, 69));
+		const ColorRGBA accent = jadeTheme ? (stack->unitSide() == BattleSide::ATTACKER ? ColorRGBA(100, 132, 119) : ColorRGBA(164, 67, 54)) : Colors::METALLIC_GOLD;
 		canvas.drawColor(plate, background);
-		canvas.drawBorder(plate, Colors::METALLIC_GOLD, 2);
-		canvas.drawText(Point(center.x + 6, plate.y + 8), EFonts::FONT_TINY, Colors::BRIGHT_YELLOW, ETextAlignment::CENTER, name);
+		canvas.drawBorder(plate, accent, jadeTheme ? 1 : 2);
+		canvas.drawText(Point(center.x + 7, plate.y + nameHeight / 2), EFonts::FONT_TINY, jadeTheme ? ColorRGBA(243, 240, 231) : Colors::BRIGHT_YELLOW, ETextAlignment::CENTER, name);
 
 		// 金冠与阵营底色在缩放后仍能区分英雄、普通兵和幻象。
 		const Point crown(plate.x + 5, plate.y + 5);
 		const std::array<Point, 6> points = {crown + Point(0, 0), crown + Point(3, 3), crown + Point(6, -2), crown + Point(9, 3), crown + Point(12, 0), crown + Point(10, 7)};
 		for(size_t i = 1; i < points.size(); ++i)
-			canvas.drawLine(points[i - 1], points[i], Colors::BRIGHT_YELLOW, Colors::BRIGHT_YELLOW);
-		canvas.drawLine(crown + Point(0, 0), crown + Point(2, 7), Colors::BRIGHT_YELLOW, Colors::BRIGHT_YELLOW);
-		canvas.drawLine(crown + Point(2, 7), crown + Point(10, 7), Colors::BRIGHT_YELLOW, Colors::BRIGHT_YELLOW);
+			canvas.drawLine(points[i - 1], points[i], accent, accent);
+		canvas.drawLine(crown + Point(0, 0), crown + Point(2, 7), accent, accent);
+		canvas.drawLine(crown + Point(2, 7), crown + Point(10, 7), accent, accent);
 
 		const auto health = std::max<int64_t>(0, getDisplayedStackHealth(stack));
 		const auto maximum = std::max<int64_t>(1, stack->getMaxHealth() * getDisplayedStackAmount(stack));
-		canvas.drawColor(Rect(plate.x + 3, plate.y + 17, plate.w - 6, 7), Colors::BLACK);
-		canvas.drawColor(Rect(plate.x + 3, plate.y + 17, (plate.w - 6) * std::min(health, maximum) / maximum, 7), ColorRGBA(35, 130, 55));
-		canvas.drawText(Point(center.x, plate.y + 21), EFonts::FONT_TINY, Colors::WHITE, ETextAlignment::CENTER, std::to_string(health) + "/" + std::to_string(maximum));
+		canvas.drawColor(Rect(plate.x + 3, plate.y + nameHeight, plate.w - 6, healthHeight), Colors::BLACK);
+		canvas.drawColor(Rect(plate.x + 3, plate.y + nameHeight, (plate.w - 6) * std::min(health, maximum) / maximum, healthHeight), jadeTheme ? ColorRGBA(44, 85, 68) : ColorRGBA(35, 130, 55));
+		canvas.drawText(Point(center.x, plate.y + nameHeight + healthHeight / 2), EFonts::FONT_TINY, Colors::WHITE, ETextAlignment::CENTER, std::to_string(health) + "/" + std::to_string(maximum));
 		return;
 	}
 

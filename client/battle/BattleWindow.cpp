@@ -74,6 +74,13 @@ BattleWindow::BattleWindow(BattleInterface & Owner)
 	REGISTER_BUILDER("battleConsole", &BattleWindow::buildBattleConsole);
 	
 	const JsonNode config(JsonPath::builtin("config/widgets/BattleWindow2.json"));
+	jadeTheme = config["jadeTheme"].Bool();
+	horizontalQuickSpells = jadeTheme && ENGINE->screenDimensions().y >= 720;
+	if(horizontalQuickSpells)
+	{
+		pos.h = 660;
+		pos = center();
+	}
 	
 	addShortcut(EShortcut::BATTLE_TOGGLE_QUICKSPELL, [this](){ this->toggleStickyQuickSpellVisibility();});
 	addShortcut(EShortcut::BATTLE_SPELL_SHORTCUT_0,  [this](){ useSpellIfPossible(0);  });
@@ -119,6 +126,13 @@ BattleWindow::BattleWindow(BattleInterface & Owner)
 			GAME->interface()->proposeQuickLoadingGame(); });
 
 	build(config);
+	if(jadeTheme)
+	{
+		// Restore the background before drawing transparent button states and shifted text.
+		for(auto * child : children)
+			if(auto * button = dynamic_cast<CButton *>(child))
+				button->setRedrawParent(true);
+	}
 	
 	console = widget<BattleConsole>("console");
 
@@ -204,7 +218,7 @@ void BattleWindow::createQuickSpellWindow()
 	OBJECT_CONSTRUCTION;
 
 	quickSpellWindow = std::make_shared<QuickSpellPanel>(owner);
-	quickSpellWindow->moveTo(Point(pos.x - 52, pos.y));
+	quickSpellWindow->moveTo(horizontalQuickSpells ? owner.fieldController->pos.topLeft() + Point(0, 600) : Point(pos.x - 52, pos.y));
 
 	unitActionWindow = std::make_shared<UnitActionPanel>(owner);
 	unitActionWindow->moveTo(Point(pos.x + pos.w, pos.y));
@@ -243,7 +257,7 @@ void BattleWindow::showStickyQuickSpellWindow()
 
 	auto hero = owner.getBattle()->battleGetMyHero();
 
-	bool quickSpellWindowVisible = hasSpaceForQuickActions() && hero != nullptr && hero->canCastSpells();
+	bool quickSpellWindowVisible = (horizontalQuickSpells || hasSpaceForQuickActions()) && hero != nullptr && hero->canCastSpells();
 	bool unitActionWindowVisible = hasSpaceForQuickActions();
 
 	quickSpellWindow->setEnabled(quickSpellWindowVisible);
@@ -261,7 +275,7 @@ void BattleWindow::createTimerInfoWindows()
 {
 	OBJECT_CONSTRUCTION;
 
-	int xOffsetAttacker = quickSpellWindow->isDisabled() ? 0 : -51;
+	int xOffsetAttacker = horizontalQuickSpells || quickSpellWindow->isDisabled() ? 0 : -51;
 	int xOffsetDefender = unitActionWindow->isDisabled() ? 0 : 51;
 
 	if(GAME->interface()->cb->getStartInfo()->turnTimerInfo.battleTimer != 0 || GAME->interface()->cb->getStartInfo()->turnTimerInfo.unitTimer != 0)
@@ -420,7 +434,7 @@ void BattleWindow::updateQueue()
 
 void BattleWindow::setPositionInfoWindow()
 {
-	int xOffsetAttacker = quickSpellWindow->isDisabled() ? 0 : -51;
+	int xOffsetAttacker = horizontalQuickSpells || quickSpellWindow->isDisabled() ? 0 : -51;
 	int xOffsetDefender = unitActionWindow->isDisabled() ? 0 : 51;
 
 	int yOffsetAttacker = attackerTimerWidget ? attackerTimerWidget->pos.h + 9 : 0;
@@ -970,11 +984,11 @@ void BattleWindow::endWithAutocombat()
 void BattleWindow::showAll(Canvas & to)
 {
 	if(owner.curInt->cb->getMapHeader()->battleOnly)
-		to.fillTexture(ENGINE->renderHandler().loadImage(ImagePath::builtin("DiBoxBck"), EImageBlitMode::OPAQUE));
+		to.fillTexture(ENGINE->renderHandler().loadImage(ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/backdrop" : "DiBoxBck"), EImageBlitMode::OPAQUE));
 	CIntObject::showAll(to);
 
 	if (ENGINE->screenDimensions().x != 800 || ENGINE->screenDimensions().y !=600)
-		to.drawBorder(Rect(pos.x-1, pos.y - (queue && queue->embedded ? 1 : 0), pos.w+2, pos.h+1 + (queue && queue->embedded ? 1 : 0)), Colors::BRIGHT_YELLOW);
+		to.drawBorder(Rect(pos.x-1, pos.y - (queue && queue->embedded ? 1 : 0), pos.w+2, pos.h+1 + (queue && queue->embedded ? 1 : 0)), jadeTheme ? ColorRGBA(201, 205, 190, 0) : Colors::BRIGHT_YELLOW);
 }
 
 void BattleWindow::show(Canvas & to)
@@ -985,11 +999,19 @@ void BattleWindow::show(Canvas & to)
 
 void BattleWindow::onScreenResize()
 {
+	const bool horizontal = jadeTheme && ENGINE->screenDimensions().y >= 720;
+	if(horizontal != horizontalQuickSpells)
+	{
+		pos.h += horizontal ? 60 : -60;
+		horizontalQuickSpells = horizontal;
+		pos = center();
+	}
 	if(settings["battle"]["showQueue"].Bool())
 	{
 		hideQueue();
 		showQueue();
 	}
+	createQuickSpellWindow();
 	if(settings["battle"]["enableQuickSpellPanel"].Bool())
 	{
 		hideStickyQuickSpellWindow();

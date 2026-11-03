@@ -27,10 +27,11 @@ StackInfoBasicPanel::StackInfoBasicPanel(const CStack * stack, bool initializeBa
 
 	if(initializeBackground)
 	{
-		background = std::make_shared<CPicture>(ImagePath::builtin("CCRPOP"), Rect(1, 1, 76, 286), 1, 1);
+		const bool jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
+		background = std::make_shared<CPicture>(ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/stack-panel" : "CCRPOP"), Rect(1, 1, 76, 286), 1, 1);
 		background->pos.y += 37;
 		background->setPlayerColor(stack->getOwner());
-		background2 = std::make_shared<CPicture>(ImagePath::builtin("CHRPOP"), Rect(1, 1, 76, 200), 1, 1);
+		background2 = std::make_shared<CPicture>(ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/hero-panel" : "CHRPOP"), Rect(1, 1, 76, 200), 1, 1);
 		background2->setPlayerColor(stack->getOwner());
 	}
 
@@ -118,6 +119,13 @@ void StackInfoBasicPanel::initializeData(const CStack * stack)
 		labelsMultiline.push_back(std::make_shared<CMultiLineLabel>(Rect(firstPos.x, firstPos.y, 48, 36), EFonts::FONT_TINY, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[674]));
 	if(spells.size() > 3)
 		labelsMultiline.push_back(std::make_shared<CMultiLineLabel>(Rect(firstPos.x + offset.x * 2, firstPos.y + offset.y * 2 - 4, 48, 36), EFonts::FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE, "..."));
+	if(background && JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool())
+	{
+		for(auto & label : labels)
+			label->setColor(ColorRGBA(243, 240, 231));
+		for(auto & label : labelsMultiline)
+			label->setColor(ColorRGBA(243, 240, 231));
+	}
 }
 
 void StackInfoBasicPanel::update(const CStack * updatedInfo)

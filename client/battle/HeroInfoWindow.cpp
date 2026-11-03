@@ -12,8 +12,10 @@
 
 #include "../widgets/Images.h"
 #include "../widgets/TextControls.h"
+#include "../widgets/GraphicalPrimitiveCanvas.h"
 
 #include "../../lib/GameLibrary.h"
+#include "../../lib/json/JsonNode.h"
 #include "../../lib/gameState/InfoAboutArmy.h"
 #include "../../lib/texts/CGeneralTextHandler.h"
 
@@ -26,7 +28,8 @@ HeroInfoBasicPanel::HeroInfoBasicPanel(const InfoAboutHero & hero, const Point *
 
 	if(initializeBackground)
 	{
-		background = std::make_shared<CPicture>(ImagePath::builtin("CHRPOP"), Rect(1, 1, 76, 200), 1, 1);
+		const bool jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
+		background = std::make_shared<CPicture>(ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/hero-panel" : "CHRPOP"), Rect(1, 1, 76, 200), 1, 1);
 		background->setPlayerColor(hero.owner);
 	}
 
@@ -48,26 +51,39 @@ void HeroInfoBasicPanel::initializeData(const InfoAboutHero & hero)
 	icons.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("PortraitsLarge"), hero.getIconIndex(), 0, 10, 6));
 
 	//primary stats
-	labels.push_back(std::make_shared<CLabel>(9, 75, EFonts::FONT_TINY, ETextAlignment::TOPLEFT, Colors::WHITE, LIBRARY->generaltexth->allTexts[380] + ":"));
-	labels.push_back(std::make_shared<CLabel>(9, 87, EFonts::FONT_TINY, ETextAlignment::TOPLEFT, Colors::WHITE, LIBRARY->generaltexth->allTexts[381] + ":"));
-	labels.push_back(std::make_shared<CLabel>(9, 99, EFonts::FONT_TINY, ETextAlignment::TOPLEFT, Colors::WHITE, LIBRARY->generaltexth->allTexts[382] + ":"));
-	labels.push_back(std::make_shared<CLabel>(9, 111, EFonts::FONT_TINY, ETextAlignment::TOPLEFT, Colors::WHITE, LIBRARY->generaltexth->allTexts[383] + ":"));
+	labels.push_back(std::make_shared<CLabel>(9, 74, EFonts::FONT_TINY, ETextAlignment::TOPLEFT, Colors::WHITE, LIBRARY->generaltexth->allTexts[380] + ":"));
+	labels.push_back(std::make_shared<CLabel>(9, 88, EFonts::FONT_TINY, ETextAlignment::TOPLEFT, Colors::WHITE, LIBRARY->generaltexth->allTexts[381] + ":"));
+	labels.push_back(std::make_shared<CLabel>(9, 102, EFonts::FONT_TINY, ETextAlignment::TOPLEFT, Colors::WHITE, LIBRARY->generaltexth->allTexts[382] + ":"));
+	labels.push_back(std::make_shared<CLabel>(9, 116, EFonts::FONT_TINY, ETextAlignment::TOPLEFT, Colors::WHITE, LIBRARY->generaltexth->allTexts[383] + ":"));
 
-	labels.push_back(std::make_shared<CLabel>(69, 87, EFonts::FONT_TINY, ETextAlignment::BOTTOMRIGHT, Colors::WHITE, std::to_string(attack)));
-	labels.push_back(std::make_shared<CLabel>(69, 99, EFonts::FONT_TINY, ETextAlignment::BOTTOMRIGHT, Colors::WHITE, std::to_string(defense)));
-	labels.push_back(std::make_shared<CLabel>(69, 111, EFonts::FONT_TINY, ETextAlignment::BOTTOMRIGHT, Colors::WHITE, std::to_string(power)));
-	labels.push_back(std::make_shared<CLabel>(69, 123, EFonts::FONT_TINY, ETextAlignment::BOTTOMRIGHT, Colors::WHITE, std::to_string(knowledge)));
+	labels.push_back(std::make_shared<CLabel>(69, 88, EFonts::FONT_TINY, ETextAlignment::BOTTOMRIGHT, Colors::WHITE, std::to_string(attack)));
+	labels.push_back(std::make_shared<CLabel>(69, 102, EFonts::FONT_TINY, ETextAlignment::BOTTOMRIGHT, Colors::WHITE, std::to_string(defense)));
+	labels.push_back(std::make_shared<CLabel>(69, 116, EFonts::FONT_TINY, ETextAlignment::BOTTOMRIGHT, Colors::WHITE, std::to_string(power)));
+	labels.push_back(std::make_shared<CLabel>(69, 130, EFonts::FONT_TINY, ETextAlignment::BOTTOMRIGHT, Colors::WHITE, std::to_string(knowledge)));
 
 	//morale+luck
-	labels.push_back(std::make_shared<CLabel>(9, 131, EFonts::FONT_TINY, ETextAlignment::TOPLEFT, Colors::WHITE, LIBRARY->generaltexth->allTexts[384] + ":"));
-	labels.push_back(std::make_shared<CLabel>(9, 143, EFonts::FONT_TINY, ETextAlignment::TOPLEFT, Colors::WHITE, LIBRARY->generaltexth->allTexts[385] + ":"));
+	labels.push_back(std::make_shared<CLabel>(9, 137, EFonts::FONT_TINY, ETextAlignment::TOPLEFT, Colors::WHITE, LIBRARY->generaltexth->allTexts[384] + ":"));
+	labels.push_back(std::make_shared<CLabel>(9, 151, EFonts::FONT_TINY, ETextAlignment::TOPLEFT, Colors::WHITE, LIBRARY->generaltexth->allTexts[385] + ":"));
 
-	icons.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("IMRL22"), std::clamp(morale + 3, 0, 6), 0, 47, 131));
-	icons.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("ILCK22"), std::clamp(luck + 3, 0, 6), 0, 47, 143));
+	icons.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("IMRL22"), std::clamp(morale + 3, 0, 6), 0, 47, 137));
+	icons.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("ILCK22"), std::clamp(luck + 3, 0, 6), 0, 47, 151));
 
 	//spell points
 	labels.push_back(std::make_shared<CLabel>(39, 174, EFonts::FONT_TINY, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[387]));
-	labels.push_back(std::make_shared<CLabel>(39, 186, EFonts::FONT_TINY, ETextAlignment::CENTER, Colors::WHITE, std::to_string(currentSpellPoints) + "/" + std::to_string(maxSpellPoints)));
+	if(JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool())
+	{
+		manaTrack = std::make_shared<TransparentFilledRectangle>(Rect(6, 182, 66, 15), ColorRGBA(114, 118, 109), ColorRGBA(32, 37, 36));
+		const int fill = maxSpellPoints > 0 ? std::clamp<int64_t>(static_cast<int64_t>(currentSpellPoints) * 64 / maxSpellPoints, 0, 64) : 0;
+		manaFill = std::make_shared<TransparentFilledRectangle>(Rect(7, 183, fill, 13), ColorRGBA(44, 85, 68));
+	}
+	labels.push_back(std::make_shared<CLabel>(39, 190, EFonts::FONT_TINY, ETextAlignment::CENTER, Colors::WHITE, std::to_string(currentSpellPoints) + "/" + std::to_string(maxSpellPoints)));
+
+	if(background && JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool())
+	{
+		for(auto & label : labels)
+			label->setColor(ColorRGBA(243, 240, 231));
+		labels.back()->setColor(Colors::WHITE);
+	}
 }
 
 void HeroInfoBasicPanel::update(const InfoAboutHero & updatedInfo)

@@ -139,6 +139,12 @@ BattleFieldController::BattleFieldController(BattleInterface & owner):
 	//preparing cells and hexes
 	cellBorder = ENGINE->renderHandler().loadImage(ImagePath::builtin("CCELLGRD.BMP"), EImageBlitMode::COLORKEY);
 	cellShade = ENGINE->renderHandler().loadImage(ImagePath::builtin("CCELLSHD.BMP"), EImageBlitMode::SIMPLE);
+	const bool jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
+	if(jadeTheme)
+		cellActiveBorder = ENGINE->renderHandler().loadImage(ImagePath::builtin("cultivation/ui/jade/hex-active-border"), EImageBlitMode::SIMPLE);
+	// Picking uses an opaque mask independently of the translucent range overlay.
+	cellHitMask = jadeTheme ? ENGINE->renderHandler().loadImage(ImagePath::builtin("cultivation/ui/jade/hex-hit"), EImageBlitMode::SIMPLE) : cellShade;
+	cellHoverShade = jadeTheme ? ENGINE->renderHandler().loadImage(ImagePath::builtin("cultivation/ui/jade/hex-hover"), EImageBlitMode::SIMPLE) : cellShade;
 	cellUnitMovementHighlight = ENGINE->renderHandler().loadImage(ImagePath::builtin("UnitMovementHighlight.PNG"), EImageBlitMode::COLORKEY);
 	cellUnitMaxMovementHighlight = ENGINE->renderHandler().loadImage(ImagePath::builtin("UnitMaxMovementHighlight.PNG"), EImageBlitMode::COLORKEY);
 
@@ -384,6 +390,7 @@ void BattleFieldController::rebuildBackgroundWithHexes()
 	if(owner.siegeController)
 		owner.siegeController->showAbsoluteObstacles(*backgroundWithHexes);
 
+	BattleHexArray highlightedHexes;
 	// show shaded hexes for active's stack valid movement and the hexes that it can attack
 	if(activeStack && settings["battle"]["stackRange"].Bool())
 	{
@@ -396,7 +403,10 @@ void BattleFieldController::rebuildBackgroundWithHexes()
 					owner.getBattle()->battleCanAttackHex(availableHexes, activeStack, hex)) ||
 				(owner.getBattle()->battleGetStackByPos(hex, true) &&
 					owner.getBattle()->battleCanShoot(activeStack, hex)))
+			{
 				showHighlightedHex(*backgroundWithHexes, cellShade, hex, false);
+				highlightedHexes.insert(hex);
+			}
 		}
 	}
 
@@ -413,6 +423,11 @@ void BattleFieldController::rebuildBackgroundWithHexes()
 			backgroundWithHexes->draw(cellBorder, hexPositionLocal(i).topLeft());
 		}
 	}
+
+	// Padded strokes are drawn after all fills so adjacent tiles cannot clip or cover them.
+	if(cellActiveBorder)
+		for(const auto & hex : highlightedHexes)
+			backgroundWithHexes->draw(cellActiveBorder, hexPositionLocal(hex).topLeft() - Point(2, 2));
 }
 
 void BattleFieldController::showHighlightedHex(Canvas & canvas, std::shared_ptr<IImage> highlight, const BattleHex & hex, bool darkBorder)
@@ -706,11 +721,11 @@ void BattleFieldController::showHighlightedHexes(Canvas & canvas)
 		if(stackMovement && mouse) // area where hovered stackMovement can move shown with highlight. Because also affected by mouse cursor, shade as well
 		{
 			showHighlightedHex(canvas, cellUnitMovementHighlight, hex, false);
-			showHighlightedHex(canvas, cellShade, hex, true);
+			showHighlightedHex(canvas, cellHoverShade, hex, true);
 		}
 		if(!stackMovement && mouse) // hexes affected only at mouse cursor shown as shaded
 		{
-			showHighlightedHex(canvas, cellShade, hex, true);
+			showHighlightedHex(canvas, cellHoverShade, hex, true);
 		}
 		if(stackMovement && !mouse) // hexes where hovered stackMovement can move shown with highlight
 		{
@@ -743,7 +758,7 @@ Rect BattleFieldController::hexPositionAbsolute(const BattleHex & hex) const
 
 bool BattleFieldController::isPixelInHex(Point const & position)
 {
-	return !cellShade->isTransparent(position);
+	return !cellHitMask->isTransparent(position);
 }
 
 BattleHex BattleFieldController::getHoveredHex()

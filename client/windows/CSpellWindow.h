@@ -95,6 +95,7 @@ class CSpellWindow : public CWindowObject, public IVideoHolder
 	std::shared_ptr<VideoWidgetOnce> video;
 
 	bool isBigSpellbook;
+	bool jadeTheme;
 	int spellsPerPage;
 	int offL;
 	int offR;

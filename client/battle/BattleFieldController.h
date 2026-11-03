@@ -29,9 +29,12 @@ class BattleFieldController : public CIntObject
 
 	std::shared_ptr<IImage> background;
 	std::shared_ptr<IImage> cellBorder;
+	std::shared_ptr<IImage> cellActiveBorder;
 	std::shared_ptr<IImage> cellUnitMovementHighlight;
 	std::shared_ptr<IImage> cellUnitMaxMovementHighlight;
 	std::shared_ptr<IImage> cellShade;
+	std::shared_ptr<IImage> cellHitMask;
+	std::shared_ptr<IImage> cellHoverShade;
 	std::shared_ptr<CAnimation> rangedFullDamageLimitImages;
 	std::shared_ptr<CAnimation> shootingRangeLimitImages;
 

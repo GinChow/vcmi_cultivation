@@ -39,8 +39,9 @@ UnitActionPanel::UnitActionPanel(BattleInterface & owner)
 	addUsedEvents(LCLICK | SHOW_POPUP | MOVE);
 
 	pos = Rect(0, 0, 52, 600);
-	background = std::make_shared<CFilledTexture>(ImagePath::builtin("DIBOXBCK"), pos);
-	rect = std::make_shared<TransparentFilledRectangle>(Rect(0, 0, pos.w + 1, pos.h + 1), ColorRGBA(0, 0, 0, 0), ColorRGBA(241, 216, 120, 255));
+	const bool jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
+	background = std::make_shared<CFilledTexture>(ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/texture" : "DIBOXBCK"), pos);
+	rect = std::make_shared<TransparentFilledRectangle>(Rect(0, 0, pos.w + 1, pos.h + 1), ColorRGBA(0, 0, 0, 0), jadeTheme ? ColorRGBA(201, 205, 190, 0) : ColorRGBA(241, 216, 120, 255));
 }
 
 void UnitActionPanel::restoreAllActions()
@@ -78,7 +79,8 @@ void UnitActionPanel::testAndAddAction(const std::vector<PossiblePlayerBattleAct
 	MetaString tooltip;
 	tooltip.appendTextID(descriptionTextID);
 
-	auto button = std::make_shared<CToggleButton>(Point(2, 7 + 50 * index), AnimationPath::builtin("battleUnitAction"), CButton::tooltip(tooltip.toString(&GAME->translator())), callback);
+	const bool jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
+	auto button = std::make_shared<CToggleButton>(Point(2, 7 + 50 * index), AnimationPath::builtin(jadeTheme ? "cultivation/ui/jade/action" : "battleUnitAction"), CButton::tooltip(tooltip.toString(&GAME->translator())), callback);
 	button->setOverlay(std::make_shared<CPicture>(iconPath));
 	button->setHighlightedBorderColor(Colors::WHITE);
 	button->setAllowDeselection(true);
@@ -107,7 +109,8 @@ void UnitActionPanel::testAndAddSpell(const std::vector<PossiblePlayerBattleActi
 	std::string description = spellFilter.toSpell()->getDescriptionTranslated(0);
 
 
-	auto button = std::make_shared<CToggleButton>(Point(2, 7 + 50 * index), AnimationPath::builtin("battleUnitAction"), CButton::tooltip(hoverText, description), callback);
+	const bool jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
+	auto button = std::make_shared<CToggleButton>(Point(2, 7 + 50 * index), AnimationPath::builtin(jadeTheme ? "cultivation/ui/jade/action" : "battleUnitAction"), CButton::tooltip(hoverText, description), callback);
 	button->setOverlay(std::make_shared<CAnimImage>(AnimationPath::builtin("spellint"), spellFilter.getNum() + 1));
 	button->setHighlightedBorderColor(Colors::WHITE);
 	buttons.push_back(button);
@@ -127,12 +130,14 @@ void UnitActionPanel::setPossibleActions(const std::vector<PossiblePlayerBattleA
 	static const std::vector actionsReturn = { PossiblePlayerBattleAction::ATTACK_AND_RETURN };
 	static const std::vector actionsAttackLongWeapon = { PossiblePlayerBattleAction::LONG_WEAPON_ATTACK };
 
-	testAndAddAction(newActions, actionsMove, ImagePath::builtin("battle/actionMove"), "vcmi.battle.action.move");
-	testAndAddAction(newActions, actionsReturn, ImagePath::builtin("battle/actionReturn"), "vcmi.battle.action.return");
-	testAndAddAction(newActions, actionsAttack, ImagePath::builtin("battle/actionAttack"), "vcmi.battle.action.attack");
-	testAndAddAction(newActions, actionsShoot, ImagePath::builtin("battle/actionShoot"), "vcmi.battle.action.shoot");
-	testAndAddAction(newActions, actionsGenie, ImagePath::builtin("battle/actionGenie"), "vcmi.battle.action.genie");
-	testAndAddAction(newActions, actionsAttackLongWeapon, ImagePath::builtin("battle/actionLongWeapon"), "vcmi.battle.action.attackLongWeapon");
+	const bool jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
+
+	testAndAddAction(newActions, actionsMove, ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/actionMove" : "battle/actionMove"), "vcmi.battle.action.move");
+	testAndAddAction(newActions, actionsReturn, ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/actionReturn" : "battle/actionReturn"), "vcmi.battle.action.return");
+	testAndAddAction(newActions, actionsAttack, ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/actionAttack" : "battle/actionAttack"), "vcmi.battle.action.attack");
+	testAndAddAction(newActions, actionsShoot, ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/actionShoot" : "battle/actionShoot"), "vcmi.battle.action.shoot");
+	testAndAddAction(newActions, actionsGenie, ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/actionGenie" : "battle/actionGenie"), "vcmi.battle.action.genie");
+	testAndAddAction(newActions, actionsAttackLongWeapon, ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/actionLongWeapon" : "battle/actionLongWeapon"), "vcmi.battle.action.attackLongWeapon");
 
 	std::vector<SpellID> spells;
 
@@ -145,7 +150,7 @@ void UnitActionPanel::setPossibleActions(const std::vector<PossiblePlayerBattleA
 		testAndAddSpell(newActions, spell);
 
 	// Not really a unit action, so place it at the end
-	testAndAddAction(newActions, actionsInfo, ImagePath::builtin("battle/actionInfo"), "vcmi.battle.action.info");
+	testAndAddAction(newActions, actionsInfo, ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/actionInfo" : "battle/actionInfo"), "vcmi.battle.action.info");
 
 	redraw();
 }
