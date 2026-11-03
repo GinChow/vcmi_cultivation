@@ -64,6 +64,7 @@ class ScalableImageShared final : public std::enable_shared_from_this<ScalableIm
 
 		/// Upscaled overlay (player color, selection highlight) of our image, may be null
 		FlippedImages overlay;
+		bool selectionOverlayPrepared = false;
 
 		/// Upscaled grayscale version of body, for special effects in combat (e.g clone / petrify / berserk)
 		FlippedImages bodyGrayscale;

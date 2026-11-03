@@ -20,10 +20,18 @@
 #include "lib/filesystem/Filesystem.h"
 #include "lib/texts/TextOperations.h"
 
-std::pair<std::unique_ptr<ui8[]>, ui64> CTrueTypeFont::loadData(const JsonNode & config)
+std::shared_ptr<const CTrueTypeFont::FontData> CTrueTypeFont::loadData(const JsonNode & config)
 {
-	std::string filename = "Data/" + config["file"].String();
-	return CResourceHandler::get()->load(ResourcePath(filename, EResType::TTF_FONT))->readAll();
+	static std::mutex mutex;
+	static std::map<ResourcePath, std::weak_ptr<const FontData>> files;
+	const ResourcePath filename("Data/" + config["file"].String(), EResType::TTF_FONT);
+	std::lock_guard lock(mutex);
+	if(auto existing = files[filename].lock())
+		return existing;
+
+	auto loaded = std::make_shared<FontData>(CResourceHandler::get()->load(filename)->readAll());
+	files[filename] = loaded;
+	return loaded;
 }
 
 int CTrueTypeFont::getPointSize(const JsonNode & config) const
@@ -42,7 +50,7 @@ TTF_Font * CTrueTypeFont::loadFont(const JsonNode &config)
 	if(!TTF_WasInit() && TTF_Init()==-1)
 		throw std::runtime_error(std::string("Failed to initialize true type support: ") + TTF_GetError() + "\n");
 
-	return TTF_OpenFontRW(SDL_RWFromConstMem(data.first.get(), data.second), 1, getPointSize(config["size"]));
+	return TTF_OpenFontRW(SDL_RWFromConstMem(data->first.get(), data->second), 1, getPointSize(config["size"]));
 }
 
 int CTrueTypeFont::getFontStyle(const JsonNode &config) const

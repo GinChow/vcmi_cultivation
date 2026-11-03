@@ -177,11 +177,55 @@ ECreatureAnimType CreatureAnimation::getType() const
 	return type;
 }
 
+static bool keepAnimationGroup(ECreatureAnimType group)
+{
+	return group == ECreatureAnimType::HOLDING || group == ECreatureAnimType::MOUSEON
+		|| group == ECreatureAnimType::MOVING || group == ECreatureAnimType::MOVE_START
+		|| group == ECreatureAnimType::MOVE_END || group == ECreatureAnimType::TURN_L
+		|| group == ECreatureAnimType::TURN_R;
+}
+
+void CreatureAnimation::prepareFrameWindow(size_t firstFrame)
+{
+	if(keepAnimationGroup(type) || firstFrame == preparedFrame)
+		return;
+
+	const auto start = std::chrono::steady_clock::now();
+	constexpr size_t lookAheadFrames = 3;
+	const auto end = std::min(firstFrame + lookAheadFrames, forward->size(size_t(type)));
+	Canvas preloadCanvas(Point(1, 1), CanvasScalingPolicy::AUTO);
+	for(size_t frame = 0; frame < forward->size(size_t(type)); ++frame)
+	{
+		for(const auto & animation : {forward, reverse})
+		{
+			if(frame < firstFrame || frame >= end)
+				animation->unloadFrame(frame, size_t(type));
+			else
+			{
+				auto image = animation->getImage(frame, size_t(type));
+				image->setOverlayColor(Colors::TRANSPARENCY);
+				preloadCanvas.draw(image, Point(0, 0));
+			}
+		}
+	}
+	preparedFrame = firstFrame;
+	const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+	if(firstFrame == 0 || elapsed > 5)
+		logGlobal->debug("Prepared battle window %s group=%d frame=%d in %.3f ms", name.getOriginalName(), int(type), firstFrame, elapsed);
+}
+
 void CreatureAnimation::setType(ECreatureAnimType type)
 {
+	if(this->type != type && !keepAnimationGroup(this->type))
+		for(size_t frame = 0; frame < forward->size(size_t(this->type)); ++frame)
+			for(const auto & animation : {forward, reverse})
+				animation->unloadFrame(frame, size_t(this->type));
+
 	this->type = type;
 	currentFrame = 0;
 	once = false;
+	preparedFrame = std::numeric_limits<size_t>::max();
+	prepareFrameWindow(0);
 
 	speed = speedController(this, type);
 }
@@ -250,6 +294,28 @@ CreatureAnimation::CreatureAnimation(const AnimationPath & name_, TSpeedControll
 
 	reverse->verticalFlip();
 
+	// Keep common loops resident; other actions retain a sliding frame window.
+	Canvas preloadCanvas(Point(1, 1), CanvasScalingPolicy::AUTO);
+	const auto preloadStart = std::chrono::steady_clock::now();
+	for (const auto group : { ECreatureAnimType::HOLDING, ECreatureAnimType::MOUSEON, ECreatureAnimType::MOVING,
+		ECreatureAnimType::MOVE_START, ECreatureAnimType::MOVE_END,
+		ECreatureAnimType::TURN_L, ECreatureAnimType::TURN_R })
+	{
+		for (size_t frame = 0; frame < forward->size(size_t(group)); ++frame)
+		{
+			const auto overlay = group == ECreatureAnimType::HOLDING || group == ECreatureAnimType::MOUSEON
+				? Colors::WHITE_TRUE : Colors::TRANSPARENCY;
+			for(const auto & animation : {forward, reverse})
+			{
+				auto image = animation->getImage(frame, size_t(group));
+				image->setOverlayColor(overlay);
+				preloadCanvas.draw(image, Point(0, 0));
+			}
+		}
+	}
+
+	logGlobal->debug("Prepared battle animation %s in %.3f ms", name_.getOriginalName(),
+		std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - preloadStart).count());
 	speed = speedController(this, type);
 }
 
@@ -330,6 +396,7 @@ static ColorRGBA genBorderColor(ui8 alpha, const ColorRGBA & base)
 void CreatureAnimation::nextFrame(Canvas & canvas, const ColorRGBA & effectColor, uint8_t transparency, bool facingRight)
 {
 	size_t frame = static_cast<size_t>(floor(currentFrame));
+	prepareFrameWindow(frame);
 
 	std::shared_ptr<IImage> image;
 

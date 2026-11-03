@@ -714,19 +714,31 @@ Canvas ScreenHandler::createOffscreenCanvas(const Point & size) const
 
 void ScreenHandler::updateScreenTexture()
 {
-	if(colorScheme == ColorScheme::NONE)
+	std::unique_ptr<SDL_Surface, decltype(&SDL_FreeSurface)> screenScheme(nullptr, SDL_FreeSurface);
+	SDL_Surface * source = screen;
+	if(colorScheme != ColorScheme::NONE)
 	{
-		SDL_UpdateTexture(screenTexture, nullptr, screen->pixels, screen->pitch);
-		return;
+		screenScheme.reset(SDL_ConvertSurface(screen, screen->format, screen->flags));
+		if(!screenScheme)
+			throw std::runtime_error(SDL_GetError());
+		source = screenScheme.get();
+		if(colorScheme == ColorScheme::GRAYSCALE)
+			CSDL_Ext::convertToGrayscale(source, Rect(0, 0, source->w, source->h));
+		else if(colorScheme == ColorScheme::H2_SCHEME)
+			CSDL_Ext::convertToH2Scheme(source, Rect(0, 0, source->w, source->h));
 	}
 
-	SDL_Surface * screenScheme = SDL_ConvertSurface(screen, screen->format, screen->flags);
-	if(colorScheme == ColorScheme::GRAYSCALE)
-		CSDL_Ext::convertToGrayscale(screenScheme, Rect(0, 0, screen->w, screen->h));
-	else if(colorScheme == ColorScheme::H2_SCHEME)
-		CSDL_Ext::convertToH2Scheme(screenScheme, Rect(0, 0, screen->w, screen->h));
-	SDL_UpdateTexture(screenTexture, nullptr, screenScheme->pixels, screenScheme->pitch);
-	SDL_FreeSurface(screenScheme);
+	void * pixels = nullptr;
+	int pitch = 0;
+	if(SDL_LockTexture(screenTexture, nullptr, &pixels, &pitch) != 0)
+		throw std::runtime_error(SDL_GetError());
+
+	// Streaming locks are write-only; copy the full frame using the returned row pitch.
+	const int result = SDL_ConvertPixels(source->w, source->h, source->format->format,
+		source->pixels, source->pitch, SDL_PIXELFORMAT_ARGB8888, pixels, pitch);
+	SDL_UnlockTexture(screenTexture);
+	if(result != 0)
+		throw std::runtime_error(SDL_GetError());
 }
 
 void ScreenHandler::presentScreenTexture()

@@ -52,7 +52,7 @@ bool CAnimation::loadFrame(size_t frame, size_t group, bool verbose)
 
 bool CAnimation::unloadFrame(size_t frame, size_t group)
 {
-	auto image = getImage(frame, group, false);
+	auto image = getImageImpl(frame, group, false);
 	if(image)
 	{
 		images[group].erase(frame);

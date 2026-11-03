@@ -101,8 +101,10 @@ private:
 
 	/// animation will be played once and the reset to idling
 	bool once;
+	size_t preparedFrame = std::numeric_limits<size_t>::max();
 
 	void endAnimation();
+	void prepareFrameWindow(size_t firstFrame);
 
 public:
 	/// function(s) that will be called when animation ends, after reset to 1st frame

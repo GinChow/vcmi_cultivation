@@ -131,6 +131,11 @@ void SDLImageShared::scaledDraw(SDL_Surface * where, SDL_Palette * palette, cons
 
 	destShift += dest;
 
+	SDL_Rect srcRect = CSDL_Ext::toSDL(sourceRect);
+	SDL_Rect dstRect = CSDL_Ext::toSDL(Rect(destShift, destScale));
+	if(srcRect.w <= 0 || srcRect.h <= 0 || !SDL_HasIntersection(&dstRect, &where->clip_rect))
+		return;
+
 	SDL_SetSurfaceColorMod(surf, colorMultiplier.r, colorMultiplier.g, colorMultiplier.b);
 	SDL_SetSurfaceAlphaMod(surf, alpha);
 
@@ -142,16 +147,14 @@ void SDLImageShared::scaledDraw(SDL_Surface * where, SDL_Palette * palette, cons
 	if (palette && surf->format->palette)
 		SDL_SetSurfacePalette(surf, palette);
 
-	SDL_Rect srcRect = CSDL_Ext::toSDL(sourceRect);
-	SDL_Rect dstRect = CSDL_Ext::toSDL(Rect(destShift, destScale));
-
 	if (sourceRect.dimensions() * scaleTo / dimensions() != destScale)
 		logGlobal->info("???");
 
-	SDL_Surface * tempSurface = SDL_ConvertSurface(surf, where->format, 0);
+	SDL_Surface * tempSurface = surf->format->format == where->format->format ? surf : SDL_ConvertSurface(surf, where->format, 0);
 	int result = SDL_BlitScaled(tempSurface, &srcRect, where, &dstRect);
 
-	SDL_FreeSurface(tempSurface);
+	if(tempSurface != surf)
+		SDL_FreeSurface(tempSurface);
 	if (result != 0)
 		logGlobal->error("SDL_BlitScaled failed! %s", SDL_GetError());
 

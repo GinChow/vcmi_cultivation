@@ -31,6 +31,11 @@ SharedImageLocator::SharedImageLocator(const JsonNode & config, EImageBlitMode m
 
 	if(!config["generateOverlay"].isNull())
 		generateOverlay = static_cast<SharedImageLocator::OverlayMode>(config["generateOverlay"].Integer());
+
+	fullSize = Point(config["width"].Integer(), config["height"].Integer());
+	margins = Point(config["margins"]["left"].Integer(), config["margins"]["top"].Integer());
+	if(!config["maxScale"].isNull())
+		maxScale = std::clamp<int>(config["maxScale"].Integer(), 1, 4);
 }
 
 SharedImageLocator::SharedImageLocator(const ImagePath & path, EImageBlitMode mode)
@@ -70,6 +75,12 @@ bool SharedImageLocator::operator < (const SharedImageLocator & other) const
 		return generateShadow < other.generateShadow;
 	if(generateOverlay != other.generateOverlay)
 		return generateOverlay < other.generateOverlay;
+	if(fullSize != other.fullSize)
+		return std::tie(fullSize.x, fullSize.y) < std::tie(other.fullSize.x, other.fullSize.y);
+	if(margins != other.margins)
+		return std::tie(margins.x, margins.y) < std::tie(other.margins.x, other.margins.y);
+	if(maxScale != other.maxScale)
+		return maxScale < other.maxScale;
 
 	return false;
 }

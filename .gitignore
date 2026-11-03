@@ -6,6 +6,7 @@
 /launcher/vcmilauncher_automoc.cpp
 /conan-*
 /result
+/Mods/
 
 build/
 .cache/*

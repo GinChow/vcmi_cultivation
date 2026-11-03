@@ -133,6 +133,7 @@ void RenderHandler::initFromJson(AnimationLayoutMap & source, const JsonNode & c
 	base["margins"] = config["margins"];
 	base["width"] = config["width"];
 	base["height"] = config["height"];
+	base["maxScale"] = config["maxScale"];
 
 	for(const JsonNode & group : config["sequences"].Vector())
 	{
@@ -261,6 +262,15 @@ std::shared_ptr<ScalableImageShared> RenderHandler::loadImageImpl(const ImageLoc
 	}
 
 	auto sdlImage = loadImageFromFileUncached(locator);
+	if(locator.fullSize.x > 0 && locator.fullSize.y > 0)
+	{
+		auto bitmap = std::dynamic_pointer_cast<SDLImageShared>(sdlImage);
+		if(bitmap)
+		{
+			bitmap->setMargins(bitmap->contentRect().topLeft() + locator.margins);
+			bitmap->setFullSize(locator.fullSize);
+		}
+	}
 	auto scaledImage = std::make_shared<ScalableImageShared>(locator, sdlImage);
 
 	storeCachedImage(locator, scaledImage);
@@ -436,6 +446,12 @@ std::shared_ptr<SDLImageShared> RenderHandler::loadScaledImage(const ImageLocato
 
 	if(img)
 	{
+		if(locator.fullSize.x > 0 && locator.fullSize.y > 0)
+		{
+			img->setMargins(img->contentRect().topLeft() + locator.margins * locator.scalingFactor);
+			img->setFullSize(locator.fullSize * locator.scalingFactor);
+		}
+
 		// TODO: Performance improvement - Run algorithm on optimized ("trimmed") images
 		// Not implemented yet because different frame image sizes seems to cause wobbeling shadow -> needs a way around this
 		if(isShadow && generateShadow)
@@ -614,7 +630,8 @@ void RenderHandler::onLibraryLoadingFinished(const Services * services)
 	assert(animationLayouts.empty());
 	assetGenerator->initialize();
 	updateGeneratedAssets();
-	preloadPaletteShiftedFrames();
+	if(!settings["session"]["manualBattle"].Bool())
+		preloadPaletteShiftedFrames();
 
 	addImageListEntries(services->creatures());
 	addImageListEntries(services->heroTypes());

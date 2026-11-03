@@ -13,6 +13,7 @@
 
 #include "../../lib/filesystem/ResourcePath.h"
 #include "../../lib/constants/EntityIdentifiers.h"
+#include "../../lib/Point.h"
 
 struct SharedImageLocator
 {
@@ -37,6 +38,11 @@ struct SharedImageLocator
 
 	std::optional<ShadowMode> generateShadow;
 	std::optional<OverlayMode> generateOverlay;
+	/// Logical canvas size and origin of pre-trimmed PNG layers.
+	Point fullSize;
+	Point margins;
+	/// Maximum cached pixel density in the SDL2 renderer; drawing retains the screen scale.
+	int maxScale = 4;
 
 	SharedImageLocator() = default;
 	SharedImageLocator(const AnimationPath & path, int frame, int group, EImageBlitMode layer);

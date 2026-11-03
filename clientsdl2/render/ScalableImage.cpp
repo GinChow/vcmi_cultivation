@@ -227,7 +227,7 @@ ScalableImageShared::ScalableImageShared(const SharedImageLocator & locator, con
 	scaled[1].body[0] = baseImage;
 	assert(scaled[1].body[0] != nullptr);
 
-	loadScaledImages(ENGINE->screenHandler().getScalingFactor(), PlayerColor::CANNOT_DETERMINE);
+	loadScaledImages(std::min(ENGINE->screenHandler().getScalingFactor(), locator.maxScale), PlayerColor::CANNOT_DETERMINE);
 }
 
 Point ScalableImageShared::dimensions() const
@@ -252,6 +252,28 @@ Rect ScalableImageShared::contentRect() const
 
 void ScalableImageShared::draw(SDL_Surface * where, const Point & dest, const Rect * src, const ScalableImageParameters & parameters, int scalingFactor)
 {
+	if (parameters.alphaValue == ColorRGBA::ALPHA_TRANSPARENT)
+		return;
+
+	const uint8_t overlayAlpha = static_cast<int>(parameters.alphaValue) * parameters.ovelayColorMultiplier.a / 255;
+	const int outputScale = scalingFactor;
+	scalingFactor = std::min(scalingFactor, locator.maxScale);
+
+	if(overlayAlpha != ColorRGBA::ALPHA_TRANSPARENT && !scaled[scalingFactor].selectionOverlayPrepared
+		&& (locator.layer == EImageBlitMode::ONLY_SELECTION || locator.layer == EImageBlitMode::WITH_SHADOW_AND_SELECTION))
+	{
+		scaled[scalingFactor].selectionOverlayPrepared = true;
+		scaled[scalingFactor].overlay[0] = loadOrGenerateImage(EImageBlitMode::ONLY_SELECTION, scalingFactor, PlayerColor::CANNOT_DETERMINE, scaled[1].overlay[0]);
+	}
+
+	const auto drawLayer = [&](const ImageType & image, const ColorRGBA & color, uint8_t alpha)
+	{
+		if(scalingFactor == outputScale)
+			image->draw(where, parameters.palette, dest, src, color, alpha, locator.layer);
+		else
+			image->scaledDraw(where, parameters.palette, dimensions() * outputScale, dest, src, color, alpha, locator.layer);
+	};
+
 	const auto & getFlippedImage = [&](FlippedImages & images){
 		int index = 0;
 		if (parameters.flipVertical)
@@ -275,7 +297,7 @@ void ScalableImageShared::draw(SDL_Surface * where, const Point & dest, const Re
 
 	bool shadowLoading = scaled.at(scalingFactor).shadow.at(0) && scaled.at(scalingFactor).shadow.at(0)->isLoading();
 	bool bodyLoading = scaled.at(scalingFactor).body.at(0) && scaled.at(scalingFactor).body.at(0)->isLoading();
-	bool overlayLoading = scaled.at(scalingFactor).overlay.at(0) && scaled.at(scalingFactor).overlay.at(0)->isLoading();
+	bool overlayLoading = overlayAlpha != ColorRGBA::ALPHA_TRANSPARENT && scaled.at(scalingFactor).overlay.at(0) && scaled.at(scalingFactor).overlay.at(0)->isLoading();
 	bool grayscaleLoading = scaled.at(scalingFactor).bodyGrayscale.at(0) && scaled.at(scalingFactor).bodyGrayscale.at(0)->isLoading();
 	bool playerLoading = parameters.player != PlayerColor::CANNOT_DETERMINE && scaled.at(scalingFactor).playerColored.at(1+parameters.player.getNum()) && scaled.at(scalingFactor).playerColored.at(1+parameters.player.getNum())->isLoading();
 
@@ -284,31 +306,31 @@ void ScalableImageShared::draw(SDL_Surface * where, const Point & dest, const Re
 		// upscaling is still running - the 1x image is stretched to stand in for it
 		RenderHandler::notifyPlaceholderDrawn();
 
-		getFlippedImage(scaled[1].body)->scaledDraw(where, parameters.palette, dimensions() * scalingFactor, dest, src, parameters.colorMultiplier, parameters.alphaValue, locator.layer);
+		getFlippedImage(scaled[1].body)->scaledDraw(where, parameters.palette, dimensions() * outputScale, dest, src, parameters.colorMultiplier, parameters.alphaValue, locator.layer);
 
 		if (parameters.effectColorMultiplier.a != ColorRGBA::ALPHA_TRANSPARENT)
-			getFlippedImage(scaled[1].body)->scaledDraw(where, parameters.palette, dimensions() * scalingFactor, dest, src, parameters.effectColorMultiplier, parameters.alphaValue, locator.layer);
+			getFlippedImage(scaled[1].body)->scaledDraw(where, parameters.palette, dimensions() * outputScale, dest, src, parameters.effectColorMultiplier, parameters.alphaValue, locator.layer);
 		return;
 	}
 
 	if (scaled.at(scalingFactor).shadow.at(0))
-		getFlippedImage(scaled.at(scalingFactor).shadow)->draw(where, parameters.palette, dest, src, Colors::WHITE_TRUE, parameters.alphaValue, locator.layer);
+		drawLayer(getFlippedImage(scaled.at(scalingFactor).shadow), Colors::WHITE_TRUE, parameters.alphaValue);
 
 	if (parameters.player != PlayerColor::CANNOT_DETERMINE && scaled.at(scalingFactor).playerColored.at(1+parameters.player.getNum()))
 	{
-		scaled.at(scalingFactor).playerColored.at(1+parameters.player.getNum())->draw(where, parameters.palette, dest, src, Colors::WHITE_TRUE, parameters.alphaValue, locator.layer);
+		drawLayer(scaled.at(scalingFactor).playerColored.at(1+parameters.player.getNum()), Colors::WHITE_TRUE, parameters.alphaValue);
 	}
 	else
 	{
 		if (scaled.at(scalingFactor).body.at(0))
-			getFlippedImage(scaled.at(scalingFactor).body)->draw(where, parameters.palette, dest, src, parameters.colorMultiplier, parameters.alphaValue, locator.layer);
+			drawLayer(getFlippedImage(scaled.at(scalingFactor).body), parameters.colorMultiplier, parameters.alphaValue);
 
 		if (scaled.at(scalingFactor).bodyGrayscale.at(0) && parameters.effectColorMultiplier.a != ColorRGBA::ALPHA_TRANSPARENT)
-			getFlippedImage(scaled.at(scalingFactor).bodyGrayscale)->draw(where, parameters.palette, dest, src, parameters.effectColorMultiplier, parameters.alphaValue, locator.layer);
+			drawLayer(getFlippedImage(scaled.at(scalingFactor).bodyGrayscale), parameters.effectColorMultiplier, parameters.alphaValue);
 	}
 
-	if (scaled.at(scalingFactor).overlay.at(0))
-		getFlippedImage(scaled.at(scalingFactor).overlay)->draw(where, parameters.palette, dest, src, parameters.ovelayColorMultiplier, static_cast<int>(parameters.alphaValue) * parameters.ovelayColorMultiplier.a / 255, locator.layer);
+	if (overlayAlpha != ColorRGBA::ALPHA_TRANSPARENT && scaled.at(scalingFactor).overlay.at(0))
+		drawLayer(getFlippedImage(scaled.at(scalingFactor).overlay), parameters.ovelayColorMultiplier, overlayAlpha);
 }
 
 const SDL_Palette * ScalableImageShared::getPalette() const
@@ -446,6 +468,8 @@ std::shared_ptr<const ISharedImage> ScalableImageShared::loadOrGenerateImage(EIm
 	loadingLocator.defFile = locator.defFile;
 	loadingLocator.generateShadow = locator.generateShadow;
 	loadingLocator.generateOverlay = locator.generateOverlay;
+	loadingLocator.fullSize = locator.fullSize;
+	loadingLocator.margins = locator.margins;
 	loadingLocator.defFrame = locator.defFrame;
 	loadingLocator.defGroup = locator.defGroup;
 	loadingLocator.layer = mode;
@@ -474,7 +498,7 @@ std::shared_ptr<const ISharedImage> ScalableImageShared::loadOrGenerateImage(EIm
 	}
 
 	// alternatively, find largest pre-scaled image, load it and rescale to desired scaling
-	for (int8_t scaling = 4; scaling > 0; --scaling)
+	for (int8_t scaling = locator.maxScale; scaling > 0; --scaling)
 	{
 		loadingLocator.scalingFactor = scaling;
 		auto loadedImage = ENGINE->renderHandler().loadScaledImage(loadingLocator);
@@ -587,10 +611,6 @@ void ScalableImageShared::loadScaledImages(int8_t scalingFactor, PlayerColor col
 			case EImageBlitMode::WITH_SHADOW_AND_FLAG_COLOR:
 				scaled[scalingFactor].overlay[0] = loadOrGenerateImage(EImageBlitMode::ONLY_FLAG_COLOR, scalingFactor, PlayerColor::CANNOT_DETERMINE, scaled[1].overlay[0]);
 				break;
-			case EImageBlitMode::ONLY_SELECTION:
-			case EImageBlitMode::WITH_SHADOW_AND_SELECTION:
-				scaled[scalingFactor].overlay[0] = loadOrGenerateImage(EImageBlitMode::ONLY_SELECTION, scalingFactor, PlayerColor::CANNOT_DETERMINE, scaled[1].overlay[0]);
-				break;
 			default:
 				break;
 		}
@@ -599,12 +619,12 @@ void ScalableImageShared::loadScaledImages(int8_t scalingFactor, PlayerColor col
 
 void ScalableImageShared::preparePlayerColoredImage(PlayerColor color)
 {
-	loadScaledImages(ENGINE->screenHandler().getScalingFactor(), color);
+	loadScaledImages(std::min(ENGINE->screenHandler().getScalingFactor(), locator.maxScale), color);
 }
 
 void ScalableImageShared::prepareEffectImage()
 {
-	int scalingFactor = ENGINE->screenHandler().getScalingFactor();
+	int scalingFactor = std::min(ENGINE->screenHandler().getScalingFactor(), locator.maxScale);
 
 	if (scaled[scalingFactor].bodyGrayscale[0] == nullptr)
 	{
