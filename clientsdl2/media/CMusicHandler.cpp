@@ -52,6 +52,9 @@ CMusicHandler::CMusicHandler():
 			addEntryToSet("battle", AudioPath::fromResource(file));
 		else if(boost::algorithm::istarts_with(file.getName(), "MUSIC/AITheme"))
 			addEntryToSet("enemy-turn", AudioPath::fromResource(file));
+		// 战斗胜利结算曲：模组可放多首 Win Battle*.mp3，结算时随机播放其中一首
+		else if(boost::algorithm::istarts_with(file.getName(), "MUSIC/Win Battle"))
+			addEntryToSet("win-battle", AudioPath::fromResource(file));
 	}
 
 	if (isInitialized())

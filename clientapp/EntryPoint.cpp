@@ -268,7 +268,8 @@ int main(int argc, char * argv[])
 		LIBRARY = new GameLibrary;
 		if(vm.count("battle-scenario"))
 		{
-			std::vector<std::string> mods = {"vcmi", "cultivation"};
+			// cultivation 为修仙玩法，cultivation-audio 为独立的音乐与开场音效模组
+			std::vector<std::string> mods = {"vcmi", "cultivation", "cultivation-audio"};
 			if(boost::filesystem::exists(VCMIDirs::get().userDataPath() / "Mods/chinese-translation/mods/ChineseTrueTypeFonts/mod.json"))
 			{
 				mods.push_back("chinese-translation");

@@ -28,6 +28,8 @@ struct BattleResultResources
 	VideoPath prologueVideo;
 	VideoPath loopedVideo;
 	AudioPath musicName;
+	/// 非空时从该音乐集合随机选曲播放，优先于 musicName
+	std::string musicSet;
 	MetaString resultText;
 };
 

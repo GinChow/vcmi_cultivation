@@ -170,7 +170,10 @@ BattleResultWindow::BattleResultWindow(const BattleResult & br, CPlayerInterface
 	else
 		videoPlayer = std::make_shared<VideoWidget>(Point(107, 70), resources.prologueVideo, resources.loopedVideo, false);
 
-	ENGINE->music().playMusic(resources.musicName, false, true);
+	if(!resources.musicSet.empty())
+		ENGINE->music().playMusicFromSet(resources.musicSet, false, true);
+	else
+		ENGINE->music().playMusic(resources.musicName, false, true);
 }
 
 BattleResultResources BattleResultWindow::getResources(const BattleResult & br)
@@ -193,7 +196,8 @@ BattleResultResources BattleResultWindow::getResources(const BattleResult & br)
 		}
 		else
 		{
-			resources.musicName = AudioPath::builtin("Music/Win Battle");
+			// 胜利结算从 win-battle 集合（所有 MUSIC/Win Battle* 资源）中随机选一首
+			resources.musicSet = "win-battle";
 			resources.prologueVideo = VideoPath::builtin("WIN3.BIK");
 			resources.loopedVideo = VideoPath::builtin("WIN3.BIK");
 		}
