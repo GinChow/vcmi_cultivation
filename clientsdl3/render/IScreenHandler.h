@@ -188,7 +188,8 @@ public:
 	/// 同时最多几群，再多就顶掉最早的一群
 	virtual void startMapBirdFlock(float x, float y, float directionX, float directionY) = 0;
 
-	/// 雾云场（2026-11-17）：rgba 按行存放 size.x × size.y 个地图图块，G 生雾多少、B 山腰绕云多少（R、A 不用）。
+	/// 雾云场（2026-11-17）：rgba 按行存放 size.x × size.y 个地图图块，G 生雾多少、B 山腰绕云多少，
+	/// A 地表大尺度明暗、干湿变化的幅度（按地形，水面为 0）；R 不用。
 	/// 着色器据此让流动的雾只在山脚、林地、水边浓起来，云海只绕着山。换地图或切换地上地下时由地图缓存调用
 	virtual void setMapAtmosphereField(const std::vector<uint8_t> & rgba, const Point & size) = 0;
 };

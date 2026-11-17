@@ -80,7 +80,7 @@ public:
 	/// 设置植被场（含义见 IScreenHandler::setMapVegetationField），转给 MapParticles，同时清掉还在飞的鸟群。须在渲染线程上调用
 	void setVegetationField(const std::vector<uint8_t> & rgba, const Point & size);
 
-	/// 设置雾云场（含义见 IScreenHandler::setMapAtmosphereField）：与离岸距离图共用一张纹理，存在它的 G、B 通道。须在渲染线程上调用
+	/// 设置雾云场（含义见 IScreenHandler::setMapAtmosphereField）：与离岸距离图共用一张纹理，存在它的 G、B、A 通道。须在渲染线程上调用
 	void setAtmosphereField(const std::vector<uint8_t> & rgba, const Point & size);
 
 	/// 惊起一群鸟（见 IScreenHandler::startMapBirdFlock），转给 MapParticles。须在渲染线程上调用

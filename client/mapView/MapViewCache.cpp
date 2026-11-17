@@ -526,6 +526,23 @@ static float terrainMist(const TerrainId & terrain)
 	}
 }
 
+/// 各地形地表大尺度变化（明暗、干湿冷暖）的幅度（2026-11-17）：地形图块为了无缝拼接把每块的大块明暗压平了，
+/// 由合成着色器按地图坐标连续地加回来。水面另有水面着色器，岩石（虚空、崖壁）少加
+static float terrainVariation(const TerrainId & terrain)
+{
+	switch(terrain.getNum())
+	{
+		case ETerrainId::WATER:
+			return 0.0f;
+		case ETerrainId::ROCK:
+			return 0.4f;
+		case ETerrainId::SNOW:
+			return 0.85f;
+		default:
+			return 1.0f;
+	}
+}
+
 void MapViewCache::sendAtmosphereField(const std::shared_ptr<IMapRendererContext> & context)
 {
 	const int3 mapSize = context->getMapSize();
@@ -537,6 +554,7 @@ void MapViewCache::sendAtmosphereField(const std::shared_ptr<IMapRendererContext
 
 	std::vector<float> mist(count, 0.0f);
 	std::vector<float> cloud(count, 0.0f);
+	std::vector<float> variation(count, 0.0f);
 	for(int y = 0; y < height; ++y)
 	{
 		for(int x = 0; x < width; ++x)
@@ -546,6 +564,7 @@ void MapViewCache::sendAtmosphereField(const std::shared_ptr<IMapRendererContext
 			const size_t i = index(x, y);
 			mist[i] = std::max(atmosphere.mist, terrainMist(context->getMapTile(tile).getTerrainID()));
 			cloud[i] = atmosphere.cloud;
+			variation[i] = terrainVariation(context->getMapTile(tile).getTerrainID());
 
 			// 水边：水陆相邻的图块起一层薄雾（两边都算），开阔水面不起
 			const bool water = context->getMapTile(tile).getTerrain()->isWater();
@@ -614,6 +633,7 @@ void MapViewCache::sendAtmosphereField(const std::shared_ptr<IMapRendererContext
 	{
 		rgba[i * 4 + 1] = encode(mist[i]);
 		rgba[i * 4 + 2] = encode(cloud[i]);
+		rgba[i * 4 + 3] = encode(variation[i]);
 	}
 	ENGINE->screenHandler().setMapAtmosphereField(rgba, Point(width, height));
 }

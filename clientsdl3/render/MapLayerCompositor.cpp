@@ -173,6 +173,80 @@ static inline float3 relight(float3 rgb, float alpha, Relief r, constant Params 
 	return rgb + P.sunColor.rgb * (rim * P.sunColor.w * strength * alpha);
 }
 
+// ---- 地表（2026-11-17）：打破地形贴图的重复 ----
+// 地形图块要能随机拼接，每块的大块明暗都压平了，满屏是同一种细纹理，像墙纸一样重复（用户反馈视觉疲劳）。
+// 这里在合成时按地图坐标加上连续的变化，跨图块不断开；并抹开图块接缝。只用于陆地，水面由水面着色器管。
+
+// 图块接缝：每块的笔触在边上切断、深浅略有出入，铺开后能看出一张方格。贴着图块边约 9% 图块宽的一条，
+// 与边对面镜像位置的颜色混合，越靠边混得越多、边上正好各半，两侧在接缝处连成一片。边对面是水的不混
+static inline float3 blendTileSeams(float3 c, float2 rel, float2 slots, float2 slotOrigin,
+	texture2d<float> groundTex, sampler groundSmp, texture2d<float> maskTex, sampler maskSmp)
+{
+	const float seam = 0.09;
+	float2 cell = floor(rel);
+	float2 inTile = rel - cell;
+	float2 toEdge = min(inTile, 1.0 - inTile);
+	float3 result = c;
+	if(toEdge.x < seam)
+	{
+		float edge = inTile.x < 0.5 ? cell.x : cell.x + 1.0;
+		float2 mirrorUV = windowToUV(float2(2.0 * edge - rel.x, rel.y), slots, slotOrigin);
+		float w = 0.5 * smoothstep(seam, 0.0, toEdge.x) * (1.0 - maskTex.sample(maskSmp, mirrorUV).g);
+		result = mix(result, groundTex.sample(groundSmp, mirrorUV).rgb, w);
+	}
+	if(toEdge.y < seam)
+	{
+		float edge = inTile.y < 0.5 ? cell.y : cell.y + 1.0;
+		float2 mirrorUV = windowToUV(float2(rel.x, 2.0 * edge - rel.y), slots, slotOrigin);
+		float w = 0.5 * smoothstep(seam, 0.0, toEdge.y) * (1.0 - maskTex.sample(maskSmp, mirrorUV).g);
+		result = mix(result, groundTex.sample(groundSmp, mirrorUV).rgb, w);
+	}
+	return result;
+}
+
+// 大尺度变化：三层噪声给出十来个图块的大片明暗、三四个图块的斑块、一个多图块的细碎起伏，
+// 另一层噪声分出干湿冷暖（干处偏暖偏浅、略褪色，湿处偏冷偏深）。amount 按地形取自雾云场的 A（岩石少，水面为 0）。
+// 雪地另加顺风方向拉长的雪垄阴影（偏蓝）；岩浆地上的余烬裂缝成片地明暗起伏、慢慢呼吸
+static inline float3 groundVariation(float3 c, float2 world, float t, float amount, texture2d<float> noiseTex, sampler noiseSmp)
+{
+	float big = noiseTex.sample(noiseSmp, world * 0.011 + float2(0.23, 0.71)).r;
+	float mid = noiseTex.sample(noiseSmp, world * 0.037 + float2(0.61, 0.13)).g;
+	float fine = noiseTex.sample(noiseSmp, world * 0.12 + float2(0.37, 0.89)).r;
+	float light = (big - 0.5) * 0.24 + (mid - 0.5) * 0.18 + (fine - 0.5) * 0.1;
+	float dry = smoothstep(0.25, 0.75, noiseTex.sample(noiseSmp, world * 0.019 + float2(0.83, 0.41)).g) * 2.0 - 1.0;
+
+	// 雪：亮、不鲜艳的地面。雪上不加冷暖（偏黄像脏雪），只加雪垄
+	float sat = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+	float snow = smoothstep(0.68, 0.82, dot(c, float3(0.3, 0.59, 0.11))) * (1.0 - smoothstep(0.06, 0.16, sat));
+
+	// 干湿：干处略亮、偏暖、褪色一点；湿处略暗、颜色更浓。不改色相——偏蓝偏紫在草地、碎石上都假（2026-11-17 离线对比）
+	float3 v = c * (1.0 + light * amount);
+	float lum = dot(v, float3(0.3, 0.59, 0.11));
+	float wetness = saturate(-dry) * amount;
+	float dryness = saturate(dry) * amount * (1.0 - snow);
+	v = lum + (v - lum) * (1.0 + 0.3 * wetness - 0.2 * dryness);
+	v *= (1.0 - 0.06 * wetness) * float3(1.0 + 0.1 * dryness, 1.0 + 0.06 * dryness, 1.0 - 0.05 * dryness);
+
+	if(snow > 0.01)
+	{
+		const float2 windDir = float2(0.94, 0.34);
+		float2 driftCoord = float2(dot(world, windDir) * 0.32, dot(world, float2(-windDir.y, windDir.x)) * 0.09);
+		float drift = smoothstep(0.5, 0.85, noiseTex.sample(noiseSmp, driftCoord + float2(0.11, 0.57)).b);
+		v = mix(v, v * float3(0.87, 0.91, 0.99), drift * 0.6 * snow * amount);
+	}
+
+	// 岩浆：发红的裂缝。热的一片裂缝亮起来、往橙黄走，冷的一片暗成深红，十几秒一呼吸
+	float ember = saturate((c.r - c.b) * 3.0 - 0.6) * smoothstep(0.3, 0.55, c.r);
+	if(ember > 0.01)
+	{
+		float heat = noiseTex.sample(noiseSmp, world * 0.05 + float2(t * 0.011, t * 0.007)).r;
+		heat = smoothstep(0.25, 0.8, heat) * (0.8 + 0.2 * sin(t * 0.45 + big * 6.283));
+		float3 glowing = v * (0.45 + 1.25 * heat) + float3(0.22, 0.08, 0.0) * heat * heat;
+		v = mix(v, glowing, ember * amount);
+	}
+	return v;
+}
+
 // 流动的雾：雾云场的 G 说这里生雾多少（山脚、林地、水边、沼泽浓），两层顺风飘移的低频噪声把它撕成一缕一缕；
 // 只贴着地面：可见表面离地越高雾越淡，树根、山脚埋在雾里，树冠、山峰露出来
 static inline float fogAt(float2 world, float t, float mist, float height, texture2d<float> noiseTex, sampler noiseSmp)
@@ -254,6 +328,17 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	float river = saturate(wet - water);            // 河面
 	float riverShare = river / max(wet, 0.001);     // 河面在这一点水面里的比重
 	float lakeShare = saturate(maskRGB.r - maskRGB.b) / max(maskRGB.g, 0.001); // 湖面的比重
+
+	// 地表：先抹开图块接缝，再加按地图坐标连续变化的明暗、干湿冷暖（只在陆地上）。
+	// 地形的变化幅度在雾云场的 A 通道（与离岸距离图同一张，按地图坐标取样）
+	float land = (1.0 - saturate(maskRGB.g)) * P.misc.y;
+	if(land > 0.003)
+	{
+		float groundAmount = depthTex.sample(depthSmp, world / max(P.misc.zw, float2(1.0))).a;
+		float3 varied = blendTileSeams(color, rel, slots, slotOrigin, groundTex, groundSmp, maskTex, maskSmp);
+		varied = groundVariation(varied, world, t, groundAmount, noiseTex, noiseSmp);
+		color = mix(color, varied, land);
+	}
 
 	if(wet > 0.003)
 	{
@@ -1134,6 +1219,7 @@ void MapLayerCompositor::setAtmosphereField(const std::vector<uint8_t> & rgba, c
 	{
 		depthField.rgba[i + 1] = rgba[i + 1];
 		depthField.rgba[i + 2] = rgba[i + 2];
+		depthField.rgba[i + 3] = rgba[i + 3];
 	}
 	depthField.dirty = true;
 }
