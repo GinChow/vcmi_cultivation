@@ -208,19 +208,7 @@ RenderHandler::AnimationLayoutMap & RenderHandler::getAnimationLayout(const Anim
 			result[defEntry.first].resize(defEntry.second);
 	}
 
-	auto jsonResource = actualPath.toType<EResType::JSON>();
-	auto configList = CResourceHandler::get()->getResourcesWithName(jsonResource);
-
-	for(auto & loader : configList)
-	{
-		auto stream = loader->load(jsonResource);
-		std::unique_ptr<ui8[]> textData(new ui8[stream->getSize()]);
-		stream->read(textData.get(), stream->getSize());
-
-		const JsonNode config(reinterpret_cast<const std::byte*>(textData.get()), stream->getSize(), path.getOriginalName());
-
-		initFromJson(result, config, mode);
-	}
+	applyJsonConfigs(result, actualPath, mode);
 
 	animationLayouts[actualPath] = result;
 	return animationLayouts[actualPath];
@@ -700,8 +688,30 @@ std::shared_ptr<AssetGenerator> RenderHandler::getAssetGenerator()
 	return assetGenerator;
 }
 
+void RenderHandler::applyJsonConfigs(AnimationLayoutMap & layout, const AnimationPath & path, EImageBlitMode mode) const
+{
+	auto jsonResource = path.toType<EResType::JSON>();
+	auto configList = CResourceHandler::get()->getResourcesWithName(jsonResource);
+
+	for(auto & loader : configList)
+	{
+		auto stream = loader->load(jsonResource);
+		std::unique_ptr<ui8[]> textData(new ui8[stream->getSize()]);
+		stream->read(textData.get(), stream->getSize());
+
+		const JsonNode config(reinterpret_cast<const std::byte*>(textData.get()), stream->getSize(), path.getOriginalName());
+
+		initFromJson(layout, config, mode);
+	}
+}
+
 void RenderHandler::updateGeneratedAssets()
 {
 	for(const auto & [key, value] : assetGenerator->generateAllAnimations())
-		animationLayouts[key] = value;
+	{
+		// mods may replace a generated animation (e.g. palette-shifted water "*_SHIFTED") with a json of the same name
+		AnimationLayoutMap layout = value;
+		applyJsonConfigs(layout, key, EImageBlitMode::SIMPLE);
+		animationLayouts[key] = layout;
+	}
 }
