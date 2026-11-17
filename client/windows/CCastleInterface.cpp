@@ -246,6 +246,9 @@ CBuildingRect::CBuildingRect(CCastleBuildings * Par, const CGTownInstance * Town
 
 	if(!str->areaName.empty())
 		area = ENGINE->renderHandler().loadImage(str->areaName, EImageBlitMode::SIMPLE);
+
+	if(!str->highlightName.empty())
+		highlight = ENGINE->renderHandler().loadImage(str->highlightName, EImageBlitMode::SIMPLE);
 }
 
 const CBuilding * CBuildingRect::getBuilding()
@@ -337,7 +340,7 @@ void CBuildingRect::show(Canvas & to)
 	{
 		if(stateTimeCounter >= BUILD_ANIMATION_FINISHED_TIMEPOINT)
 		{
-			if(owner->selectedBuilding == this || showTextOverlay)
+			if((owner->selectedBuilding == this && !highlight) || showTextOverlay)
 				to.draw(border, pos.topLeft());
 			return;
 		}
@@ -372,7 +375,7 @@ void CBuildingRect::showAll(Canvas & to)
 		return;
 
 	CShowableAnim::showAll(to);
-	if(!isActive() && owner->selectedBuilding == this && border)
+	if(!isActive() && owner->selectedBuilding == this && border && !highlight)
 		to.draw(border, pos.topLeft());
 }
 
@@ -410,6 +413,9 @@ void CBuildingRect::mouseMoved (const Point & cursorPosition, const Point & last
 bool CBuildingRect::receiveEvent(const Point & position, int eventType) const
 {
 	if (!pos.isInside(position.x, position.y))
+		return false;
+
+	if(owner->isBlocked(position))
 		return false;
 
 	if(area && area->isTransparent(position - pos.topLeft()))
@@ -727,9 +733,12 @@ void HeroSlots::swapArmies()
 
 CCastleBuildings::CCastleBuildings(const CGTownInstance* Town):
 	town(Town),
+	pinnedStructure(nullptr),
+	highlightTime(0),
 	selectedBuilding(nullptr)
 {
 	OBJECT_CONSTRUCTION;
+	addUsedEvents(TIME | LCLICK);
 
 	background = std::make_shared<CPicture>(town->getTown()->clientInfo.townBackground, Point(0,0), EImageBlitMode::OPAQUE);
 	background->needRefresh = true;
@@ -850,9 +859,128 @@ void CCastleBuildings::drawOverlays(Canvas & to, std::vector<std::shared_ptr<CBu
 	}
 }
 
+std::shared_ptr<CBuildingRect> CCastleBuildings::findRect(const CStructure * structure) const
+{
+	for(const auto & rect : buildings)
+		if(rect->str == structure)
+			return rect;
+	return nullptr;
+}
+
+const CStructure * CCastleBuildings::displayedStructure(const CBuilding * building) const
+{
+	// 先找正好显示这个建筑的结构，再找同一升级链（同一基础建筑）的结构
+	for(const auto & rect : buildings)
+		if(rect->str->building && (rect->str->building->bid == building->bid || (rect->getBuilding() && rect->getBuilding()->bid == building->bid)))
+			return rect->str;
+	for(const auto & rect : buildings)
+		if(rect->getBuilding() && rect->getBuilding()->getBase() == building->getBase())
+			return rect->str;
+	return nullptr;
+}
+
+void CCastleBuildings::pinStructure(const CStructure * structure)
+{
+	pinnedStructure = structure;
+	pinnedGlow.reset();
+	pinnedGhost.reset();
+	highlightTime = 0;
+
+	if(!structure)
+		return;
+
+	if(!structure->highlightName.empty())
+		pinnedGlow = ENGINE->renderHandler().loadImage(structure->highlightName, EImageBlitMode::SIMPLE);
+	else if(!structure->borderName.empty())
+		pinnedGlow = ENGINE->renderHandler().loadImage(structure->borderName, EImageBlitMode::COLORKEY);
+
+	// 未建建筑：在原址画半透明虚影。不在任何 OBJECT_CONSTRUCTION 作用域里创建，因此不会成为子控件
+	if(!findRect(structure) && !structure->defName.empty())
+		pinnedGhost = std::make_shared<CShowableAnim>(pos.x + structure->pos.x, pos.y + structure->pos.y, structure->defName, CShowableAnim::BASE, CBuildingRect::BUILDING_FRAME_TIME, 0, 150);
+}
+
+const CStructure * CCastleBuildings::getPinnedStructure() const
+{
+	return pinnedStructure;
+}
+
+void CCastleBuildings::setBlockedArea(const Rect & blocked)
+{
+	blockedArea = blocked;
+}
+
+bool CCastleBuildings::isBlocked(const Point & cursorPosition) const
+{
+	return blockedArea.w > 0 && blockedArea.h > 0 && blockedArea.isInside(cursorPosition);
+}
+
+void CCastleBuildings::clickPressed(const Point & cursorPosition)
+{
+	// 在城镇画面里点任何地方都取消列表的固定选中（点到建筑时建筑自己会处理进入）
+	if(isBlocked(cursorPosition) || !pinnedStructure)
+		return;
+	pinStructure(nullptr);
+	if(onPinCleared)
+		onPinCleared();
+}
+
+void CCastleBuildings::tick(uint32_t msPassed)
+{
+	highlightTime += msPassed;
+	if(pinnedGhost)
+		pinnedGhost->tick(msPassed);
+}
+
+void CCastleBuildings::drawGlow(Canvas & to, const Rect & buildingPos, const std::shared_ptr<IImage> & image, uint8_t alpha) const
+{
+	if(!image)
+		return;
+	// 光晕图可以比建筑大，按尺寸居中对齐到建筑上
+	Point offset = (image->dimensions() - buildingPos.dimensions()) / 2;
+	image->setAlpha(alpha);
+	to.draw(image, buildingPos.topLeft() - offset);
+}
+
+void CCastleBuildings::drawHighlights(Canvas & to)
+{
+	CanvasClipRectGuard guard(to, pos);
+
+	bool pinnedVisible = pinnedStructure && pinnedGlow && pinnedGlow->contentRect().w > 0 && pinnedGlow->contentRect().h > 0;
+	if(pinnedVisible)
+	{
+		// 呼吸：1.6 秒一个周期，透明度在 165–255 之间
+		constexpr uint32_t period = 1600;
+		double phase = double(highlightTime % period) / period;
+		auto alpha = static_cast<uint8_t>(165 + 90 * (0.5 - 0.5 * std::cos(2 * M_PI * phase)));
+
+		to.drawColorBlended(pos, ColorRGBA(12, 14, 20, 110));
+		if(auto rect = findRect(pinnedStructure))
+		{
+			rect->CShowableAnim::show(to);
+			drawGlow(to, rect->pos, pinnedGlow, alpha);
+		}
+		else if(pinnedGhost)
+		{
+			pinnedGhost->show(to);
+			drawGlow(to, pinnedGhost->pos, pinnedGlow, alpha);
+		}
+	}
+
+	// 鼠标悬停：只加光晕，不压暗
+	if(selectedBuilding && selectedBuilding->highlight && selectedBuilding->str != pinnedStructure)
+		drawGlow(to, selectedBuilding->pos, selectedBuilding->highlight, 210);
+}
+
+void CCastleBuildings::showAll(Canvas & to)
+{
+	CIntObject::showAll(to);
+	drawHighlights(to);
+}
+
 void CCastleBuildings::show(Canvas & to)
 {
 	CIntObject::show(to);
+	drawHighlights(to);
 
 	bool showTextOverlay = (ENGINE->isKeyboardAltDown() || ENGINE->input().getNumTouchFingers() == 2) && settings["general"]["enableOverlay"].Bool();
 	if(showTextOverlay)
@@ -1517,6 +1645,380 @@ void CTownInfo::showPopupWindow(const Point & cursorPosition)
 	}
 }
 
+
+namespace
+{
+	// 建筑列表的配色：与水墨画面搭配的暗底暖金
+	const ColorRGBA LIST_BACKGROUND(26, 24, 22, 255);
+	const ColorRGBA LIST_FRAME(150, 122, 64, 255);
+	const ColorRGBA LIST_TITLE(240, 220, 160, 255);
+	const ColorRGBA LIST_HEADER(160, 140, 100, 255);
+	const ColorRGBA LIST_BUILT(235, 230, 220, 255);
+	const ColorRGBA LIST_AVAILABLE(240, 200, 90, 255);
+	const ColorRGBA LIST_LOCKED(130, 125, 118, 255);
+	const ColorRGBA LIST_HOVER(58, 50, 38, 255);
+	const ColorRGBA LIST_SELECTED(110, 82, 30, 255);
+	const ColorRGBA LIST_SELECTED_FRAME(240, 200, 110, 255);
+
+	std::string listText(const std::string & key)
+	{
+		return LIBRARY->generaltexth->translate("vcmi.townWindow.buildingList." + key);
+	}
+
+	// 0：已建；1：可建造（含缺资源、今日已建过）；2：未解锁
+	int entryGroup(const CTownBuildingList::Entry & entry)
+	{
+		if(entry.built)
+			return 0;
+		if(entry.state == EBuildingState::ALLOWED || entry.state == EBuildingState::NO_RESOURCES || entry.state == EBuildingState::CANT_BUILD_TODAY)
+			return 1;
+		return 2;
+	}
+
+	ColorRGBA entryColor(const CTownBuildingList::Entry & entry)
+	{
+		switch(entryGroup(entry))
+		{
+			case 0: return LIST_BUILT;
+			case 1: return LIST_AVAILABLE;
+			default: return LIST_LOCKED;
+		}
+	}
+
+	std::string entryBadge(const CTownBuildingList::Entry & entry)
+	{
+		if(entry.built)
+			return entry.next && entry.state == EBuildingState::ALLOWED ? listText("badge.upgrade") : "";
+		switch(entry.state)
+		{
+			case EBuildingState::ALLOWED: return listText("badge.build");
+			case EBuildingState::NO_RESOURCES: return listText("badge.noResources");
+			case EBuildingState::CANT_BUILD_TODAY: return listText("badge.builtToday");
+			default: return "";
+		}
+	}
+}
+
+CTownBuildingList::CItem::CItem(CTownBuildingList * owner, size_t index, const Rect & position):
+	CIntObject(LCLICK | HOVER | SHOW_POPUP, position.topLeft()),
+	owner(owner),
+	index(index)
+{
+	OBJECT_CONSTRUCTION;
+	pos.w = position.w;
+	pos.h = position.h;
+
+	const auto & entry = owner->entries.at(index);
+	name = std::make_shared<CLabel>(8, pos.h / 2, FONT_SMALL, ETextAlignment::CENTERLEFT, entryColor(entry), entry.building->getNameTranslated(), pos.w - 52);
+	auto badgeText = entryBadge(entry);
+	if(!badgeText.empty())
+		badge = std::make_shared<CLabel>(pos.w - 6, pos.h / 2, FONT_TINY, ETextAlignment::CENTERRIGHT, entryColor(entry), badgeText);
+}
+
+void CTownBuildingList::CItem::hover(bool on)
+{
+	if(on)
+		ENGINE->statusbar()->write(owner->statusText(owner->entries.at(index)));
+	else
+		ENGINE->statusbar()->clear();
+	redraw();
+}
+
+void CTownBuildingList::CItem::clickPressed(const Point & cursorPosition)
+{
+	// 第一次点：高亮；再点同一行：进入建筑或打开建造确认框
+	if(owner->selected == static_cast<int>(index))
+		owner->activateEntry(static_cast<int>(index));
+	else
+		owner->select(static_cast<int>(index));
+}
+
+void CTownBuildingList::CItem::showPopupWindow(const Point & cursorPosition)
+{
+	const auto & entry = owner->entries.at(index);
+	if(entry.built)
+	{
+		auto c = std::make_shared<CComponent>(ComponentType::BUILDING, BuildingTypeUniqueID(entry.building->town->faction->getId(), entry.building->bid));
+		CRClickPopup::createAndPush(CInfoWindow::genText(entry.building->getNameTranslated(), entry.building->getDescriptionTranslated()), c);
+	}
+	else
+		ENGINE->windows().createAndPushWindow<CBuildWindow>(owner->town, entry.building, entry.state, true);
+}
+
+void CTownBuildingList::CItem::showAll(Canvas & to)
+{
+	if(owner->selected == static_cast<int>(index))
+	{
+		to.drawColor(pos, LIST_SELECTED);
+		to.drawBorder(pos, LIST_SELECTED_FRAME);
+	}
+	else
+		to.drawColor(pos, isHovered() ? LIST_HOVER : LIST_BACKGROUND);
+	CIntObject::showAll(to);
+}
+
+CTownBuildingList::CToggle::CToggle(CTownBuildingList * owner, const Rect & position):
+	CIntObject(LCLICK | HOVER, position.topLeft()),
+	owner(owner)
+{
+	OBJECT_CONSTRUCTION;
+	pos.w = position.w;
+	pos.h = position.h;
+	label = std::make_shared<CLabel>(pos.w / 2, pos.h / 2, FONT_SMALL, ETextAlignment::CENTER, LIST_TITLE, listText("toggle.open"));
+}
+
+void CTownBuildingList::CToggle::clickPressed(const Point & cursorPosition)
+{
+	owner->setExpanded(!owner->expanded);
+	label->setText(listText(owner->expanded ? "toggle.close" : "toggle.open"));
+}
+
+void CTownBuildingList::CToggle::hover(bool on)
+{
+	if(on)
+		ENGINE->statusbar()->write(listText("title"));
+	else
+		ENGINE->statusbar()->clear();
+}
+
+void CTownBuildingList::CToggle::showAll(Canvas & to)
+{
+	to.drawColor(pos, LIST_BACKGROUND);
+	to.drawBorder(pos, LIST_FRAME);
+	CIntObject::showAll(to);
+}
+
+CTownBuildingList::CTownBuildingList(const CGTownInstance * town, CCastleBuildings * scene, const Rect & panel, bool overlay):
+	CIntObject(0, panel.topLeft()),
+	town(town),
+	scene(scene),
+	overlayMode(overlay),
+	expanded(!overlay),
+	selected(-1)
+{
+	pos.w = panel.w;
+	pos.h = panel.h;
+
+	if(overlayMode)
+	{
+		OBJECT_CONSTRUCTION;
+		toggle = std::make_shared<CToggle>(this, Rect(4, 4, 56, 20));
+	}
+
+	scene->onPinCleared = [this](){ onPinCleared(); };
+	update();
+	setExpanded(expanded);
+}
+
+void CTownBuildingList::collectEntries()
+{
+	entries.clear();
+	for(const auto & row : town->getTown()->clientInfo.hallSlots)
+	{
+		for(const auto & slot : row)
+		{
+			// 与大殿建造窗口相同的规则：取槽位中第一个未建的普通建筑；已建的记录最高一档
+			Entry entry;
+			entry.slot = slot;
+			for(const auto & bid : slot)
+			{
+				if(!bid.hasValue() || !town->getTown()->buildings.count(bid))
+					continue;
+				const CBuilding * current = town->getTown()->buildings.at(bid).get();
+				if(town->hasBuilt(bid))
+				{
+					entry.building = current;
+					entry.built = true;
+				}
+				else if(current->mode == CBuilding::BUILD_NORMAL)
+				{
+					if(entry.built)
+						entry.next = current;
+					else
+						entry.building = current;
+					break;
+				}
+			}
+			if(!entry.building)
+				continue;
+
+			const CBuilding * stateTarget = entry.built ? entry.next : entry.building;
+			if(stateTarget)
+				entry.state = GAME->interface()->cb->canBuildStructure(town, stateTarget->bid);
+			if(entry.state >= EBuildingState::BUILDING_ERROR)
+				entry.state = EBuildingState::FORBIDDEN;
+
+			if(entry.built)
+				entry.structure = scene->displayedStructure(entry.building);
+			else
+			{
+				for(const auto & structure : town->getTown()->clientInfo.structures)
+				{
+					if(structure->building && structure->building->bid == entry.building->bid && !structure->hiddenUpgrade)
+					{
+						entry.structure = structure.get();
+						break;
+					}
+				}
+			}
+			entries.push_back(entry);
+		}
+	}
+
+	std::stable_sort(entries.begin(), entries.end(), [](const Entry & a, const Entry & b)
+	{
+		return entryGroup(a) < entryGroup(b);
+	});
+}
+
+void CTownBuildingList::rebuildItems()
+{
+	OBJECT_CONSTRUCTION;
+	title.reset();
+	headers.clear();
+	items.clear();
+
+	const int titleHeight = overlayMode ? 30 : 32;
+	const int headerHeight = 18;
+	const int groupGap = 6;
+	int groups = 0;
+	for(int g = 0; g < 3; ++g)
+		if(std::any_of(entries.begin(), entries.end(), [g](const Entry & e){ return entryGroup(e) == g; }))
+			++groups;
+	// 行高默认 20，条目太多时压缩，保证整列放得下
+	int available = pos.h - titleHeight - groups * (headerHeight + groupGap) - 4;
+	int rowHeight = entries.empty() ? 20 : std::clamp(available / static_cast<int>(entries.size()), 14, 20);
+
+	if(!overlayMode)
+		title = std::make_shared<CLabel>(pos.w / 2, 16, FONT_MEDIUM, ETextAlignment::CENTER, LIST_TITLE, listText("title"));
+
+	static const std::array<std::string, 3> headerKeys = { "built", "available", "locked" };
+	int y = titleHeight;
+	int lastGroup = -1;
+	for(size_t i = 0; i < entries.size(); ++i)
+	{
+		int group = entryGroup(entries[i]);
+		if(group != lastGroup)
+		{
+			if(lastGroup != -1)
+				y += groupGap;
+			headers.push_back(std::make_shared<CLabel>(8, y + headerHeight / 2, FONT_TINY, ETextAlignment::CENTERLEFT, LIST_HEADER, listText(headerKeys[group])));
+			y += headerHeight;
+			lastGroup = group;
+		}
+		items.push_back(std::make_shared<CItem>(this, i, Rect(4, y, pos.w - 8, rowHeight)));
+		y += rowHeight;
+	}
+}
+
+void CTownBuildingList::update()
+{
+	// 记住当前选中的槽位，重建后按槽位找回
+	std::vector<BuildingID> selectedSlot;
+	if(selected >= 0 && selected < static_cast<int>(entries.size()))
+		selectedSlot = entries[selected].slot;
+
+	collectEntries();
+	rebuildItems();
+
+	selected = -1;
+	for(size_t i = 0; i < entries.size(); ++i)
+		if(!selectedSlot.empty() && entries[i].slot == selectedSlot)
+			selected = static_cast<int>(i);
+
+	if(selected >= 0)
+		scene->pinStructure(entries[selected].structure);
+	else if(scene->getPinnedStructure())
+		scene->pinStructure(nullptr);
+
+	setExpanded(expanded);
+}
+
+void CTownBuildingList::setExpanded(bool on)
+{
+	expanded = on;
+	if(title)
+		title->setEnabled(expanded);
+	for(auto & header : headers)
+		header->setEnabled(expanded);
+	for(auto & item : items)
+		item->setEnabled(expanded);
+
+	if(overlayMode)
+		scene->setBlockedArea(expanded ? pos : toggle->pos);
+	redraw();
+}
+
+void CTownBuildingList::select(int index)
+{
+	selected = index;
+	scene->pinStructure(entries.at(index).structure);
+	ENGINE->statusbar()->write(statusText(entries.at(index)));
+	redraw();
+}
+
+void CTownBuildingList::activateEntry(int index)
+{
+	const auto & entry = entries.at(index);
+	if(entry.built)
+		scene->buildingClicked(entry.building->bid);
+	else
+		ENGINE->windows().createAndPushWindow<CBuildWindow>(town, entry.building, entry.state, false);
+}
+
+void CTownBuildingList::onPinCleared()
+{
+	selected = -1;
+	redraw();
+}
+
+std::string CTownBuildingList::statusText(const Entry & entry) const
+{
+	if(entry.built)
+	{
+		MetaString text = MetaString::createFromTextID("vcmi.townWindow.buildingList.hint.enter");
+		text.replaceRawString(entry.building->getNameTranslated());
+		return text.toString(&GAME->translator());
+	}
+
+	// 未建：沿用大殿窗口的状态提示
+	MetaString text;
+	if(entry.state == EBuildingState::PREREQUIRES || entry.state == EBuildingState::MISSING_BASE)
+		text.appendTextID("core.hallinfo.5");
+	else if(entry.state == EBuildingState::CANT_BUILD_TODAY)
+		text.appendTextID("core.genrltxt.223");
+	else
+		text.appendTextID("core.hallinfo", static_cast<int>(entry.state));
+	text.replaceTextID(entry.building->getNameTextID());
+	return text.toString(&GAME->translator());
+}
+
+void CTownBuildingList::activate()
+{
+	// 从市场、建造框等子窗口回来时资源可能变了，重新计算可建状态
+	update();
+	CIntObject::activate();
+}
+
+void CTownBuildingList::showAll(Canvas & to)
+{
+	if(expanded)
+	{
+		to.drawColor(pos, LIST_BACKGROUND);
+		to.drawBorder(pos, LIST_FRAME);
+	}
+	CIntObject::showAll(to);
+}
+
+void CTownBuildingList::show(Canvas & to)
+{
+	// 浮层模式下城镇画面每帧重绘，列表也必须每帧画在上面
+	if(overlayMode)
+		showAll(to);
+	else
+		CIntObject::show(to);
+}
+
 CCastleInterface::CCastleInterface(const CGTownInstance * Town, const CGTownInstance * from):
 	CWindowObject(PLAYER_COLORED | BORDERED),
 	town(Town)
@@ -1532,6 +2034,12 @@ CCastleInterface::CCastleInterface(const CGTownInstance * Town, const CGTownInst
 	pos.w = panel->pos.w;
 	pos.h = builds->pos.h + panel->pos.h;
 	center();
+
+	// 建筑列表：屏幕够宽放在窗口左外侧（窗口整体右移让两者一起居中），否则收成画面左上角的浮层
+	constexpr int listOutside = CTownBuildingList::PANEL_WIDTH + CTownBuildingList::PANEL_GAP + 14; // 14：窗口描边宽度
+	bool listBesideWindow = ENGINE->screenDimensions().x >= pos.w + 28 + listOutside;
+	if(listBesideWindow)
+		moveBy(Point(listOutside / 2, 0));
 	updateShadow();
 
 	garr = std::make_shared<CGarrisonInt>(Point(305, 387), 4, Point(0,96), town->getUpperArmy(), town->getVisitingHero());
@@ -1570,6 +2078,11 @@ CCastleInterface::CCastleInterface(const CGTownInstance * Town, const CGTownInst
 
 	townlist->select(town); //this will scroll list to select current town
 	townlist->onSelect = std::bind(&CCastleInterface::townChange, this);
+
+	if(listBesideWindow)
+		buildingList = std::make_shared<CTownBuildingList>(town, builds.get(), Rect(-listOutside, 0, CTownBuildingList::PANEL_WIDTH, pos.h), false);
+	else
+		buildingList = std::make_shared<CTownBuildingList>(town, builds.get(), Rect(0, 0, CTownBuildingList::PANEL_WIDTH, pos.h), true);
 
 	recreateIcons();
 	if (!from)
@@ -1648,6 +2161,7 @@ void CCastleInterface::addBuilding(BuildingID bid)
 
 	deactivate();
 	builds->addBuilding(bid);
+	buildingList->update();
 	recreateIcons();
 	activate();
 	redraw();
@@ -1657,6 +2171,7 @@ void CCastleInterface::removeBuilding(BuildingID bid)
 {
 	deactivate();
 	builds->removeBuilding(bid);
+	buildingList->update();
 	recreateIcons();
 	activate();
 	redraw();

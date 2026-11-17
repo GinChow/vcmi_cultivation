@@ -29,6 +29,11 @@
 			"description" : "Golden border around building, displayed when building is selected",
 			"format" : "imageFile"
 		},
+		"highlight" : {
+			"type" : "string",
+			"description" : "Optional glow image displayed around the building when it is selected from the town building list or hovered. It may be larger than the building and is centered on it. If absent, border is used instead",
+			"format" : "imageFile"
+		},
 		"campaignBonus" : {
 			"type" : "string",
 			"description" : "Town building icon for campaigns",

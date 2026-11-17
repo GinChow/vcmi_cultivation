@@ -453,6 +453,7 @@ void CTownHandler::loadStructure(CTown &town, const std::string & stringID, cons
 	ret->borderName = ImagePath::fromJson(source["border"]);
 	ret->campaignBonus = ImagePath::fromJson(source["campaignBonus"]);
 	ret->areaName = ImagePath::fromJson(source["area"]);
+	ret->highlightName = ImagePath::fromJson(source["highlight"]);
 
 	town.clientInfo.structures.emplace_back(ret);
 }

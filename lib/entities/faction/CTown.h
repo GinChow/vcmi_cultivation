@@ -31,6 +31,7 @@ struct DLL_LINKAGE CStructure
 	ImagePath borderName;
 	ImagePath campaignBonus;
 	ImagePath areaName;
+	ImagePath highlightName; // optional soft glow drawn around the building when it is selected from the building list or hovered
 	std::string identifier;
 
 	bool hiddenUpgrade; // used only if "building" is upgrade, if true - structure on town screen will behave exactly like parent (mouse clicks, hover texts, etc)

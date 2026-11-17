@@ -59,6 +59,7 @@ public:
 	const CStructure* str;
 	std::shared_ptr<IImage> border;
 	std::shared_ptr<IImage> area;
+	std::shared_ptr<IImage> highlight; // 选中光晕（structure 的 highlight 字段），有它时悬停不再画原版描边
 
 	ui32 stateTimeCounter;//For building construction - current stage in animation
 
@@ -158,10 +159,33 @@ class CCastleBuildings : public CIntObject
 
 	void recreate();
 
+	// 建筑列表选中的建筑：画面其余部分压暗，选中建筑加呼吸光晕；未建建筑在原址显示半透明虚影
+	const CStructure * pinnedStructure;
+	std::shared_ptr<IImage> pinnedGlow; // 光晕图；没有 highlight 时退回原版描边
+	std::shared_ptr<CShowableAnim> pinnedGhost; // 未建建筑的虚影，不作为子控件，由 drawHighlights 手动绘制
+	uint32_t highlightTime; // 呼吸动画计时（毫秒）
+	Rect blockedArea; // 被浮层列表遮住的区域，鼠标在这里时不响应建筑
+
+	std::shared_ptr<CBuildingRect> findRect(const CStructure * structure) const;
+	void drawGlow(Canvas & to, const Rect & buildingPos, const std::shared_ptr<IImage> & image, uint8_t alpha) const;
+	void drawHighlights(Canvas & to);
 	void drawOverlays(Canvas & to, std::vector<std::shared_ptr<CBuildingRect>> buildingRects);
 	void show(Canvas & to) override;
+	void showAll(Canvas & to) override;
+	void tick(uint32_t msPassed) override;
+	void clickPressed(const Point & cursorPosition) override;
 public:
 	CBuildingRect * selectedBuilding;
+
+	/// 列表点击后固定选中某个结构；nullptr 表示取消
+	void pinStructure(const CStructure * structure);
+	const CStructure * getPinnedStructure() const;
+	/// 城镇画面中代表该建筑（或同一升级链）的结构；没有显示时返回 nullptr
+	const CStructure * displayedStructure(const CBuilding * building) const;
+	/// 在城镇画面里点击时清除固定选中，通知列表同步
+	std::function<void()> onPinCleared;
+	void setBlockedArea(const Rect & area);
+	bool isBlocked(const Point & cursorPosition) const;
 
 	CCastleBuildings(const CGTownInstance * town);
 	~CCastleBuildings();
@@ -179,6 +203,83 @@ public:
 	void buildingClicked(BuildingID building);
 	void addBuilding(BuildingID building);
 	void removeBuilding(BuildingID building);//FIXME: not tested!!!
+};
+
+/// 城镇建筑列表：按大殿建造槽位列出建筑，分已建、可建造、未解锁三组。
+/// 点一下在城镇画面中高亮对应建筑（未建的显示虚影）；再点一下，已建的进入建筑，未建的打开建造确认框。
+/// 屏幕够宽时放在城镇窗口左外侧；不够宽时收成画面左上角的标签，点开后浮在画面上。
+class CTownBuildingList : public CIntObject
+{
+public:
+	struct Entry
+	{
+		std::vector<BuildingID> slot; // 大殿的一个槽位（同一升级链）
+		const CBuilding * building = nullptr; // 已建：槽位中最高的已建建筑；未建：下一个可建建筑
+		const CBuilding * next = nullptr; // 已建时下一档升级（可能为空）
+		EBuildingState state = EBuildingState::FORBIDDEN; // 未建：building 的建造状态；已建：next 的建造状态
+		bool built = false;
+		const CStructure * structure = nullptr; // 城镇画面中对应的结构，可能为空
+	};
+
+private:
+	class CItem : public CIntObject
+	{
+		CTownBuildingList * owner;
+		size_t index;
+		std::shared_ptr<CLabel> name;
+		std::shared_ptr<CLabel> badge;
+	public:
+		CItem(CTownBuildingList * owner, size_t index, const Rect & position);
+		void hover(bool on) override;
+		void clickPressed(const Point & cursorPosition) override;
+		void showPopupWindow(const Point & cursorPosition) override;
+		void showAll(Canvas & to) override;
+	};
+
+	class CToggle : public CIntObject
+	{
+		CTownBuildingList * owner;
+		std::shared_ptr<CLabel> label;
+	public:
+		CToggle(CTownBuildingList * owner, const Rect & position);
+		void clickPressed(const Point & cursorPosition) override;
+		void hover(bool on) override;
+		void showAll(Canvas & to) override;
+	};
+
+	const CGTownInstance * town;
+	CCastleBuildings * scene;
+	bool overlayMode; // true：浮层模式（屏幕不够宽）
+	bool expanded;
+	int selected; // 当前选中的条目序号，-1 表示没有
+	Rect panelRect; // 列表底板（绝对坐标）
+
+	std::vector<Entry> entries;
+	std::shared_ptr<CLabel> title;
+	std::vector<std::shared_ptr<CLabel>> headers;
+	std::vector<std::shared_ptr<CItem>> items;
+	std::shared_ptr<CToggle> toggle;
+
+	void collectEntries();
+	void rebuildItems();
+	void select(int index);
+	void activateEntry(int index);
+	std::string statusText(const Entry & entry) const;
+
+public:
+	static constexpr int PANEL_WIDTH = 150;
+	static constexpr int PANEL_GAP = 8;
+
+	/// panel：列表底板位置（绝对坐标）；overlay：是否浮层模式
+	CTownBuildingList(const CGTownInstance * town, CCastleBuildings * scene, const Rect & panel, bool overlay);
+
+	/// 建筑或资源变化后重新计算状态
+	void update();
+	void setExpanded(bool on);
+	void onPinCleared();
+	void activate() override;
+	void showAll(Canvas & to) override;
+	void show(Canvas & to) override;
 };
 
 /// Creature info window
@@ -239,6 +340,7 @@ class CCastleInterface final : public CStatusbarWindow, public IGarrisonHolder, 
 	std::shared_ptr<CIntObject> townRadialArea;
 
 	std::vector<std::shared_ptr<CCreaInfo>> creainfo;//small icons of creatures (bottom-left corner);
+	std::shared_ptr<CTownBuildingList> buildingList;
 
 public:
 	std::shared_ptr<CTownList> townlist;
