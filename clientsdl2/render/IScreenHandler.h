@@ -25,6 +25,20 @@ struct PresentedRegion
 	Rect target;
 };
 
+/// 大地图分层合成的额外图层。本后端不支持（没有着色器），只因客户端代码两套后端共用而声明。
+struct MapLayerSet
+{
+	const Canvas * objects = nullptr;
+	const Canvas * sway = nullptr;
+	const Canvas * overlay = nullptr;
+	const Canvas * waterMask = nullptr;
+	const Canvas * windMask = nullptr;
+	const Canvas * relief = nullptr;
+	Point slots;
+	Point worldOrigin;
+	Point slotOrigin;
+};
+
 /// GPU layers composited under the software screen. This backend has none, but client code
 /// is shared between backends and names them.
 enum class GpuRenderLayer : uint8_t
@@ -122,4 +136,12 @@ public:
 	/// This backend composes in software, so there is no separate present to defer a copy to
 	void presentFromCanvas(GpuRenderLayer, const Canvas &, const std::vector<PresentedRegion> &) {}
 	void clearPresentedCanvas(GpuRenderLayer) {}
+
+	/// SDL2 的渲染器不能挂自定义着色器，大地图始终单层缓存
+	bool isMapLayeringSupported() const { return false; }
+	void presentMapLayers(const Canvas &, const MapLayerSet &, const std::vector<PresentedRegion> &) {}
+	void setMapDepthField(const std::vector<uint8_t> &, const Point &) {}
+	void setMapVegetationField(const std::vector<uint8_t> &, const Point &) {}
+	void startMapBirdFlock(float, float, float, float) {}
+	void setMapAtmosphereField(const std::vector<uint8_t> &, const Point &) {}
 };

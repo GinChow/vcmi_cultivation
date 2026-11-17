@@ -224,6 +224,9 @@ void MapViewController::tick(uint32_t timeDelta)
 	updateState();
 }
 
+/// 图块小于这个尺寸（像素）时物件动画停在第 0 帧，见 MapRendererAdventureContext::objectAnimationPaused
+static constexpr int objectAnimationMinimalTileSize = 16;
+
 void MapViewController::updateState()
 {
 	if(adventureContext)
@@ -232,6 +235,7 @@ void MapViewController::updateState()
 		adventureContext->settingsSessionSpectate = settings["session"]["spectate"].Bool() && !settings["session"]["spectate-own-vision"].Bool();
 		adventureContext->settingsAdventureObjectAnimation = settings["adventure"]["objectAnimation"].Bool();
 		adventureContext->settingsAdventureTerrainAnimation = settings["adventure"]["terrainAnimation"].Bool();
+		adventureContext->objectAnimationPaused = model->getSingleTileSize().x < objectAnimationMinimalTileSize;
 		adventureContext->settingShowGrid = settings["gameTweaks"]["showGrid"].Bool();
 		adventureContext->settingShowVisitable = settings["session"]["showVisitable"].Bool();
 		adventureContext->settingShowBlocked = settings["session"]["showBlocked"].Bool();
@@ -589,6 +593,9 @@ void MapViewController::onHeroMoved(const CGHeroInstance * obj, const int3 & fro
 		addObject(movingObject);
 		return;
 	}
+
+	// 走近有鸟栖的树林会惊起鸟群（只在大地图分层特效开启时，由地图缓存决定）
+	view->noteHeroStep(dest);
 
 	double movementTime = GAME->interface()->playerID == obj->tempOwner ?
 		settings["adventure"]["heroMoveTime"].Float() :

@@ -1,0 +1,174 @@
+/*
+ * MapLayerCompositor.h, part of VCMI engine
+ *
+ * Authors: listed in file AUTHORS in main folder
+ *
+ * License: GNU General Public License v2.0 or later
+ * Full text of license available in license.txt file, in main folder
+ *
+ */
+#pragma once
+
+#include "IScreenHandler.h"
+#include "MapParticles.h"
+
+struct SDL_Renderer;
+struct SDL_Texture;
+struct SDL_GPUShader;
+struct SDL_GPUSampler;
+struct SDL_GPURenderState;
+
+/// 大地图分层合成（2026-11-17，Claude Code，大地图水面特效、风场摇摆）。
+///
+/// 地图缓存在分层模式下拆成地面、静止物件、摇摆物件、覆盖物四层，外加水面遮罩和风场遮罩（见 MapViewCache）。
+/// 每帧合成屏幕时，这里用一个 MSL 片元着色器一次画完：先在地面层的水面上做折射扰动、深浅色调、
+/// 岸边物件的倒影、近岸浪花和波光；再按风场把摇摆层的树木吹弯（阵风沿风向扫过林梢、每棵树相位错开地摆、
+/// 叶片细颤），按风场遮罩记下的前后关系与静止物件叠好。这一遍之后再画植被粒子（落叶、飞花、萤火虫、惊鸟，
+/// 见 MapParticles，画成一批小四边形），最后按预乘 alpha 叠上覆盖层，所以粒子都在迷雾之下。
+/// 物件、迷雾、路径因此不会被水波扭曲，站在树前的英雄也不会被摆过来的树冠盖住。
+///
+/// 光影（2026-11-17）：地图缓存另给一张起伏层（物件表面的法线和离地高度）。每帧先把它缩成 1/4，用第二个着色器
+/// 逐点朝太阳方向找遮挡，算出整屏的长投影（不受图块裁切，山影能落到旁边的林子上）；合成时物件按法线重新打光、
+/// 加边缘光，再叠流动的雾（贴着山脚、林地、水边）和山腰云海（有视差，峰顶伸出云层）。太阳按设置
+/// video.mapSunCycle 从清晨走到傍晚，影子方向、长短与光色跟着变。
+///
+/// 性能：着色器对每个屏幕像素运行，满屏是水时取样次数决定帧率。离岸远近、向上找岸线这类要看一大片
+/// 遮罩的计算，都改在每帧逐级缩小出的 1/8、1/16 遮罩小图上做，全分辨率纹理每个水面像素只取约十次。
+/// 海面的近海、深海按每个图块离最近陆地的距离上色，这张距离图按地图坐标取样，与屏幕边缘、缩放无关。
+///
+/// 着色器只能挂在 SDL3 的 gpu 渲染驱动上（SDL_GPURenderState），并且目前只提供 MSL（macOS）。
+/// 着色器不可用或创建失败时退回逐层混合，画面与单层缓存一致，只是没有水面特效。
+class MapLayerCompositor
+{
+public:
+	/// 一帧要合成的六张缓存纹理及对位参数，布局说明见 MapLayerSet
+	struct Inputs
+	{
+		SDL_Texture * ground = nullptr;
+		SDL_Texture * objects = nullptr;
+		SDL_Texture * sway = nullptr;
+		SDL_Texture * overlay = nullptr;
+		SDL_Texture * waterMask = nullptr;
+		SDL_Texture * windMask = nullptr;
+		SDL_Texture * relief = nullptr;
+		Point slots;
+		Point worldOrigin;
+		Point slotOrigin;
+	};
+
+	MapLayerCompositor() = default;
+	~MapLayerCompositor();
+
+	MapLayerCompositor(const MapLayerCompositor &) = delete;
+	MapLayerCompositor & operator=(const MapLayerCompositor &) = delete;
+
+	/// 该渲染器能否挂本类的着色器：渲染驱动为 gpu，且其 GPU 设备接受 MSL
+	static bool isShaderPathAvailable(SDL_Renderer * renderer);
+
+	/// 每帧在画到窗口之前调用：把水面遮罩逐级缩小成着色器要用的小图。会切换渲染目标，
+	/// 所以必须在本帧往窗口上画任何东西之前完成。
+	void prepare(SDL_Renderer * renderer, const Inputs & inputs);
+
+	/// 把各层合成到渲染器当前的渲染目标上。regions 的 source 在缓存纹理内、target 在屏幕上，
+	/// 四张纹理共用同一组 source。scaleMode 是这次绘制本该用的缩放过滤方式（退回路径使用）。
+	void compose(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions, int scaleMode);
+
+	/// 设置离岸距离图：distances 按行存放 size.x × size.y 个图块，0 为陆地，255 为离岸 8 个图块及以上。
+	/// 换地图或切换地上地下时由地图缓存调用，须在渲染线程上调用
+	void setDepthField(const std::vector<uint8_t> & distances, const Point & size);
+
+	/// 设置植被场（含义见 IScreenHandler::setMapVegetationField），转给 MapParticles，同时清掉还在飞的鸟群。须在渲染线程上调用
+	void setVegetationField(const std::vector<uint8_t> & rgba, const Point & size);
+
+	/// 设置雾云场（含义见 IScreenHandler::setMapAtmosphereField）：与离岸距离图共用一张纹理，存在它的 G、B 通道。须在渲染线程上调用
+	void setAtmosphereField(const std::vector<uint8_t> & rgba, const Point & size);
+
+	/// 惊起一群鸟（见 IScreenHandler::startMapBirdFlock），转给 MapParticles。须在渲染线程上调用
+	void startBirdFlock(float x, float y, float directionX, float directionY);
+
+	/// 地图缓存的画布即将销毁或替换：之后不能再用绑着它们的渲染状态。可在任何线程调用，
+	/// 实际的重建留到下一次 compose()，在渲染线程上进行。
+	void forgetInputs();
+
+	/// 释放全部 GPU 资源。必须在渲染器销毁之前调用：着色器、采样器属于渲染器的 GPU 设备。
+	void release();
+
+private:
+	/// 水面遮罩缩小的级数：第 i 级是原尺寸的 1/2^(i+1)，着色器用最后两级（1/8、1/16）
+	static constexpr size_t maskLevelCount = 4;
+
+	SDL_Renderer * owner = nullptr;
+	SDL_GPUShader * shader = nullptr;
+	SDL_GPUSampler * sampler = nullptr;
+	SDL_Texture * noise = nullptr;
+	SDL_GPURenderState * state = nullptr;
+
+	std::array<SDL_Texture *, maskLevelCount> maskLevels = {};
+	Point maskLevelsSourceSize;
+
+	/// 长投影：起伏层逐级缩小成 1/2、1/4，预处理着色器在 1/4 起伏层上朝太阳找遮挡，结果画进同样大小的光照图
+	SDL_GPUShader * shadowShader = nullptr;
+	SDL_GPURenderState * shadowState = nullptr;
+	std::array<SDL_Texture *, 2> reliefLevels = {};
+	SDL_Texture * lightMap = nullptr;
+	Point reliefLevelsSourceSize;
+
+	/// state 创建时绑定的纹理（六张缓存、两级遮罩小图、离岸距离图、光照图）；任一张换了就要重建 state
+	std::array<SDL_Texture *, 10> boundTextures = {};
+
+	/// 这一帧的太阳：在 prepare() 里按设置和时间算好，合成时用
+	struct Sun
+	{
+		std::array<float, 3> direction = {0.0f, 0.0f, 1.0f}; ///< 指向太阳（屏幕坐标：x 右、y 上、z 朝镜头）
+		std::array<float, 2> shadow = {-1.0f, 0.0f};        ///< 离地 1 个图块的点，影子在屏幕上落出多远（图块）
+		std::array<float, 3> color = {1.0f, 1.0f, 1.0f};    ///< 阳光颜色
+		std::array<float, 3> shade = {0.8f, 0.86f, 1.0f};   ///< 背阴处的色调
+		std::array<float, 3> grade = {1.0f, 1.0f, 1.0f};    ///< 整幅画面的时段色调
+		float relight = 0.0f;  ///< 按法线重新打光的强度
+		float rim = 0.0f;      ///< 边缘光强度
+		float strength = 0.0f; ///< 长投影的浓度（日出日落时淡出）
+		float reach = 0.0f;    ///< 预处理着色器的射线最高找到多高（图块）
+	};
+	Sun sun;
+
+	/// 按设置 video.mapSunCycle（清晨到傍晚的秒数，0 为定在 video.mapSunTime）算出此刻的太阳
+	static Sun currentSun();
+
+	/// 每个地图图块一个像素的场（离岸距离图兼雾云场）：RGBA 数据由地图缓存给，纹理在渲染线程上按需建。
+	/// 着色器按地图坐标线性取样，地图外夹到边缘的值
+	struct TileField
+	{
+		std::vector<uint8_t> rgba;
+		Point size;
+		bool dirty = true;
+		SDL_Texture * texture = nullptr;
+	};
+	TileField depthField;
+	SDL_GPUSampler * clampSampler = nullptr;
+
+	/// 建好或更新场的纹理；还没收到数据时用 1×1 的 fallback
+	bool ensureFieldTexture(SDL_Renderer * renderer, TileField & field, const std::array<uint8_t, 4> & fallback, const char * name);
+
+	/// 植被粒子：落叶、飞花、萤火虫、惊鸟，在合成之后、覆盖层之前画
+	MapParticles particles;
+
+	/// 着色器用的时钟（秒）。约 2.8 小时后从头开始，保证 float 精度足够让动画平滑
+	static float shaderTime();
+
+	/// 由 forgetInputs() 置位：缓存画布换过了，下次合成前必须重建 state
+	std::atomic<bool> inputsForgotten{false};
+
+	/// 着色器路径已确认不可用（驱动不对或创建失败），本渲染器上不再重试
+	bool shaderUnavailable = false;
+
+	bool ensureShaderResources(SDL_Renderer * renderer);
+	bool ensureMaskLevels(SDL_Renderer * renderer, SDL_Texture * waterMask);
+	bool ensureReliefLevels(SDL_Renderer * renderer, SDL_Texture * relief);
+	bool ensureRenderState(SDL_Renderer * renderer, const Inputs & inputs);
+	void destroyMaskLevels();
+	void destroyReliefLevels();
+	/// 把起伏层缩成 1/4，再用预处理着色器算出这一帧的长投影光照图
+	void renderLightMap(SDL_Renderer * renderer, const Inputs & inputs);
+	void composeWithShader(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions);
+	void composeLayerByLayer(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions, int scaleMode) const;
+};

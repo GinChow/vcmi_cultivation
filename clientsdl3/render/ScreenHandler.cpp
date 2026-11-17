@@ -11,6 +11,7 @@
 #include "StdInc.h"
 #include "ScreenHandler.h"
 #include "GpuResources.h"
+#include "MapLayerCompositor.h"
 
 #include "SDL_Extensions.h"
 
@@ -297,6 +298,7 @@ static void setApplicationMetadata()
 }
 
 ScreenHandler::ScreenHandler()
+	: mapCompositor(std::make_unique<MapLayerCompositor>())
 {
 	setApplicationMetadata();
 
@@ -828,6 +830,8 @@ void ScreenHandler::destroyWindow()
 	if(nullptr != GpuResources::get().renderer())
 	{
 		presentedCanvases = {};
+		// 着色器和采样器属于渲染器的 GPU 设备，必须赶在渲染器之前释放
+		mapCompositor->release();
 		GpuResources::get().destroyRenderer();
 	}
 
@@ -995,6 +999,14 @@ void ScreenHandler::presentFromCanvas(GpuRenderLayer layer, const Canvas & sourc
 	presented.source = source.getRenderTargetTexture();
 	presented.regions = presented.source ? regions : std::vector<PresentedRegion>{};
 
+	// 单层登记：清掉上一次 presentMapLayers() 留下的其余图层，source 本身就是完整画面
+	presented.objects = nullptr;
+	presented.sway = nullptr;
+	presented.overlay = nullptr;
+	presented.waterMask = nullptr;
+	presented.windMask = nullptr;
+	presented.relief = nullptr;
+
 	// What is registered here is drawn instead of the layer, so the layer has to stop being
 	// composited - otherwise whatever it held last stays on screen on top of it. Only while it is
 	// still active, so that this does not clear an already empty layer every frame.
@@ -1005,6 +1017,78 @@ void ScreenHandler::presentFromCanvas(GpuRenderLayer layer, const Canvas & sourc
 void ScreenHandler::clearPresentedCanvas(GpuRenderLayer layer)
 {
 	presentedCanvases.at(static_cast<size_t>(layer)) = PresentedCanvas{};
+
+	// 地图缓存的画布马上要换掉，合成器里绑着它们的渲染状态也就作废了
+	if(layer == GpuRenderLayer::MAP)
+		mapCompositor->forgetInputs();
+}
+
+void ScreenHandler::setMapDepthField(const std::vector<uint8_t> & distances, const Point & size)
+{
+	mapCompositor->setDepthField(distances, size);
+}
+
+void ScreenHandler::setMapVegetationField(const std::vector<uint8_t> & rgba, const Point & size)
+{
+	mapCompositor->setVegetationField(rgba, size);
+}
+
+void ScreenHandler::startMapBirdFlock(float x, float y, float directionX, float directionY)
+{
+	mapCompositor->startBirdFlock(x, y, directionX, directionY);
+}
+
+void ScreenHandler::setMapAtmosphereField(const std::vector<uint8_t> & rgba, const Point & size)
+{
+	mapCompositor->setAtmosphereField(rgba, size);
+}
+
+/// presentMapLayers() 登记的大地图图层，整理成合成器要的输入
+template<typename Presented>
+static MapLayerCompositor::Inputs mapCompositorInputs(const Presented & presented)
+{
+	MapLayerCompositor::Inputs inputs;
+	inputs.ground = presented.source;
+	inputs.objects = presented.objects;
+	inputs.sway = presented.sway;
+	inputs.overlay = presented.overlay;
+	inputs.waterMask = presented.waterMask;
+	inputs.windMask = presented.windMask;
+	inputs.relief = presented.relief;
+	inputs.slots = presented.slots;
+	inputs.worldOrigin = presented.worldOrigin;
+	inputs.slotOrigin = presented.slotOrigin;
+	return inputs;
+}
+
+bool ScreenHandler::isMapLayeringSupported() const
+{
+	return isGpuRenderingEnabled()
+		&& settings["video"]["mapEffects"].Bool()
+		&& MapLayerCompositor::isShaderPathAvailable(GpuResources::get().renderer());
+}
+
+void ScreenHandler::presentMapLayers(const Canvas & ground, const MapLayerSet & layers, const std::vector<PresentedRegion> & regions)
+{
+	presentFromCanvas(GpuRenderLayer::MAP, ground, regions);
+
+	PresentedCanvas & presented = presentedCanvases.at(static_cast<size_t>(GpuRenderLayer::MAP));
+	presented.objects = layers.objects ? layers.objects->getRenderTargetTexture() : nullptr;
+	presented.sway = layers.sway ? layers.sway->getRenderTargetTexture() : nullptr;
+	presented.overlay = layers.overlay ? layers.overlay->getRenderTargetTexture() : nullptr;
+	presented.waterMask = layers.waterMask ? layers.waterMask->getRenderTargetTexture() : nullptr;
+	presented.windMask = layers.windMask ? layers.windMask->getRenderTargetTexture() : nullptr;
+	presented.relief = layers.relief ? layers.relief->getRenderTargetTexture() : nullptr;
+	presented.slots = layers.slots;
+	presented.worldOrigin = layers.worldOrigin;
+	presented.slotOrigin = layers.slotOrigin;
+
+	// 缺任何一层都没法分层合成，只能不画，免得只显示地面、物件全丢
+	if(!presented.objects || !presented.sway || !presented.overlay || !presented.waterMask || !presented.windMask || !presented.relief)
+	{
+		logGlobal->error("Map layers are not all GPU render targets - map not drawn this frame");
+		presented = PresentedCanvas{};
+	}
 }
 
 void ScreenHandler::presentScreenTexture()
@@ -1027,6 +1111,11 @@ void ScreenHandler::composeFrame() const
 {
 	SDL_Renderer * renderer = GpuResources::get().renderer();
 
+	// 大地图分层合成要先把水面遮罩缩小成几级小图，这一步会切换渲染目标，所以放在往窗口上画任何东西之前
+	const PresentedCanvas & map = presentedCanvases[static_cast<size_t>(GpuRenderLayer::MAP)];
+	if(map.objects && !map.regions.empty())
+		mapCompositor->prepare(renderer, mapCompositorInputs(map));
+
 	// the draw color is left over from whatever was rendered last, and this clear also
 	// covers the letterbox bars around the reserved area
 	SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -1046,16 +1135,24 @@ void ScreenHandler::composeFrame() const
 		if(!presented.regions.empty())
 			SDL_GetDefaultTextureScaleMode(renderer, &presentedScaleMode);
 
-		for(const PresentedRegion & region : presented.regions)
+		// 大地图分层：地面、静止与摇摆物件、覆盖物和两张遮罩交给合成器，一次画完（含水面、风场特效）
+		if(presented.objects && !presented.regions.empty())
 		{
-			SDL_SetTextureBlendMode(presented.source, SDL_BLENDMODE_NONE);
-			SDL_SetTextureScaleMode(presented.source, presentedScaleMode);
+			mapCompositor->compose(renderer, mapCompositorInputs(presented), presented.regions, presentedScaleMode);
+		}
+		else
+		{
+			for(const PresentedRegion & region : presented.regions)
+			{
+				SDL_SetTextureBlendMode(presented.source, SDL_BLENDMODE_NONE);
+				SDL_SetTextureScaleMode(presented.source, presentedScaleMode);
 
-			SDL_FRect from = CSDL_Ext::toSDLFloat(region.source);
-			SDL_FRect to = CSDL_Ext::toSDLFloat(region.target);
+				SDL_FRect from = CSDL_Ext::toSDLFloat(region.source);
+				SDL_FRect to = CSDL_Ext::toSDLFloat(region.target);
 
-			if(!SDL_RenderTexture(renderer, presented.source, &from, &to))
-				logGlobal->error("Failed to compose a presented canvas region: %s", SDL_GetError());
+				if(!SDL_RenderTexture(renderer, presented.source, &from, &to))
+					logGlobal->error("Failed to compose a presented canvas region: %s", SDL_GetError());
+			}
 		}
 
 		if(layerTextures[i] && layerActive[i])

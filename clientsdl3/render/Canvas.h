@@ -26,6 +26,22 @@ enum class CanvasScalingPolicy
 
 };
 
+/// 往大地图的遮罩画布上画图的方式（2026-11-17，大地图风场摇摆、光影）。
+/// 风场遮罩（见 MapRendererObjects::renderWindMask）的 RGB 存摇摆物件的风场参数（预乘 alpha），
+/// A 存“此处最上面盖着的是不摇摆的物件”的程度；起伏层（见 MapRendererObjects::renderRelief）
+/// 的 RGB 存法线和高度（预乘 alpha），A 存物件本体的覆盖度：
+enum class MapMaskBlend : uint8_t
+{
+	/// 摇摆物件的参数图：RGB 按 alpha 叠上去；A 乘以 (1 − alpha)，即这里改由摇摆物件在最上面
+	SWAY_PARAMETERS,
+	/// 不摇摆物件的剪影：RGB 不动（下面摇摆物件的参数保留，树从它背后摆出来时还要用）；
+	/// A 叠上它的 alpha，即这里最上面盖着它
+	OCCLUDER,
+	/// 没有起伏图的物件（原版的城镇、英雄、矿……）在起伏层上的剪影：RGB 按 alpha 清零、A 按 alpha 叠上，
+	/// 即这里最上面是一件“不知道起伏”的物件。着色器把 RGB 为 0 的地方当成平地，不重新打光、也不投长影
+	CUTOUT
+};
+
 /// Class that represents surface for drawing on
 class Canvas
 {
@@ -130,6 +146,17 @@ public:
 
 	/// renders another canvas onto this canvas with scaling
 	void drawScaled(const Canvas &image, const Point & pos, const Point & targetSize);
+
+	/// 把一张画在透明底上的图层（颜色已是预乘 alpha，例如大地图分层缓存的物件层）缩放叠到本画布上
+	void drawLayerPremultiplied(const Canvas & image, const Point & pos, const Point & targetSize);
+
+	/// 与 draw(image, pos, sourceRect) 相同，但按 blend 画进大地图的遮罩画布（风场遮罩、起伏层，见 MapMaskBlend）。
+	/// 只用于 GPU 画布（这些画布只在大地图分层时存在）；软件表面上按普通方式画
+	void drawMapMask(const std::shared_ptr<IImage> & image, const Point & pos, const Rect & sourceRect, MapMaskBlend blend);
+
+	/// 一次把 image 的多块区域缩放拷到本画布（覆盖，不混合）：每项是 {image 内的区域, 本画布内的目标区域}，逻辑坐标。
+	/// GPU 上合成一次几何绘制，免得逐块拷贝时每块都要重设一遍纹理状态、单独提交（大地图缩到最小时每帧要拷上千块）
+	void drawScaledBatch(const Canvas & image, const std::vector<std::pair<Rect, Rect>> & regions);
 
 	/// renders single pixels with specified color
 	void drawPoint(const Point & dest, const ColorRGBA & color);

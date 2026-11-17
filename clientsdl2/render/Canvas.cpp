@@ -151,6 +151,28 @@ void Canvas::drawScaled(const Canvas & image, const Point & pos, const Point & t
 	SDL_BlitScaled(image.surface, nullptr, surface, &targetRect);
 }
 
+void Canvas::drawScaledBatch(const Canvas & image, const std::vector<std::pair<Rect, Rect>> & regions)
+{
+	for(const auto & [from, to] : regions)
+		drawScaled(Canvas(image, from), to.topLeft(), to.dimensions());
+}
+
+void Canvas::drawLayerPremultiplied(const Canvas & image, const Point & pos, const Point & targetSize)
+{
+	SDL_BlendMode oldMode;
+	SDL_GetSurfaceBlendMode(image.surface, &oldMode);
+	SDL_SetSurfaceBlendMode(image.surface, SDL_BLENDMODE_BLEND);
+	SDL_Rect sourceRect = CSDL_Ext::toSDL(image.renderArea);
+	SDL_Rect targetRect = CSDL_Ext::toSDL(Rect(transformPos(pos), transformSize(targetSize)));
+	SDL_BlitScaled(image.surface, &sourceRect, surface, &targetRect);
+	SDL_SetSurfaceBlendMode(image.surface, oldMode);
+}
+
+void Canvas::drawMapMask(const std::shared_ptr<IImage> & image, const Point & pos, const Rect & sourceRect, MapMaskBlend)
+{
+	draw(image, pos, sourceRect);
+}
+
 void Canvas::drawPoint(const Point & dest, const ColorRGBA & color)
 {
 	Point point = transformPos(dest);

@@ -323,7 +323,7 @@ size_t MapRendererAdventureContext::objectImageIndex(ObjectInstanceID objectID, 
 {
 	assert(groupSize > 0);
 
-	if(!settingsAdventureObjectAnimation)
+	if(!settingsAdventureObjectAnimation || objectAnimationPaused)
 		return 0;
 
 	if(groupSize == 0)

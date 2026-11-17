@@ -23,6 +23,8 @@ set(vcmisdl3_SRCS
 	render/Canvas.cpp
 	render/CanvasImage.cpp
 	render/GpuResources.cpp
+	render/MapLayerCompositor.cpp
+	render/MapParticles.cpp
 	render/CBitmapFont.cpp
 	render/CTrueTypeFont.cpp
 	render/CursorHardware.cpp
@@ -55,6 +57,8 @@ set(vcmisdl3_HEADERS
 	media/IMusicPlayer.h
 	media/ISoundPlayer.h
 	media/IVideoPlayer.h
+	render/MapLayerCompositor.h
+	render/MapParticles.h
 	render/MemoryBudgetedCache.h
 	render/Canvas.h
 	render/CanvasImage.h

@@ -75,6 +75,11 @@ public:
 	bool settingsAdventureObjectAnimation = true;
 	bool settingsAdventureTerrainAnimation = true;
 
+	/// 地图缩得很小（图块小于 16 像素）时物件动画停在第 0 帧（2026-11-17）。这时树的摆动、旗子的飘动只有零点几个像素，
+	/// 看不出来，却要满屏几千个物件每 180 毫秒重画一次图块，缩到最小时会掉到十几帧。VCMI 的世界视图也不播物件动画。
+	/// 正在走路的英雄不受影响（见 MapRendererAdventureMovingContext），地形和水面动画也照常播放
+	bool objectAnimationPaused = false;
+
 	explicit MapRendererAdventureContext(const MapRendererContextState & viewState);
 
 	const CGPath * currentPath() const override;

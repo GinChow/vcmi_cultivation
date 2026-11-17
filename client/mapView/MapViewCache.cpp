@@ -27,8 +27,10 @@
 #include "render/IScreenHandler.h"
 #include "../widgets/TextControls.h"
 
+#include "../../lib/TerrainHandler.h"
 #include "../../lib/filesystem/PngStripWriter.h"
 #include "../../lib/int3.h"
+#include "../../lib/mapping/TerrainTile.h"
 
 MapViewCache::~MapViewCache()
 {
@@ -42,6 +44,7 @@ MapViewCache::MapViewCache(const std::shared_ptr<MapViewModel> & model, bool use
 	, cachedLevel(0)
 	, overlayWasVisible(false)
 	, mapRenderer(new MapRenderer())
+	, birdRandom(std::random_device{}())
 	, iconsStorage(ENGINE->renderHandler().loadAnimation(AnimationPath::builtin("VwSymbol"), EImageBlitMode::COLORKEY))
 {
 	Point visibleSize = model->getTilesVisibleDimensions();
@@ -80,7 +83,11 @@ void MapViewCache::ensureCanvases()
 	// while the ready-scaled one is measured from the window and stays as it was
 	const bool dimensionsStale = cacheAtNativeSize && cachedCanvasDimensions != cacheDimensions;
 
-	if(terrain && canvasesOnGpu == useGpu && cachedAtNativeSize == cacheAtNativeSize && !dimensionsStale)
+	// 分层合成的着色器靠纹理坐标取模越过环形接缝，所以缓存必须正好是 槽位数 × 图块尺寸。
+	// GPU 缓存都满足这一点（缩得很小时存的是缩小的图块，但仍按槽位排列）；退回窗口大小的缓存则不满足
+	const bool useLayers = wantLayers && cacheAtNativeSize;
+
+	if(terrain && canvasesOnGpu == useGpu && cachedAtNativeSize == cacheAtNativeSize && !dimensionsStale && layered == useLayers)
 		return;
 
 	// Must run on the rendering thread: this object is constructed while handling a
@@ -92,18 +99,35 @@ void MapViewCache::ensureCanvases()
 	cachedAtNativeSize = cacheAtNativeSize;
 	cachedCanvasDimensions = cacheDimensions;
 
-	intermediate = createCanvas(MapViewModel::getNativeTileSize());
+	atlasCapacity = canvasesOnGpu ? atlasTilesPerSide * atlasTilesPerSide : 1;
+	atlas = createCanvas(MapViewModel::getNativeTileSize() * (canvasesOnGpu ? atlasTilesPerSide : 1));
 	terrain = createCanvas(cacheDimensions);
 	terrainTransition = createCanvas(model->getPixelsVisibleDimensions());
+
+	layered = useLayers;
+	if(layered)
+	{
+		objectLayer = createCanvas(cacheDimensions);
+		swayLayer = createCanvas(cacheDimensions);
+		overlayLayer = createCanvas(cacheDimensions);
+		waterMaskLayer = createCanvas(cacheDimensions);
+		windMaskLayer = createCanvas(cacheDimensions);
+		reliefLayer = createCanvas(cacheDimensions);
+		logGlobal->info("Map cache uses separate layers for water, wind and lighting effects (%dx%d)", cacheDimensions.x, cacheDimensions.y);
+	}
+	else
+	{
+		objectLayer.reset();
+		swayLayer.reset();
+		overlayLayer.reset();
+		waterMaskLayer.reset();
+		windMaskLayer.reset();
+		reliefLayer.reset();
+	}
 
 	// the new canvases are empty, so nothing cached about the old ones still holds
 	std::fill_n(terrainChecksum.data(), terrainChecksum.num_elements(), TileChecksum{});
 	std::fill_n(tilesUpToDate.data(), tilesUpToDate.num_elements(), false);
-}
-
-Canvas MapViewCache::getTile(const int3 & coordinates)
-{
-	return Canvas(*terrain, model->getCacheTileArea(coordinates));
 }
 
 std::shared_ptr<IImage> MapViewCache::getOverlayImageForTile(const std::shared_ptr<IMapRendererContext> & context, const int3 & coordinates)
@@ -138,6 +162,15 @@ static constexpr int animationCatchUpFrames = 4;
 /// Smallest share a frame redraws. The share follows the number of dirty tiles, so it only grows
 /// past this when a step dirties more than the old fixed cap could serve before the next one.
 static constexpr int animationRedrawShareMinimum = 64;
+
+/// 分层模式下各层在 PendingTile::layers 里的位
+static constexpr uint8_t tileLayerBit(MapTileLayer layer)
+{
+	return static_cast<uint8_t>(1u << static_cast<uint8_t>(layer));
+}
+/// 物件变了要重画的层：静止物件、摇摆物件、记着它们前后关系的风场遮罩和起伏层总是一起变
+static constexpr uint8_t objectTileLayers = tileLayerBit(MapTileLayer::OBJECTS) | tileLayerBit(MapTileLayer::SWAY_OBJECTS) | tileLayerBit(MapTileLayer::WIND_MASK) | tileLayerBit(MapTileLayer::RELIEF);
+static constexpr uint8_t allTileLayers = tileLayerBit(MapTileLayer::GROUND) | tileLayerBit(MapTileLayer::WATER_MASK) | objectTileLayers | tileLayerBit(MapTileLayer::OVERLAY);
 
 /// Indices of the terrain and river components of MapRenderer::getTileChecksum()
 static constexpr size_t terrainChecksumIndex = 1;
@@ -184,34 +217,556 @@ void MapViewCache::updateTile(const std::shared_ptr<IMapRendererContext> & conte
 		++animatedTilesRedrawn;
 	}
 
-	Canvas target = getTile(coordinates);
-
-	const uint32_t placeholdersBefore = ENGINE->renderHandler().getPlaceholderDrawCount();
-
-	if(model->getCacheTileSize() == MapViewModel::getNativeTileSize())
+	// 分层时算出哪些层真的变了：校验值第 0~3 项是地图边缘、地形、河流、道路（地面层），第 4 项是物件（三个物件层），
+	// 第 5~7 项是路径、覆盖图标、战争迷雾（覆盖层）。换了图块、换了地图层或图块被标记为动画中时整块重画
+	uint8_t layers = allTileLayers;
+	if(holdsSameTile && cachedLevel == coordinates.z && !context->tileAnimated(coordinates))
 	{
-		mapRenderer->renderTile(*context, target, coordinates, true);
+		const auto & before = oldCacheEntry.checksum;
+		const auto & after = newCacheEntry.checksum;
+		auto changed = [&](size_t index) { return before[index] != after[index]; };
+
+		layers = 0;
+		// 只是地形、河流动画换帧时只重画地面层；其他地面变化（如迷雾揭开、地形改变）还要重画水面遮罩
+		if(changed(0) || changed(1) || changed(2) || changed(3))
+			layers |= animationOnly ? tileLayerBit(MapTileLayer::GROUND) : tileLayerBit(MapTileLayer::GROUND) | tileLayerBit(MapTileLayer::WATER_MASK);
+		if(changed(4))
+		{
+			layers |= objectTileLayers;
+			// 湖这类水面装饰物画在地面层，它们换帧时地面层也要重画
+			if(layered && mapRenderer->hasWaterSurface(*context, coordinates))
+				layers |= tileLayerBit(MapTileLayer::GROUND);
+		}
+		if(changed(5) || changed(6) || changed(7))
+			layers |= tileLayerBit(MapTileLayer::OVERLAY);
+		if(layers == 0)
+			layers = allTileLayers;
 	}
+
+	// 先记下，等这一帧的图块都判断完，再在 drawPendingLayers() 里批量画
+	pendingTiles.push_back({coordinates, newCacheEntry, layers});
+}
+
+void MapViewCache::drawPendingLayers(const std::shared_ptr<IMapRendererContext> & context)
+{
+	if(pendingTiles.empty())
+		return;
+
+	// 每个图块用到的替身图次数（还没放大好的图）。A tile drawn from a stretched stand-in is not final:
+	// leaving its checksum empty keeps it out of the cache, so it is drawn again until the upscale it waits for has finished.
+	std::vector<uint32_t> placeholders(pendingTiles.size(), 0);
+
+	std::vector<std::pair<MapTileLayer, Canvas *>> passes;
+	if(layered)
+		passes = {
+			{MapTileLayer::GROUND, terrain.get()},
+			{MapTileLayer::WATER_MASK, waterMaskLayer.get()},
+			{MapTileLayer::OBJECTS, objectLayer.get()},
+			{MapTileLayer::SWAY_OBJECTS, swayLayer.get()},
+			{MapTileLayer::WIND_MASK, windMaskLayer.get()},
+			{MapTileLayer::RELIEF, reliefLayer.get()},
+			{MapTileLayer::OVERLAY, overlayLayer.get()}
+		};
 	else
+		passes = {{MapTileLayer::ALL, terrain.get()}};
+
+	const Point nativeTileSize = MapViewModel::getNativeTileSize();
+	const Point cacheTileSize = model->getCacheTileSize();
+
+	// 缓存按原尺寸存图块时直接画进去；存缩小图块时先成批画进图集，再成批缩小拷进缓存
+	const bool direct = cacheTileSize == nativeTileSize;
+	auto atlasCell = [&](size_t slot)
 	{
-		mapRenderer->renderTile(*context, *intermediate, coordinates, true);
-		target.drawScaled(*intermediate, Point(0, 0), model->getCacheTileSize());
+		return Rect(Point(static_cast<int>(slot) % atlasTilesPerSide, static_cast<int>(slot) / atlasTilesPerSide) * nativeTileSize, nativeTileSize);
+	};
+
+	for(const auto & [layer, canvas] : passes)
+	{
+		// 槽位里还留着上一个图块的内容，先清空：水面遮罩清成黑（不是水），其余（含风场遮罩、起伏层）清成透明
+		const ColorRGBA clearColor = layer == MapTileLayer::WATER_MASK ? ColorRGBA(0, 0, 0, 255) : ColorRGBA(0, 0, 0, 0);
+
+		std::vector<size_t> tiles;
+		for(size_t i = 0; i < pendingTiles.size(); ++i)
+			if(layer == MapTileLayer::ALL || (pendingTiles[i].layers & tileLayerBit(layer)))
+				tiles.push_back(i);
+
+		const size_t batch = direct ? tiles.size() : static_cast<size_t>(atlasCapacity);
+		for(size_t begin = 0; begin < tiles.size(); begin += batch)
+		{
+			const size_t end = std::min(tiles.size(), begin + batch);
+
+			for(size_t k = begin; k < end; ++k)
+			{
+				const PendingTile & tile = pendingTiles[tiles[k]];
+				Canvas target = direct ? Canvas(*canvas, model->getCacheTileArea(tile.coordinates)) : Canvas(*atlas, atlasCell(k - begin));
+				target.drawColor(Rect(Point(0, 0), nativeTileSize), clearColor);
+
+				const uint32_t placeholdersBefore = ENGINE->renderHandler().getPlaceholderDrawCount();
+				mapRenderer->renderTileLayer(*context, target, tile.coordinates, layer, true);
+				placeholders[tiles[k]] += ENGINE->renderHandler().getPlaceholderDrawCount() - placeholdersBefore;
+			}
+
+			if(direct)
+				continue;
+
+			// 整批一次缩小拷进缓存
+			std::vector<std::pair<Rect, Rect>> copies;
+			copies.reserve(end - begin);
+			for(size_t k = begin; k < end; ++k)
+				copies.emplace_back(atlasCell(k - begin), model->getCacheTileArea(pendingTiles[tiles[k]].coordinates));
+			canvas->drawScaledBatch(*atlas, copies);
+		}
+
+		// 拼图地图整体变灰（只在不分层时出现）
+		if(context->filterGrayscale())
+			for(size_t i : tiles)
+				Canvas(*canvas, model->getCacheTileArea(pendingTiles[i].coordinates)).applyGrayscale();
 	}
 
-	if(context->filterGrayscale())
-		target.applyGrayscale();
+	for(size_t i = 0; i < pendingTiles.size(); ++i)
+	{
+		const PendingTile & tile = pendingTiles[i];
+		const int cacheX = (terrainChecksum.shape()[0] + tile.coordinates.x) % terrainChecksum.shape()[0];
+		const int cacheY = (terrainChecksum.shape()[1] + tile.coordinates.y) % terrainChecksum.shape()[1];
 
-	// A tile drawn from a stretched stand-in is not final. Leaving its checksum empty keeps
-	// it out of the cache, so it is drawn again until the upscale it waits for has finished.
-	const bool usedPlaceholder = ENGINE->renderHandler().getPlaceholderDrawCount() != placeholdersBefore;
+		terrainChecksum[cacheX][cacheY] = placeholders[i] ? TileChecksum{} : tile.checksum;
+		tilesUpToDate[cacheX][cacheY] = false;
+	}
 
-	oldCacheEntry = usedPlaceholder ? TileChecksum{} : newCacheEntry;
-	tilesUpToDate[cacheX][cacheY] = false;
+	pendingTiles.clear();
+}
+
+void MapViewCache::sendDepthField(const std::shared_ptr<IMapRendererContext> & context)
+{
+	const int3 mapSize = context->getMapSize();
+	const int level = model->getLevel();
+	const int width = mapSize.x;
+	const int height = mapSize.y;
+
+	// 倒角距离变换：陆地为 0，水面取到最近陆地图块的距离（直走 1、斜走 √2），两遍扫描。
+	// 地图外不算陆地，所以贴着地图边的大海也是深海
+	constexpr float unreachable = 1e6f;
+	constexpr float diagonal = 1.41421356f;
+	std::vector<float> distance(static_cast<size_t>(width * height), unreachable);
+	auto at = [&](int x, int y) -> float & { return distance[static_cast<size_t>(y * width + x)]; };
+
+	for(int y = 0; y < height; ++y)
+		for(int x = 0; x < width; ++x)
+			if(!context->getMapTile(int3(x, y, level)).getTerrain()->isWater())
+				at(x, y) = 0;
+
+	for(int y = 0; y < height; ++y)
+	{
+		for(int x = 0; x < width; ++x)
+		{
+			float & d = at(x, y);
+			if(x > 0)
+				d = std::min(d, at(x - 1, y) + 1);
+			if(y > 0)
+				d = std::min(d, at(x, y - 1) + 1);
+			if(x > 0 && y > 0)
+				d = std::min(d, at(x - 1, y - 1) + diagonal);
+			if(x + 1 < width && y > 0)
+				d = std::min(d, at(x + 1, y - 1) + diagonal);
+		}
+	}
+
+	for(int y = height - 1; y >= 0; --y)
+	{
+		for(int x = width - 1; x >= 0; --x)
+		{
+			float & d = at(x, y);
+			if(x + 1 < width)
+				d = std::min(d, at(x + 1, y) + 1);
+			if(y + 1 < height)
+				d = std::min(d, at(x, y + 1) + 1);
+			if(x + 1 < width && y + 1 < height)
+				d = std::min(d, at(x + 1, y + 1) + diagonal);
+			if(x > 0 && y + 1 < height)
+				d = std::min(d, at(x - 1, y + 1) + diagonal);
+		}
+	}
+
+	// 编码：0~255 对应 0~8 个图块，再远都算 8
+	std::vector<uint8_t> encoded(distance.size());
+	for(size_t i = 0; i < distance.size(); ++i)
+		encoded[i] = static_cast<uint8_t>(std::round(std::min(distance[i], 8.0f) / 8.0f * 255.0f));
+
+	ENGINE->screenHandler().setMapDepthField(encoded, Point(width, height));
+	depthFieldLevel = level;
+}
+
+/// 各地形上植被粒子的系数（2026-11-17）：落叶、飞花、萤火虫、栖鸟。按地形类型放粒子就靠这张表
+struct TerrainParticles
+{
+	float leaves;
+	float petals;
+	float fireflies;
+	float birds;
+};
+
+static TerrainParticles terrainParticles(const TerrainId & terrain)
+{
+	switch(terrain.getNum())
+	{
+		case ETerrainId::GRASS:
+			return {1.0f, 1.0f, 0.12f, 1.0f};
+		case ETerrainId::DIRT:
+			return {1.0f, 0.8f, 0.06f, 1.0f};
+		case ETerrainId::SWAMP: // 沼泽萤火虫最多
+			return {0.8f, 0.5f, 1.0f, 0.8f};
+		case ETerrainId::ROUGH:
+			return {0.8f, 0.6f, 0.04f, 0.8f};
+		case ETerrainId::SAND:
+			return {0.6f, 0.5f, 0.0f, 0.4f};
+		case ETerrainId::SNOW: // 雪地没有花，鸟也少
+			return {0.4f, 0.0f, 0.0f, 0.6f};
+		case ETerrainId::SUBTERRANEAN: // 地下没有鸟，洞里飘些萤光
+			return {0.3f, 0.2f, 0.5f, 0.0f};
+		case ETerrainId::LAVA:
+			return {0.2f, 0.0f, 0.0f, 0.0f};
+		case ETerrainId::WATER:
+		case ETerrainId::ROCK:
+			return {0.0f, 0.0f, 0.0f, 0.0f};
+		default: // 模组新增的地形
+			return {0.6f, 0.5f, 0.05f, 0.6f};
+	}
+}
+
+void MapViewCache::sendVegetationField(const std::shared_ptr<IMapRendererContext> & context)
+{
+	const int3 mapSize = context->getMapSize();
+	const int level = model->getLevel();
+	const int width = mapSize.x;
+	const int height = mapSize.y;
+	const size_t count = static_cast<size_t>(width * height);
+	auto index = [&](int x, int y) { return static_cast<size_t>(y * width + x); };
+
+	std::vector<float> leaves(count, 0.0f);
+	std::vector<float> petals(count, 0.0f);
+	std::vector<float> fireflies(count, 0.0f);
+	std::vector<uint8_t> lively(count, 0); // 有植物或水
+	birdRoosts.assign(count, 0.0f);
+
+	for(int y = 0; y < height; ++y)
+	{
+		for(int x = 0; x < width; ++x)
+		{
+			const int3 tile(x, y, level);
+			const TerrainTile & mapTile = context->getMapTile(tile);
+			const TerrainParticles terrain = terrainParticles(mapTile.getTerrainID());
+			const MapVegetation vegetation = mapRenderer->vegetationAt(*context, tile);
+			const size_t i = index(x, y);
+
+			leaves[i] = vegetation.leaves * terrain.leaves;
+			petals[i] = vegetation.petals * terrain.petals;
+			fireflies[i] = terrain.fireflies;
+			birdRoosts[i] = vegetation.birds * terrain.birds;
+			lively[i] = mapTile.getTerrain()->isWater() || vegetation.leaves + vegetation.petals + vegetation.birds > 0.0f;
+		}
+	}
+
+	auto encode = [](float value) { return static_cast<uint8_t>(std::round(std::clamp(value, 0.0f, 1.0f) * 255.0f)); };
+
+	std::vector<uint8_t> rgba(count * 4, 0);
+	for(int y = 0; y < height; ++y)
+	{
+		for(int x = 0; x < width; ++x)
+		{
+			// 萤火虫贴着植物和水：周围一圈都空旷的地方只剩十分之一
+			bool nearLife = false;
+			// 风往右下吹，落叶、飞花从左上方两个图块之内飘来
+			float reach = 0.0f;
+			for(int dy = -2; dy <= 1; ++dy)
+			{
+				for(int dx = -2; dx <= 1; ++dx)
+				{
+					const int nx = x + dx;
+					const int ny = y + dy;
+					if(nx < 0 || ny < 0 || nx >= width || ny >= height)
+						continue;
+					if(std::abs(dx) <= 1 && std::abs(dy) <= 1)
+						nearLife = nearLife || lively[index(nx, ny)];
+					if(dx <= 0 && dy <= 0)
+						reach = std::max(reach, leaves[index(nx, ny)] + petals[index(nx, ny)]);
+				}
+			}
+
+			const size_t i = index(x, y);
+			rgba[i * 4 + 0] = encode(leaves[i]);
+			rgba[i * 4 + 1] = encode(petals[i]);
+			rgba[i * 4 + 2] = encode(fireflies[i] * (nearLife ? 1.0f : 0.1f));
+			rgba[i * 4 + 3] = encode(reach);
+		}
+	}
+
+	ENGINE->screenHandler().setMapVegetationField(rgba, Point(width, height));
+	roostMapSize = Point(width, height);
+	recentFlocks.clear();
+}
+
+/// 各地形自己生雾的多少（2026-11-17）：沼泽水汽最重，雪原、地下有些薄雾；水面只在岸边起雾（见 sendAtmosphereField），
+/// 开阔海面上一团团白雾像脏斑（2026-11-17 实机）；山脚、林地的雾来自物件的 atmosphere 参数
+static float terrainMist(const TerrainId & terrain)
+{
+	switch(terrain.getNum())
+	{
+		case ETerrainId::SWAMP:
+			return 0.75f;
+		case ETerrainId::WATER:
+			return 0.0f;
+		case ETerrainId::SNOW:
+		case ETerrainId::SUBTERRANEAN:
+			return 0.25f;
+		case ETerrainId::GRASS:
+		case ETerrainId::DIRT:
+			return 0.08f;
+		default:
+			return 0.0f;
+	}
+}
+
+void MapViewCache::sendAtmosphereField(const std::shared_ptr<IMapRendererContext> & context)
+{
+	const int3 mapSize = context->getMapSize();
+	const int level = model->getLevel();
+	const int width = mapSize.x;
+	const int height = mapSize.y;
+	const size_t count = static_cast<size_t>(width * height);
+	auto index = [&](int x, int y) { return static_cast<size_t>(y * width + x); };
+
+	std::vector<float> mist(count, 0.0f);
+	std::vector<float> cloud(count, 0.0f);
+	for(int y = 0; y < height; ++y)
+	{
+		for(int x = 0; x < width; ++x)
+		{
+			const int3 tile(x, y, level);
+			const MapAtmosphere atmosphere = mapRenderer->atmosphereAt(*context, tile);
+			const size_t i = index(x, y);
+			mist[i] = std::max(atmosphere.mist, terrainMist(context->getMapTile(tile).getTerrainID()));
+			cloud[i] = atmosphere.cloud;
+
+			// 水边：水陆相邻的图块起一层薄雾（两边都算），开阔水面不起
+			const bool water = context->getMapTile(tile).getTerrain()->isWater();
+			bool shore = false;
+			for(int dy = -1; dy <= 1 && !shore; ++dy)
+				for(int dx = -1; dx <= 1 && !shore; ++dx)
+				{
+					const int3 neighbour(x + dx, y + dy, level);
+					shore = context->isInMap(neighbour) && context->getMapTile(neighbour).getTerrain()->isWater() != water;
+				}
+			if(shore)
+				mist[i] = std::max(mist[i], 0.3f);
+		}
+	}
+
+	// 向四周晕开：雾漫出两三个图块，云绕着山铺得更开。可分离的盒式模糊各做两遍，近似高斯；
+	// 取模糊值与原值的较大者再略降，山脚、林中仍最浓，边缘渐淡
+	auto spread = [&](std::vector<float> & field, int radius, float keep)
+	{
+		std::vector<float> blurred = field;
+		std::vector<float> line;
+		for(int pass = 0; pass < 2; ++pass)
+		{
+			for(int axis = 0; axis < 2; ++axis)
+			{
+				const int length = axis == 0 ? width : height;
+				const int lines = axis == 0 ? height : width;
+				line.resize(static_cast<size_t>(length));
+				for(int l = 0; l < lines; ++l)
+				{
+					for(int k = 0; k < length; ++k)
+						line[static_cast<size_t>(k)] = blurred[axis == 0 ? index(k, l) : index(l, k)];
+					for(int k = 0; k < length; ++k)
+					{
+						float sum = 0.0f;
+						for(int d = -radius; d <= radius; ++d)
+							sum += line[static_cast<size_t>(std::clamp(k + d, 0, length - 1))];
+						blurred[axis == 0 ? index(k, l) : index(l, k)] = sum / static_cast<float>(2 * radius + 1);
+					}
+				}
+			}
+		}
+		for(size_t i = 0; i < count; ++i)
+			field[i] = std::max(blurred[i] * 1.6f, field[i] * keep);
+	};
+	spread(mist, 2, 0.85f);
+	spread(cloud, 2, 0.9f); // 云只贴着山，不往外铺太远
+
+
+	// 最外一圈图块清零：着色器按地图坐标取样、地图外夹到边缘的值，不清零的话雾和云会铺满地图外的黑边（2026-11-17 实机）
+	for(int y = 0; y < height; ++y)
+	{
+		for(int x = 0; x < width; ++x)
+		{
+			if(x == 0 || y == 0 || x == width - 1 || y == height - 1)
+			{
+				mist[index(x, y)] = 0.0f;
+				cloud[index(x, y)] = 0.0f;
+			}
+		}
+	}
+
+	auto encode = [](float value) { return static_cast<uint8_t>(std::round(std::clamp(value, 0.0f, 1.0f) * 255.0f)); };
+	std::vector<uint8_t> rgba(count * 4, 0);
+	for(size_t i = 0; i < count; ++i)
+	{
+		rgba[i * 4 + 1] = encode(mist[i]);
+		rgba[i * 4 + 2] = encode(cloud[i]);
+	}
+	ENGINE->screenHandler().setMapAtmosphereField(rgba, Point(width, height));
+}
+
+void MapViewCache::noteHeroStep(const int3 & tile)
+{
+	std::lock_guard lock(heroStepsMutex);
+	// 只留最近几步：渲染停了很久（如打开了别的窗口）时不必一下子惊起一串
+	if(pendingHeroSteps.size() >= 8)
+		pendingHeroSteps.erase(pendingHeroSteps.begin());
+	pendingHeroSteps.push_back(tile);
+}
+
+float MapViewCache::roostAt(const int3 & tile) const
+{
+	if(tile.x < 0 || tile.y < 0 || tile.x >= roostMapSize.x || tile.y >= roostMapSize.y)
+		return 0.0f;
+	return birdRoosts[static_cast<size_t>(tile.y * roostMapSize.x + tile.x)];
+}
+
+/// 一片林子飞起过鸟之后，这么久之内、这么近的树上不再飞起
+static constexpr auto flockCooldown = std::chrono::seconds(25);
+static constexpr int flockCooldownRadius = 3;
+
+bool MapViewCache::flockedRecently(const int3 & tile, std::chrono::steady_clock::time_point now) const
+{
+	for(const auto & [place, when] : recentFlocks)
+		if(now - when < flockCooldown && std::abs(place.x - tile.x) <= flockCooldownRadius && std::abs(place.y - tile.y) <= flockCooldownRadius)
+			return true;
+	return false;
+}
+
+void MapViewCache::launchFlock(const int3 & roost, float directionX, float directionY, std::chrono::steady_clock::time_point now)
+{
+	// 从图块中间偏上起飞：栖鸟的图块大多是树冠
+	ENGINE->screenHandler().startMapBirdFlock(static_cast<float>(roost.x) + 0.5f, static_cast<float>(roost.y) + 0.3f, directionX, directionY);
+	recentFlocks.emplace_back(roost, now);
+}
+
+void MapViewCache::updateBirds(const std::shared_ptr<IMapRendererContext> & context)
+{
+	const auto now = std::chrono::steady_clock::now();
+	std::erase_if(recentFlocks, [&](const auto & entry) { return now - entry.second >= flockCooldown; });
+
+	std::vector<int3> steps;
+	{
+		std::lock_guard lock(heroStepsMutex);
+		steps.swap(pendingHeroSteps);
+	}
+
+	std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+	const int level = model->getLevel();
+
+	// 1. 英雄走到树林边：两格内有鸟栖的树，七成机会惊起一群，背着英雄飞走
+	for(const int3 & step : steps)
+	{
+		if(step.z != level || unit(birdRandom) > 0.7f)
+			continue;
+
+		std::optional<int3> roost;
+		float best = 0.0f;
+		for(int dy = -2; dy <= 2; ++dy)
+		{
+			for(int dx = -2; dx <= 2; ++dx)
+			{
+				const int3 tile = step + int3(dx, dy, 0);
+				const float strength = roostAt(tile);
+				if(strength < 0.2f || !context->isInMap(tile) || !context->isVisible(tile) || flockedRecently(tile, now))
+					continue;
+
+				const float score = strength * (0.5f + 0.5f * unit(birdRandom));
+				if(score > best)
+				{
+					best = score;
+					roost = tile;
+				}
+			}
+		}
+		if(!roost)
+			continue;
+
+		// 背着英雄飞，方向随机偏一点；正好落在英雄脚下时随便挑个方向
+		float directionX = static_cast<float>(roost->x - step.x);
+		float directionY = static_cast<float>(roost->y - step.y);
+		float angle = std::hypot(directionX, directionY) > 0.1f ? std::atan2(directionY, directionX) : unit(birdRandom) * 6.2832f;
+		angle += (unit(birdRandom) - 0.5f) * 1.0f;
+		launchFlock(*roost, std::cos(angle), std::sin(angle), now);
+	}
+
+	// 2. 没人惊动时，林子里也偶尔自己飞起一群（顺着风飞），地图看上去才是活的
+	if(nextAmbientFlock == std::chrono::steady_clock::time_point{})
+		nextAmbientFlock = now + std::chrono::seconds(8 + static_cast<int>(unit(birdRandom) * 12.0f));
+
+	if(now < nextAmbientFlock)
+		return;
+
+	nextAmbientFlock = now + std::chrono::seconds(18 + static_cast<int>(unit(birdRandom) * 22.0f));
+
+	std::vector<int3> candidates;
+	const Rect tiles = model->getTilesTotalRect();
+	for(int y = tiles.top(); y < tiles.bottom(); ++y)
+	{
+		for(int x = tiles.left(); x < tiles.right(); ++x)
+		{
+			const int3 tile(x, y, level);
+			if(roostAt(tile) >= 0.5f && context->isInMap(tile) && context->isVisible(tile) && !flockedRecently(tile, now))
+				candidates.push_back(tile);
+		}
+	}
+	if(candidates.empty())
+		return;
+
+	const int3 roost = candidates[std::min(candidates.size() - 1, static_cast<size_t>(unit(birdRandom) * static_cast<float>(candidates.size())))];
+	const float angle = std::atan2(0.34f, 0.94f) + (unit(birdRandom) - 0.5f) * 2.4f;
+	launchFlock(roost, std::cos(angle), std::sin(angle), now);
+}
+
+void MapViewCache::drawCachedArea(Canvas & target, const Rect & cacheArea, const Point & position, const Point & size) const
+{
+	const Canvas ground(*terrain, cacheArea);
+
+	if(model->getCacheTileSize() == model->getSingleTileSize())
+		target.draw(ground, position);
+	else
+		target.drawScaled(ground, position, size);
+
+	if(!layered)
+		return;
+
+	target.drawLayerPremultiplied(Canvas(*objectLayer, cacheArea), position, size);
+	target.drawLayerPremultiplied(Canvas(*swayLayer, cacheArea), position, size);
+	target.drawLayerPremultiplied(Canvas(*overlayLayer, cacheArea), position, size);
 }
 
 void MapViewCache::update(const std::shared_ptr<IMapRendererContext> & context)
 {
+	// 拼图地图要整体变灰，水面特效会在灰图上加回颜色，所以灰度视图不分层
+	wantLayers = useGpuLayer && !context->filterGrayscale() && ENGINE->screenHandler().isMapLayeringSupported();
+
 	ensureCanvases();
+
+	// 分层才有着色器做风场和光影：这时树木定格在第 0 帧、画进摇摆层，有起伏图的物件只画接触阴影；否则照原来逐帧晃动、画原来的阴影
+	mapRenderer->setLayeredEffects(layered);
+
+	if(layered && depthFieldLevel != model->getLevel())
+	{
+		sendDepthField(context);
+		sendVegetationField(context);
+		sendAtmosphereField(context);
+	}
+
+	if(layered)
+		updateBirds(context);
 
 	Rect dimensions = model->getTilesTotalRect();
 	bool mapResized = cachedSize != model->getSingleTileSize();
@@ -245,6 +800,8 @@ void MapViewCache::update(const std::shared_ptr<IMapRendererContext> & context)
 	for(int y = dimensions.top(); y < dimensions.bottom(); ++y)
 		for(int x = dimensions.left(); x < dimensions.right(); ++x)
 			updateTile(context, {x, y, model->getLevel()});
+
+	drawPendingLayers(context);
 
 	drainingAnimationBurst = animatedTilesDirty > animatedTilesRedrawn;
 	animatedTilesDirtyBefore = animatedTilesDirty;
@@ -321,15 +878,9 @@ void MapViewCache::forEachCachedBand(const std::function<void(const Rect &, cons
 
 void MapViewCache::renderCachedTiles(Canvas & target)
 {
-	const Point tileSize = model->getSingleTileSize();
-	const Point cacheTileSize = model->getCacheTileSize();
-
 	forEachCachedBand([&](const Rect & cacheArea, const Point & targetPosition, const Point & targetSize)
 	{
-		if(cacheTileSize == tileSize)
-			target.draw(Canvas(*terrain, cacheArea), targetPosition);
-		else
-			target.drawScaled(Canvas(*terrain, cacheArea), targetPosition, targetSize);
+		drawCachedArea(target, cacheArea, targetPosition, targetSize);
 	});
 }
 
@@ -353,7 +904,29 @@ void MapViewCache::present(const Rect & targetArea)
 		regions.push_back({band.getRenderArea(), Rect(targetArea.topLeft() + targetPosition * scaling, targetSize * scaling)});
 	});
 
-	ENGINE->screenHandler().presentFromCanvas(GpuRenderLayer::MAP, *terrain, regions);
+	if(layered)
+	{
+		// 着色器要知道缓存的环形排布：槽位数，以及可见窗口左上角图块是哪个、放在哪个槽位
+		const Rect tilesRect = model->getTilesTotalRect();
+		const Point slots = tilesRect.dimensions();
+
+		MapLayerSet layers;
+		layers.objects = objectLayer.get();
+		layers.sway = swayLayer.get();
+		layers.overlay = overlayLayer.get();
+		layers.waterMask = waterMaskLayer.get();
+		layers.windMask = windMaskLayer.get();
+		layers.relief = reliefLayer.get();
+		layers.slots = slots;
+		layers.worldOrigin = tilesRect.topLeft();
+		layers.slotOrigin = Point(((tilesRect.x % slots.x) + slots.x) % slots.x, ((tilesRect.y % slots.y) + slots.y) % slots.y);
+
+		ENGINE->screenHandler().presentMapLayers(*terrain, layers, regions);
+	}
+	else
+	{
+		ENGINE->screenHandler().presentFromCanvas(GpuRenderLayer::MAP, *terrain, regions);
+	}
 
 	// the whole window was handed over, so nothing is waiting to be drawn from the cache
 	std::fill_n(tilesUpToDate.data(), tilesUpToDate.num_elements(), true);
@@ -395,13 +968,8 @@ void MapViewCache::render(const std::shared_ptr<IMapRendererContext> & context, 
 				if(tilesUpToDate[cacheX][cacheY])
 					continue;
 
-				Canvas source = getTile(tile);
 				Rect targetRect = model->getTargetTileArea(tile);
-
-				if(model->getCacheTileSize() == model->getSingleTileSize())
-					target.draw(source, targetRect.topLeft());
-				else
-					target.drawScaled(source, targetRect.topLeft(), targetRect.dimensions());
+				drawCachedArea(target, model->getCacheTileArea(tile), targetRect.topLeft(), targetRect.dimensions());
 
 				if (!fullRedraw)
 					tilesUpToDate[cacheX][cacheY] = true;

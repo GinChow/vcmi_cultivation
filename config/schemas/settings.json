@@ -233,7 +233,10 @@
 				"allowPortrait",
 				"asyncUpscaling",
 				"useHdTextures",
-				"assetCacheSize"
+				"assetCacheSize",
+				"mapEffects",
+				"mapSunCycle",
+				"mapSunTime"
 			],
 			"properties" : {
 				"resolution" : {
@@ -275,6 +278,21 @@
 					"type" : "string",
 					"default" : "",
 					"description" : "preferred graphics backend driver name, empty to let SDL choose"
+				},
+				"mapEffects" : {
+					"type" : "boolean",
+					"default" : true,
+					"description" : "adventure map shader effects (water reflections, ripples, foam, wind, long shadows, lighting, fog, clouds). Needs the SDL3 build with driver 'gpu'"
+				},
+				"mapSunCycle" : {
+					"type" : "number",
+					"default" : 900,
+					"description" : "seconds the adventure map sun takes from dawn to dusk (long shadows and lighting turn with it); 0 keeps it at mapSunTime"
+				},
+				"mapSunTime" : {
+					"type" : "number",
+					"default" : 0.2,
+					"description" : "time of day of the adventure map sun when mapSunCycle is 0: 0 dawn, 0.5 noon, 1 dusk"
 				},
 				"displayIndex" : {
 					"type" : "number",

@@ -36,6 +36,37 @@
 
 class SDLImageLoader;
 
+/// 画进大地图遮罩画布时用的自定义混合模式（2026-11-17，大地图风场摇摆、光影，含义见 MapMaskBlend）。
+/// 摇摆参数图：RGB 照常按 alpha 叠加（纹理已预乘时源因子取 1），A 乘以 (1 − alpha)；
+/// 遮挡剪影：RGB 原样保留，A 按 alpha 叠加；
+/// 清零剪影：RGB 乘以 (1 − alpha)（源颜色不计），A 按 alpha 叠加。SDL3 的 gpu 渲染器支持任意组合的混合因子（2026-11-17 实测）
+static SDL_BlendMode mapMaskBlendMode(ImageBlendOverride blendOverride, bool premultipliedAlpha)
+{
+	if(blendOverride == ImageBlendOverride::MASK_OCCLUDER)
+	{
+		static const SDL_BlendMode occluder = SDL_ComposeCustomBlendMode(
+			SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE, SDL_BLENDOPERATION_ADD,
+			SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD);
+		return occluder;
+	}
+
+	if(blendOverride == ImageBlendOverride::MASK_CUTOUT)
+	{
+		static const SDL_BlendMode cutout = SDL_ComposeCustomBlendMode(
+			SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD,
+			SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD);
+		return cutout;
+	}
+
+	static const SDL_BlendMode swayStraight = SDL_ComposeCustomBlendMode(
+		SDL_BLENDFACTOR_SRC_ALPHA, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD,
+		SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD);
+	static const SDL_BlendMode swayPremultiplied = SDL_ComposeCustomBlendMode(
+		SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD,
+		SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD);
+	return premultipliedAlpha ? swayPremultiplied : swayStraight;
+}
+
 int IImage::width() const
 {
 	return dimensions().x;
@@ -208,8 +239,14 @@ SDL_Texture * SDLImageShared::getTexture(SDL_Palette * palette) const
 
 bool SDLImageShared::scaledDrawTexture(SDL_Renderer * renderer, SDL_Palette * palette, const Point & scaleTo, const Point & dest, const Rect * src, const ColorRGBA & colorMultiplier, uint8_t alpha, EImageBlitMode mode, const ImageFlip & flip) const
 {
-	if(upscalingInProgress || !surf)
+	if(upscalingInProgress)
 		return false;
+
+	// 整张透明的图在 optimizeSurface() 裁掉透明边后没有表面：没什么可画，算画好了。
+	// 返回 false 会让画布退回“画进临时表面再上传”的路径，那条路同样画不出东西，却每次都上传一张纹理、
+	// 打断批处理（2026-11-17：一批全透明的接触阴影让滚屏掉到 20 多帧）
+	if(!surf)
+		return true;
 
 	SDL_Texture * source = getTexture(palette);
 	if(!source)
@@ -263,7 +300,10 @@ bool SDLImageShared::scaledDrawTexture(SDL_Renderer * renderer, SDL_Palette * pa
 
 	// Unlike the surface path this cannot test the alpha mask: SDL_CreateTextureFromSurface turns
 	// a paletted surface's color key into real alpha, so only a truly opaque image may skip blending
-	if(alpha != SDL_ALPHA_OPAQUE || mode != EImageBlitMode::OPAQUE)
+	const ImageBlendOverride blendOverride = GpuResources::get().getImageBlendOverride();
+	if(blendOverride != ImageBlendOverride::NONE)
+		SDL_SetTextureBlendMode(source, mapMaskBlendMode(blendOverride, premultipliedAlpha));
+	else if(alpha != SDL_ALPHA_OPAQUE || mode != EImageBlitMode::OPAQUE)
 		SDL_SetTextureBlendMode(source, premultipliedAlpha ? SDL_BLENDMODE_BLEND_PREMULTIPLIED : SDL_BLENDMODE_BLEND);
 	else
 		SDL_SetTextureBlendMode(source, SDL_BLENDMODE_NONE);

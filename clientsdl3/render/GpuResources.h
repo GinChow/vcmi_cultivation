@@ -16,6 +16,16 @@
 struct SDL_Renderer;
 struct SDL_Texture;
 
+/// 绘制图片时临时改用的混合方式（2026-11-17，大地图风场摇摆、光影）。由 Canvas::drawMapMask 在画一张图期间设置，
+/// SDLImageShared 在把纹理画上去时照此选混合模式，含义见 MapMaskBlend
+enum class ImageBlendOverride : uint8_t
+{
+	NONE,
+	MASK_SWAY_PARAMETERS,
+	MASK_OCCLUDER,
+	MASK_CUTOUT
+};
+
 /// Everything that belongs to the one renderer and dies with it: the renderer itself, the caches
 /// keyed on it and the textures it still has to free. Owned by ScreenHandler, which is what
 /// creates and destroys the renderer.
@@ -46,6 +56,9 @@ class GpuResources
 
 	TextTextureCache textTextureCache;
 
+	/// 只在渲染线程上设置和读取
+	ImageBlendOverride imageBlendOverride = ImageBlendOverride::NONE;
+
 public:
 	static GpuResources & get();
 
@@ -53,6 +66,9 @@ public:
 	uint32_t generation() const { return rendererGeneration; }
 
 	TextTextureCache & textCache() { return textTextureCache; }
+
+	ImageBlendOverride getImageBlendOverride() const { return imageBlendOverride; }
+	void setImageBlendOverride(ImageBlendOverride value) { imageBlendOverride = value; }
 
 	void setRenderer(SDL_Renderer * renderer);
 

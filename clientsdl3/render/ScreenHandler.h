@@ -18,6 +18,8 @@ struct SDL_Window;
 struct SDL_Renderer;
 struct SDL_Surface;
 
+class MapLayerCompositor;
+
 enum class EWindowMode
 {
 	// game runs in a window that covers part of the screen
@@ -64,8 +66,22 @@ class ScreenHandler final : public IScreenHandler
 	{
 		SDL_Texture * source = nullptr;
 		std::vector<PresentedRegion> regions;
+
+		/// presentMapLayers() 登记的其余图层；为空时 source 就是完整画面，按原样绘制
+		SDL_Texture * objects = nullptr;
+		SDL_Texture * sway = nullptr;
+		SDL_Texture * overlay = nullptr;
+		SDL_Texture * waterMask = nullptr;
+		SDL_Texture * windMask = nullptr;
+		SDL_Texture * relief = nullptr;
+		Point slots;
+		Point worldOrigin;
+		Point slotOrigin;
 	};
 	std::array<PresentedCanvas, static_cast<size_t>(GpuRenderLayer::COUNT)> presentedCanvases;
+
+	/// 合成大地图分层（水面着色器）。composeFrame() 是 const，但着色器资源要在第一次合成时按需创建
+	std::unique_ptr<MapLayerCompositor> mapCompositor;
 
 	/// Whether a layer currently holds content that should be composited
 	std::array<bool, static_cast<size_t>(GpuRenderLayer::COUNT)> layerActive = {};
@@ -176,6 +192,12 @@ public:
 	void flushRenderCommands() final;
 	void presentFromCanvas(GpuRenderLayer layer, const Canvas & source, const std::vector<PresentedRegion> & regions) final;
 	void clearPresentedCanvas(GpuRenderLayer layer) final;
+	bool isMapLayeringSupported() const final;
+	void presentMapLayers(const Canvas & ground, const MapLayerSet & layers, const std::vector<PresentedRegion> & regions) final;
+	void setMapDepthField(const std::vector<uint8_t> & distances, const Point & size) final;
+	void setMapVegetationField(const std::vector<uint8_t> & rgba, const Point & size) final;
+	void startMapBirdFlock(float x, float y, float directionX, float directionY) final;
+	void setMapAtmosphereField(const std::vector<uint8_t> & rgba, const Point & size) final;
 	void updateScreenTexture() final;
 	void presentScreenTexture() final;
 

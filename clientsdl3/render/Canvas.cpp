@@ -363,6 +363,108 @@ void Canvas::drawScaled(const Canvas & image, const Point & pos, const Point & t
 	SDL_BlitSurfaceScaled(image.surface, nullptr, surface, &targetRect, SDL_SCALEMODE_NEAREST);
 }
 
+void Canvas::drawScaledBatch(const Canvas & image, const std::vector<std::pair<Rect, Rect>> & regions)
+{
+	if(regions.empty())
+		return;
+
+	// 软件表面没有批量绘制，逐块拷
+	if(!renderTarget || !image.renderTarget)
+	{
+		for(const auto & [from, to] : regions)
+			drawScaled(Canvas(image, from), to.topLeft(), to.dimensions());
+		return;
+	}
+
+	SDL_Renderer * renderer = GpuResources::get().renderer();
+	bindRenderTarget();
+
+	float textureWidth = 0;
+	float textureHeight = 0;
+	SDL_GetTextureSize(image.renderTarget, &textureWidth, &textureHeight);
+
+	std::vector<SDL_Vertex> vertices;
+	std::vector<int> indices;
+	vertices.reserve(regions.size() * 4);
+	indices.reserve(regions.size() * 6);
+
+	const SDL_FColor white = {1.0f, 1.0f, 1.0f, 1.0f};
+	for(const auto & [from, to] : regions)
+	{
+		// 与 copyFromCanvas 相同的像素换算：源区域按 image 的缩放倍数，目标区域按本画布的
+		const Rect source = from * image.getScalingFactor() + image.renderArea.topLeft();
+		const Rect target(transformPos(to.topLeft()), transformSize(to.dimensions()));
+
+		const float x0 = static_cast<float>(target.x);
+		const float y0 = static_cast<float>(target.y);
+		const float x1 = static_cast<float>(target.x + target.w);
+		const float y1 = static_cast<float>(target.y + target.h);
+		const float u0 = static_cast<float>(source.x) / textureWidth;
+		const float v0 = static_cast<float>(source.y) / textureHeight;
+		const float u1 = static_cast<float>(source.x + source.w) / textureWidth;
+		const float v1 = static_cast<float>(source.y + source.h) / textureHeight;
+
+		const int base = static_cast<int>(vertices.size());
+		vertices.push_back({{x0, y0}, white, {u0, v0}});
+		vertices.push_back({{x1, y0}, white, {u1, v0}});
+		vertices.push_back({{x1, y1}, white, {u1, v1}});
+		vertices.push_back({{x0, y1}, white, {u0, v1}});
+		for(int offset : {0, 1, 2, 0, 2, 3})
+			indices.push_back(base + offset);
+	}
+
+	// 与 drawScaled 相同：覆盖写入，最近邻缩放
+	SDL_SetTextureBlendMode(image.renderTarget, SDL_BLENDMODE_NONE);
+	SDL_SetTextureScaleMode(image.renderTarget, SDL_SCALEMODE_NEAREST);
+
+	if(!SDL_RenderGeometry(renderer, image.renderTarget, vertices.data(), static_cast<int>(vertices.size()), indices.data(), static_cast<int>(indices.size())))
+		logGpuIssueOnce(std::string("SDL_RenderGeometry failed for a batched canvas copy: ") + SDL_GetError());
+}
+
+void Canvas::drawLayerPremultiplied(const Canvas & image, const Point & pos, const Point & targetSize)
+{
+	Rect targetArea(transformPos(pos), transformSize(targetSize));
+
+	if(renderTarget)
+	{
+		copyFromCanvas(image, targetArea, SDL_BLENDMODE_BLEND_PREMULTIPLIED, SDL_ALPHA_OPAQUE);
+		return;
+	}
+
+	// 软件表面上不会有预乘图层（大地图分层只在 GPU 路径启用），这里按普通 alpha 混合，只为接口完整
+	SDL_BlendMode oldMode;
+	SDL_GetSurfaceBlendMode(image.surface, &oldMode);
+	SDL_SetSurfaceBlendMode(image.surface, SDL_BLENDMODE_BLEND);
+	SDL_Rect sourceRect = CSDL_Ext::toSDL(image.renderArea);
+	SDL_Rect targetRect = CSDL_Ext::toSDL(targetArea);
+	SDL_BlitSurfaceScaled(image.surface, &sourceRect, surface, &targetRect, SDL_SCALEMODE_NEAREST);
+	SDL_SetSurfaceBlendMode(image.surface, oldMode);
+}
+
+void Canvas::drawMapMask(const std::shared_ptr<IImage> & image, const Point & pos, const Rect & sourceRect, MapMaskBlend blend)
+{
+	// 混合方式由图片自己在绘制时设到纹理上，所以这里只登记覆盖方式，画完立刻撤销
+	if(renderTarget)
+	{
+		switch(blend)
+		{
+			case MapMaskBlend::SWAY_PARAMETERS:
+				GpuResources::get().setImageBlendOverride(ImageBlendOverride::MASK_SWAY_PARAMETERS);
+				break;
+			case MapMaskBlend::OCCLUDER:
+				GpuResources::get().setImageBlendOverride(ImageBlendOverride::MASK_OCCLUDER);
+				break;
+			case MapMaskBlend::CUTOUT:
+				GpuResources::get().setImageBlendOverride(ImageBlendOverride::MASK_CUTOUT);
+				break;
+		}
+	}
+
+	draw(image, pos, sourceRect);
+
+	GpuResources::get().setImageBlendOverride(ImageBlendOverride::NONE);
+}
+
 void Canvas::drawPoint(const Point & dest, const ColorRGBA & color)
 {
 	SDL_Renderer * renderer = GpuResources::get().renderer();

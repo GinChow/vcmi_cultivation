@@ -29,6 +29,8 @@
 #include "../../lib/CConfigHandler.h"
 #include "../../lib/IGameSettings.h"
 #include "../../lib/callback/CCallback.h"
+#include "../../lib/filesystem/Filesystem.h"
+#include "../../lib/json/JsonNode.h"
 #include "../../lib/gameState/CGameState.h"
 #include "../../lib/RiverHandler.h"
 #include "../../lib/RoadHandler.h"
@@ -192,6 +194,59 @@ void MapRendererTerrain::renderTile(IMapRendererContext & context, Canvas & targ
 	}
 
 	target.draw(image, Point(0, 0));
+}
+
+/// 图块动画名对应的水面遮罩动画（<名称>_MASK），模组没提供时返回空路径
+static AnimationPath waterMaskPath(const AnimationPath & tiles)
+{
+	std::string name = tiles.getName();
+	if(boost::starts_with(name, "SPRITES/"))
+		name = name.substr(std::string("SPRITES/").length());
+
+	const AnimationPath path = AnimationPath::builtin("SPRITES/" + name + "_MASK");
+	if(CResourceHandler::get()->existsResource(path) || CResourceHandler::get()->existsResource(path.toType<EResType::JSON>()))
+		return path;
+	return {};
+}
+
+MapRendererWaterMask::MapRendererWaterMask()
+	: storage(LIBRARY->terrainTypeHandler->objects.size())
+	, riverStorage(LIBRARY->riverTypeHandler->objects.size())
+{
+	// 遮罩是可选的：模组没提供就不画，水面也就没有特效，不报错
+	for(const auto & terrain : LIBRARY->terrainTypeHandler->objects)
+	{
+		const AnimationPath path = terrain->isWater() ? waterMaskPath(terrain->tilesFilename) : AnimationPath();
+		if(!path.empty())
+			storage.load(terrain->getIndex(), path, EImageBlitMode::OPAQUE);
+	}
+
+	// 河流遮罩只有清水河、泥水河：冰河结冰、岩浆河是熔岩，模组不提供
+	for(const auto & river : LIBRARY->riverTypeHandler->objects)
+	{
+		const AnimationPath path = waterMaskPath(river->tilesFilename);
+		if(!path.empty())
+			riverStorage.load(river->getIndex(), path, EImageBlitMode::COLORKEY);
+	}
+}
+
+void MapRendererWaterMask::renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
+{
+	const TerrainTile & mapTile = context.getMapTile(coordinates);
+
+	// 帧号和翻转与地形图块相同，遮罩没有动画，只取第 0 组
+	const auto & image = storage.find(mapTile.getTerrainID().getNum(), mapTile.extTileFlags % 4, mapTile.terView);
+
+	if(image)
+		target.draw(image, Point(0, 0));
+
+	// 河流遮罩叠在上面：帧号、翻转与河流图块相同（见 MapRendererRiver）
+	if(context.showRivers() && mapTile.hasRiver())
+	{
+		const auto & riverImage = riverStorage.find(mapTile.getRiverID().getNum(), (mapTile.extTileFlags >> 2) % 4, mapTile.riverDir);
+		if(riverImage)
+			target.draw(riverImage, Point(0, 0));
+	}
 }
 
 uint8_t MapRendererTerrain::checksum(IMapRendererContext & context, const int3 & coordinates)
@@ -528,7 +583,7 @@ std::shared_ptr<CAnimation> MapRendererObjects::getOverlayAnimation(const CGObje
 	return nullptr;
 }
 
-std::shared_ptr<IImage> MapRendererObjects::getImageToRender(const IMapRendererContext & context, const CGObjectInstance * obj, const std::shared_ptr<CAnimation>& animation) const
+std::shared_ptr<IImage> MapRendererObjects::getImageToRender(const IMapRendererContext & context, const CGObjectInstance * obj, const std::shared_ptr<CAnimation>& animation, bool firstFrame) const
 {
 	if(!animation)
 		return nullptr;
@@ -549,12 +604,12 @@ std::shared_ptr<IImage> MapRendererObjects::getImageToRender(const IMapRendererC
 			return getImage(imgPath);
 	}
 
-	size_t frameIndex = context.objectImageIndex(obj->id, animation->size(groupIndex));
+	size_t frameIndex = firstFrame ? 0 : context.objectImageIndex(obj->id, animation->size(groupIndex));
 
 	return animation->getImage(frameIndex, groupIndex);
 }
 
-void MapRendererObjects::renderImage(IMapRendererContext & context, Canvas & target, const int3 & coordinates, const CGObjectInstance * object, const std::shared_ptr<IImage>& image, double transparencyFactor, bool applyOwnerColor)
+void MapRendererObjects::renderImage(IMapRendererContext & context, Canvas & target, const int3 & coordinates, const CGObjectInstance * object, const std::shared_ptr<IImage>& image, double transparencyFactor, bool applyOwnerColor, std::optional<MapMaskBlend> mask)
 {
 	if(!image)
 		return;
@@ -579,7 +634,10 @@ void MapRendererObjects::renderImage(IMapRendererContext & context, Canvas & tar
 	if ( offsetPixels.x < image->dimensions().x && offsetPixels.y < image->dimensions().y)
 	{
 		Point imagePos = image->dimensions() - offsetPixels - Point(32, 32);
-		target.draw(image, Point(0, 0), Rect(imagePos, Point(32,32)));
+		if(mask)
+			target.drawMapMask(image, Point(0, 0), Rect(imagePos, Point(32, 32)), *mask);
+		else
+			target.draw(image, Point(0, 0), Rect(imagePos, Point(32,32)));
 	}
 }
 
@@ -588,16 +646,16 @@ void MapRendererObjects::renderShadow(IMapRendererContext & context, Canvas & ta
 	renderImage(context, target, coordinates, object, getObjectImages(context, object)[LAYER_SHADOW], 1.0, false);
 }
 
-void MapRendererObjects::renderObject(IMapRendererContext & context, Canvas & target, const int3 & coordinates, const CGObjectInstance * instance, double transparencyFactor)
+void MapRendererObjects::renderObject(IMapRendererContext & context, Canvas & target, const int3 & coordinates, const CGObjectInstance * instance, double transparencyFactor, std::optional<MapMaskBlend> mask)
 {
 	// only the images are shared across tiles - transparency and offset stay per-tile
 	const auto & images = getObjectImages(context, instance);
 
 	// player color is a layer of its own for flaggable objects, otherwise it is part of the body image
-	renderImage(context, target, coordinates, instance, images[LAYER_BODY], transparencyFactor, images[LAYER_COLOR_OVERLAY] == nullptr);
+	renderImage(context, target, coordinates, instance, images[LAYER_BODY], transparencyFactor, images[LAYER_COLOR_OVERLAY] == nullptr, mask);
 
 	for(auto layer : {LAYER_COLOR_OVERLAY, LAYER_FLAG, LAYER_OVERLAY})
-		renderImage(context, target, coordinates, instance, images[layer], transparencyFactor);
+		renderImage(context, target, coordinates, instance, images[layer], transparencyFactor, true, mask);
 }
 
 void MapRendererObjects::renderGround(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
@@ -614,7 +672,298 @@ void MapRendererObjects::renderGround(IMapRendererContext & context, Canvas & ta
 	}
 }
 
-void MapRendererObjects::renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
+std::string MapRendererObjects::spriteName(const CGObjectInstance * obj)
+{
+	if(!obj || !obj->appearance || obj->appearance->animationFile.empty())
+		return {};
+
+	std::string name = obj->appearance->animationFile.getName();
+	if(boost::starts_with(name, "SPRITES/"))
+		name = name.substr(std::string("SPRITES/").length());
+	return name;
+}
+
+std::shared_ptr<CAnimation> MapRendererObjects::findCompanionAnimation(std::map<std::string, std::shared_ptr<CAnimation>> & cache, const CGObjectInstance * obj, const std::string & suffix)
+{
+	const std::string name = spriteName(obj);
+	if(name.empty())
+		return nullptr;
+
+	auto it = cache.find(name);
+	if(it != cache.end())
+		return it->second;
+
+	std::shared_ptr<CAnimation> companion;
+	const AnimationPath path = AnimationPath::builtin("SPRITES/" + name + suffix);
+	if(CResourceHandler::get()->existsResource(path) || CResourceHandler::get()->existsResource(path.toType<EResType::JSON>()))
+		companion = ENGINE->renderHandler().loadAnimation(path, EImageBlitMode::SIMPLE);
+
+	cache[name] = companion;
+	return companion;
+}
+
+std::shared_ptr<CAnimation> MapRendererObjects::getWaterMaskAnimation(const CGObjectInstance * obj)
+{
+	return findCompanionAnimation(waterMaskAnimations, obj, "_MASK");
+}
+
+std::shared_ptr<CAnimation> MapRendererObjects::getWindMaskAnimation(const CGObjectInstance * obj)
+{
+	return findCompanionAnimation(windMaskAnimations, obj, "_WIND");
+}
+
+std::shared_ptr<CAnimation> MapRendererObjects::getReliefAnimation(const CGObjectInstance * obj)
+{
+	return findCompanionAnimation(reliefAnimations, obj, "_RELIEF");
+}
+
+void MapRendererObjects::setLayeredEffects(bool enabled)
+{
+	layeredEffects = enabled;
+}
+
+const MapRendererObjects::ObjectEffectKind & MapRendererObjects::getEffectKind(const CGObjectInstance * obj)
+{
+	static const ObjectEffectKind none;
+	if(!obj)
+		return none;
+
+	auto it = effectKindCache.find(obj->id.getNum());
+	if(it != effectKindCache.end())
+		return it->second;
+
+	ObjectEffectKind kind;
+	kind.waterSurface = getWaterMaskAnimation(obj) != nullptr;
+	kind.windParameters = getWindMaskAnimation(obj) != nullptr;
+	kind.relief = getReliefAnimation(obj) != nullptr;
+	return effectKindCache.emplace(obj->id.getNum(), kind).first->second;
+}
+
+bool MapRendererObjects::isSwaying(const CGObjectInstance * obj)
+{
+	if(!layeredEffects)
+		return false;
+
+	const auto & kind = getEffectKind(obj);
+	return kind.windParameters && !kind.waterSurface;
+}
+
+bool MapRendererObjects::isSelected(const CGObjectInstance * obj, MapObjectSelection selection)
+{
+	switch(selection)
+	{
+		case MapObjectSelection::ALL:
+			return true;
+		case MapObjectSelection::WATER_SURFACES:
+			return getEffectKind(obj).waterSurface;
+		case MapObjectSelection::SWAYING:
+			return isSwaying(obj);
+		case MapObjectSelection::OTHERS:
+			return !getEffectKind(obj).waterSurface && !isSwaying(obj);
+	}
+	return true;
+}
+
+bool MapRendererObjects::isShadowSelected(const CGObjectInstance * obj, MapObjectSelection selection)
+{
+	switch(selection)
+	{
+		case MapObjectSelection::ALL:
+			return true;
+		case MapObjectSelection::WATER_SURFACES:
+			return getEffectKind(obj).waterSurface;
+		case MapObjectSelection::SWAYING:
+			return false;
+		case MapObjectSelection::OTHERS:
+			return !getEffectKind(obj).waterSurface;
+	}
+	return true;
+}
+
+void MapRendererObjects::renderWaterMasks(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
+{
+	for(const auto & objectID : context.getObjects(coordinates))
+	{
+		const auto * object = context.getObject(objectID);
+		const auto mask = getWaterMaskAnimation(object);
+
+		// 湖的形状不变，遮罩只有一帧；位置、透明度与本体相同
+		if(mask)
+			renderImage(context, target, coordinates, object, mask->getImage(0, 0), 1.0, false);
+	}
+}
+
+bool MapRendererObjects::hasWaterSurface(IMapRendererContext & context, const int3 & coordinates)
+{
+	for(const auto & objectID : context.getObjects(coordinates))
+		if(getEffectKind(context.getObject(objectID)).waterSurface)
+			return true;
+	return false;
+}
+
+bool MapRendererObjects::hasSwayingObject(IMapRendererContext & context, const int3 & coordinates)
+{
+	for(const auto & objectID : context.getObjects(coordinates))
+		if(isSwaying(context.getObject(objectID)))
+			return true;
+	return false;
+}
+
+const MapVegetation & MapRendererObjects::getVegetation(const CGObjectInstance * obj)
+{
+	static const MapVegetation none;
+	if(!getEffectKind(obj).windParameters)
+		return none;
+
+	const std::string name = spriteName(obj);
+	auto it = vegetationConfigs.find(name);
+	if(it != vegetationConfigs.end())
+		return it->second;
+
+	// 动画加载器只读它认识的键，"vegetation" 由这里另外读
+	const JsonNode config(JsonPath::builtin("SPRITES/" + name + "_WIND"));
+	const JsonNode & entry = config["vegetation"];
+
+	MapVegetation vegetation;
+	vegetation.leaves = static_cast<float>(entry["leaves"].Float());
+	vegetation.petals = static_cast<float>(entry["petals"].Float());
+	vegetation.birds = static_cast<float>(entry["birds"].Float());
+	return vegetationConfigs.emplace(name, vegetation).first->second;
+}
+
+MapVegetation MapRendererObjects::vegetationAt(IMapRendererContext & context, const int3 & coordinates)
+{
+	MapVegetation result;
+	for(const auto & objectID : context.getObjects(coordinates))
+	{
+		const MapVegetation & vegetation = getVegetation(context.getObject(objectID));
+		result.leaves = std::max(result.leaves, vegetation.leaves);
+		result.petals = std::max(result.petals, vegetation.petals);
+		result.birds = std::max(result.birds, vegetation.birds);
+	}
+	return result;
+}
+
+MapAtmosphere MapRendererObjects::atmosphereAt(IMapRendererContext & context, const int3 & coordinates)
+{
+	MapAtmosphere result;
+	for(const auto & objectID : context.getObjects(coordinates))
+	{
+		const CGObjectInstance * object = context.getObject(objectID);
+		if(!getEffectKind(object).relief)
+			continue;
+
+		const std::string name = spriteName(object);
+		auto it = atmosphereConfigs.find(name);
+		if(it == atmosphereConfigs.end())
+		{
+			// 动画加载器只读它认识的键，"atmosphere" 由这里另外读
+			const JsonNode config(JsonPath::builtin("SPRITES/" + name + "_RELIEF"));
+			const JsonNode & entry = config["atmosphere"];
+
+			MapAtmosphere atmosphere;
+			atmosphere.mist = static_cast<float>(entry["mist"].Float());
+			atmosphere.cloud = static_cast<float>(entry["cloud"].Float());
+			it = atmosphereConfigs.emplace(name, atmosphere).first;
+		}
+		result.mist = std::max(result.mist, it->second.mist);
+		result.cloud = std::max(result.cloud, it->second.cloud);
+	}
+	return result;
+}
+
+void MapRendererObjects::renderRelief(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
+{
+	const CGObjectInstance * activeHero = nullptr;
+	bool activeHeroCovered = false;
+
+	// 顺序与 renderTile() 相同：起伏层每个像素记下的是最上面那件物件的法线和高度
+	MapObjectDrawOrder::drawTile(context.getObjects(coordinates), coordinates,
+		[&](ObjectInstanceID objectID)
+		{
+			return context.getObject(objectID);
+		},
+		[&](const CGObjectInstance * object)
+		{
+			return context.objectImageOffset(object->id, coordinates);
+		},
+		[&](const CGObjectInstance *)
+		{
+			// 阴影贴地，不是物件表面
+		},
+		[&](const CGObjectInstance * object)
+		{
+			// 水面装饰物画在地面层，是平的
+			if(getEffectKind(object).waterSurface)
+				return;
+
+			if(context.isActiveHero(object))
+				activeHero = object;
+			else if(activeHero)
+				activeHeroCovered = true;
+
+			// 起伏图与本体第 0 帧对齐（摇摆物件按静止时的样子），位置、淡入淡出的透明度与本体相同
+			if(getEffectKind(object).relief)
+				renderImage(context, target, coordinates, object, getReliefAnimation(object)->getImage(0, 0), 1.0, false);
+			else
+				renderObject(context, target, coordinates, object, 1.0, MapMaskBlend::CUTOUT);
+		});
+
+	// 与 renderTile() 一样，当前英雄被盖住时在最上面再画一遍半透明的他
+	if(activeHeroCovered)
+		renderObject(context, target, coordinates, activeHero, activeHeroTransparency, MapMaskBlend::CUTOUT);
+}
+
+void MapRendererObjects::renderWindMask(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
+{
+	// 没有摇摆物件的图块，着色器用不到这里的遮挡关系（树冠最多摆出几个像素，落不到别的图块的物件上）
+	if(!hasSwayingObject(context, coordinates))
+		return;
+
+	const CGObjectInstance * activeHero = nullptr;
+	bool activeHeroCovered = false;
+
+	// 顺序与 renderTile() 完全相同，遮罩的 A 通道才能如实记下每个像素最上面是不是摇摆物件
+	MapObjectDrawOrder::drawTile(context.getObjects(coordinates), coordinates,
+		[&](ObjectInstanceID objectID)
+		{
+			return context.getObject(objectID);
+		},
+		[&](const CGObjectInstance * object)
+		{
+			return context.objectImageOffset(object->id, coordinates);
+		},
+		[&](const CGObjectInstance *)
+		{
+			// 阴影贴地，总在所有物件本体之下，不遮挡任何东西
+		},
+		[&](const CGObjectInstance * object)
+		{
+			// 水面装饰物画在地面层，在所有物件之下
+			if(getEffectKind(object).waterSurface)
+				return;
+
+			if(context.isActiveHero(object))
+				activeHero = object;
+			else if(activeHero)
+				activeHeroCovered = true;
+
+			if(isSwaying(object))
+			{
+				// 参数图与本体第 0 帧对齐，位置、淡入淡出的透明度与本体相同
+				const auto parameters = getWindMaskAnimation(object);
+				renderImage(context, target, coordinates, object, parameters->getImage(0, 0), 1.0, false, MapMaskBlend::SWAY_PARAMETERS);
+			}
+			else
+				renderObject(context, target, coordinates, object, 1.0, MapMaskBlend::OCCLUDER);
+		});
+
+	// 与 renderTile() 一样，当前英雄被盖住时在最上面再画一遍半透明的他
+	if(activeHeroCovered)
+		renderObject(context, target, coordinates, activeHero, activeHeroTransparency, MapMaskBlend::OCCLUDER);
+}
+
+void MapRendererObjects::renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates, MapObjectSelection selection)
 {
 	const CGObjectInstance * activeHero = nullptr;
 	bool activeHeroCovered = false;
@@ -636,16 +985,24 @@ void MapRendererObjects::renderTile(IMapRendererContext & context, Canvas & targ
 		},
 		[&](const CGObjectInstance * object)
 		{
-			renderShadow(context, target, coordinates, object);
+			if(isShadowSelected(object, selection))
+				renderShadow(context, target, coordinates, object);
 		},
 		[&](const CGObjectInstance * object)
 		{
+			const bool selected = isSelected(object, selection);
+
+			// 摇摆物件不画在静止物件层，但它盖住当前英雄时，英雄的半透明复本仍要画在这一层
 			if(context.isActiveHero(object))
-				activeHero = object;
-			else if(activeHero)
+			{
+				if(selected)
+					activeHero = object;
+			}
+			else if(activeHero && (selected || (selection == MapObjectSelection::OTHERS && isSwaying(object))))
 				activeHeroCovered = true;
 
-			renderObject(context, target, coordinates, object);
+			if(selected)
+				renderObject(context, target, coordinates, object);
 		});
 
 	// Like H3, draw the active hero a second time on top of the objects that cover him,
@@ -658,6 +1015,7 @@ void MapRendererObjects::prepareFrame()
 {
 	checksumInfoCache.clear();
 	renderImageCache.clear();
+	effectKindCache.clear();
 }
 
 const MapRendererObjects::ObjectImages & MapRendererObjects::getObjectImages(IMapRendererContext & context, const CGObjectInstance * object)
@@ -668,9 +1026,17 @@ const MapRendererObjects::ObjectImages & MapRendererObjects::getObjectImages(IMa
 
 	// Which image each layer resolves to is fixed for the whole pass: the animation clock
 	// does not advance inside one, and no object can change while it runs under the lock.
-    ObjectImages objectImages;
-	objectImages[LAYER_SHADOW] = getImageToRender(context, object, getShadowAnimation(object));
-	objectImages[LAYER_BODY] = getImageToRender(context, object, getBodyAnimation(object));
+	ObjectImages objectImages;
+	// 开启风场时摇摆物件停在第 0 帧（风场参数图与它对齐），摇摆全交给着色器
+	const bool firstFrame = isSwaying(object);
+	// 分层时有起伏图的物件只画接触阴影（起伏图第 1 组），朝某一方向的长投影由着色器按起伏层统一算，
+	// 否则原来朝左的阴影会和随时段转动的长投影叠成两道
+	const auto relief = layeredEffects && objectIsSplitIntoLayers(object) && getEffectKind(object).relief ? getReliefAnimation(object) : nullptr;
+	if(relief && relief->size(1) > 0)
+		objectImages[LAYER_SHADOW] = relief->getImage(0, 1);
+	else
+		objectImages[LAYER_SHADOW] = getImageToRender(context, object, getShadowAnimation(object), firstFrame);
+	objectImages[LAYER_BODY] = getImageToRender(context, object, getBodyAnimation(object), firstFrame);
 	objectImages[LAYER_COLOR_OVERLAY] = getImageToRender(context, object, getColorOverlayAnimation(object));
 	objectImages[LAYER_FLAG] = getImageToRender(context, object, getFlagAnimation(object));
 	objectImages[LAYER_OVERLAY] = getImageToRender(context, object, getOverlayAnimation(object));
@@ -695,8 +1061,9 @@ const MapRendererObjects::ObjectChecksumInfo & MapRendererObjects::getChecksumIn
 
 	// The image index depends on the animation clock, which does not advance during a
 	// single pass, so the image - and therefore its size - is fixed for the whole pass.
+	// 开启风场时摇摆物件定格在第 0 帧，动画时钟走动不会让它所在的图块重画
 	const auto & base = getBodyAnimation(object);
-	if(base && base->size(groupIndex) > 1)
+	if(base && base->size(groupIndex) > 1 && !isSwaying(object))
 	{
 		const auto & image = base->getImage(context.objectImageIndex(object->id, base->size(groupIndex)), groupIndex);
 		if(image)
@@ -1010,21 +1377,7 @@ void MapRenderer::renderTile(IMapRendererContext & context, Canvas & target, con
 	}
 	else
 	{
-		rendererTerrain.renderTile(context, target, coordinates);
-
-		const bool roadsAboveGround = LIBRARY->engineSettings()->getBoolean(EGameSettings::MAP_OBJECTS_ROADS_ABOVE_SPECIAL_GROUND);
-
-		if(roadsAboveGround)
-			rendererObjects.renderGround(context, target, coordinates);
-
-		if (context.showRivers())
-			rendererRiver.renderTile(context, target, coordinates);
-
-		if (context.showRoads())
-			rendererRoad.renderTile(context, target, coordinates);
-
-		if(!roadsAboveGround)
-			rendererObjects.renderGround(context, target, coordinates);
+		renderGroundParts(context, target, coordinates);
 
 		rendererObjects.renderTile(context, target, coordinates);
 		if(withOverlays)
@@ -1035,5 +1388,115 @@ void MapRenderer::renderTile(IMapRendererContext & context, Canvas & target, con
 
 		if(!visible)
 			rendererFow.renderTile(context, target, coordinates, *neighborInfo);
+	}
+}
+
+void MapRenderer::renderGroundParts(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
+{
+	rendererTerrain.renderTile(context, target, coordinates);
+
+	const bool roadsAboveGround = LIBRARY->engineSettings()->getBoolean(EGameSettings::MAP_OBJECTS_ROADS_ABOVE_SPECIAL_GROUND);
+
+	if(roadsAboveGround)
+		rendererObjects.renderGround(context, target, coordinates);
+
+	if (context.showRivers())
+		rendererRiver.renderTile(context, target, coordinates);
+
+	if (context.showRoads())
+		rendererRoad.renderTile(context, target, coordinates);
+
+	if(!roadsAboveGround)
+		rendererObjects.renderGround(context, target, coordinates);
+}
+
+bool MapRenderer::hasWaterSurface(IMapRendererContext & context, const int3 & coordinates)
+{
+	return context.isInMap(coordinates) && rendererObjects.hasWaterSurface(context, coordinates);
+}
+
+void MapRenderer::setLayeredEffects(bool enabled)
+{
+	rendererObjects.setLayeredEffects(enabled);
+}
+
+MapAtmosphere MapRenderer::atmosphereAt(IMapRendererContext & context, const int3 & coordinates)
+{
+	if(!context.isInMap(coordinates))
+		return {};
+	return rendererObjects.atmosphereAt(context, coordinates);
+}
+
+MapVegetation MapRenderer::vegetationAt(IMapRendererContext & context, const int3 & coordinates)
+{
+	if(!context.isInMap(coordinates))
+		return {};
+	return rendererObjects.vegetationAt(context, coordinates);
+}
+
+void MapRenderer::renderTileLayer(IMapRendererContext & context, Canvas & target, const int3 & coordinates, MapTileLayer layer, bool withOverlays)
+{
+	if(layer == MapTileLayer::ALL)
+	{
+		renderTile(context, target, coordinates, withOverlays);
+		return;
+	}
+
+	// 地图外只有边框，画在地面层
+	if(!context.isInMap(coordinates))
+	{
+		if(layer == MapTileLayer::GROUND)
+			rendererBorder.renderTile(context, target, coordinates);
+		return;
+	}
+
+	const bool visible = context.isVisible(coordinates);
+
+	std::optional<NeighborTilesInfo> neighborInfo;
+	if(!visible)
+		neighborInfo.emplace(context, coordinates);
+
+	// 完全被迷雾盖住的图块只有迷雾，画在覆盖层；地面、物件、遮罩都留空
+	if(!visible && neighborInfo->areAllHidden())
+	{
+		if(layer == MapTileLayer::OVERLAY)
+			rendererFow.renderTile(context, target, coordinates, *neighborInfo);
+		return;
+	}
+
+	switch(layer)
+	{
+		case MapTileLayer::GROUND:
+			// 湖这类水面装饰物也画在地面层，水面着色器才能扭动湖面
+			renderGroundParts(context, target, coordinates);
+			rendererObjects.renderTile(context, target, coordinates, MapObjectSelection::WATER_SURFACES);
+			break;
+		case MapTileLayer::WATER_MASK:
+			rendererWaterMask.renderTile(context, target, coordinates);
+			rendererObjects.renderWaterMasks(context, target, coordinates);
+			break;
+		case MapTileLayer::OBJECTS:
+			rendererObjects.renderTile(context, target, coordinates, MapObjectSelection::OTHERS);
+			break;
+		case MapTileLayer::SWAY_OBJECTS:
+			rendererObjects.renderTile(context, target, coordinates, MapObjectSelection::SWAYING);
+			break;
+		case MapTileLayer::WIND_MASK:
+			rendererObjects.renderWindMask(context, target, coordinates);
+			break;
+		case MapTileLayer::RELIEF:
+			rendererObjects.renderRelief(context, target, coordinates);
+			break;
+		case MapTileLayer::OVERLAY:
+			if(withOverlays)
+			{
+				rendererPath.renderTile(context, target, coordinates);
+				rendererOverlay.renderTile(context, target, coordinates);
+			}
+			if(!visible)
+				rendererFow.renderTile(context, target, coordinates, *neighborInfo);
+			break;
+		case MapTileLayer::ALL:
+			break; // 已在函数开头整块画完
 	}
 }

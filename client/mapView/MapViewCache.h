@@ -11,6 +11,7 @@
 
 #include "../../lib/Point.h"
 #include "../../lib/Rect.h"
+#include "../../lib/int3.h"
 
 class ObjectInstanceID;
 
@@ -78,8 +79,62 @@ class MapViewCache
 
 	std::unique_ptr<Canvas> terrain;
 	std::unique_ptr<Canvas> terrainTransition;
-	std::unique_ptr<Canvas> intermediate;
 	std::unique_ptr<MapRenderer> mapRenderer;
+
+	/// 图集：缓存存的是缩小过的图块时（缩放到图块小于 16 像素），图块先按原尺寸画进这里，再缩小拷进缓存。
+	/// GPU 上一次放 atlasTilesPerSide² 块，一批只切两次渲染目标；逐块画进单格再拷，缩小视野时会掉到 10 FPS。
+	/// 软件表面的缩放拷贝只能整张拷，所以那时图集只有一格。
+	std::unique_ptr<Canvas> atlas;
+	static constexpr int atlasTilesPerSide = 16;
+	int atlasCapacity = 1;
+
+	/// 分层模式（2026-11-17，大地图水面特效、风场摇摆）。开启时 terrain 只存地面层，静止物件、摇摆物件、覆盖物、
+	/// 水面遮罩、风场遮罩各存一张与它布局相同的画布，合成屏幕时由屏幕处理器的着色器一次叠好（见 presentMapLayers）。
+	/// 只在着色器可用、缓存正好是 槽位数 × 图块尺寸、且不是灰度视图（拼图地图）时开启。
+	bool wantLayers = false;
+	bool layered = false;
+
+	/// 已交给屏幕处理器的离岸距离图对应的地图层（地上、地下）；-1 表示还没给过
+	int depthFieldLevel = -1;
+
+	/// 分层时给屏幕处理器一张当前地图层的离岸距离图（海面的浅滩、近海、深海靠它分出来）
+	void sendDepthField(const std::shared_ptr<IMapRendererContext> & context);
+
+	/// 植被粒子（2026-11-17）：分层时给屏幕处理器一张当前地图层的植被场——每个图块落叶、飞花多少（按树种乘地形系数）、
+	/// 萤火虫多少（按地形，靠近植物或水的地方多），着色器据此放粒子；同时记下每个图块栖鸟的多少，惊鸟时用
+	void sendVegetationField(const std::shared_ptr<IMapRendererContext> & context);
+
+	/// 雾与云海（2026-11-17）：分层时给屏幕处理器一张当前地图层的雾云场——每个图块生雾多少（山脚、林地、水边、沼泽浓）、
+	/// 山腰绕云多少（山和火山周围），都向四周晕开几个图块，着色器据此让流动的雾和云海只在这些地方浓起来
+	void sendAtmosphereField(const std::shared_ptr<IMapRendererContext> & context);
+
+	/// 当前地图层每个图块栖鸟的多少（0~1，已乘地形系数），按行存放
+	std::vector<float> birdRoosts;
+	Point roostMapSize;
+
+	/// 惊鸟：英雄每走一步由 MapViewController 记下（可能在网络线程上），渲染线程在 update() 里处理
+	std::mutex heroStepsMutex;
+	std::vector<int3> pendingHeroSteps;
+
+	/// 最近飞起过鸟群的地方和时间：同一片林子一阵子内不再飞起
+	std::vector<std::pair<int3, std::chrono::steady_clock::time_point>> recentFlocks;
+
+	/// 下一次“没人惊动、林子里自己飞起一群鸟”的时间
+	std::chrono::steady_clock::time_point nextAmbientFlock;
+	std::mt19937 birdRandom;
+
+	/// 处理英雄走过的格子和偶尔自己飞起的鸟群（只在分层时）
+	void updateBirds(const std::shared_ptr<IMapRendererContext> & context);
+	float roostAt(const int3 & tile) const;
+	bool flockedRecently(const int3 & tile, std::chrono::steady_clock::time_point now) const;
+	/// 让 roost 图块的树上飞起一群鸟，朝 (directionX, directionY) 飞走
+	void launchFlock(const int3 & roost, float directionX, float directionY, std::chrono::steady_clock::time_point now);
+	std::unique_ptr<Canvas> objectLayer;
+	std::unique_ptr<Canvas> swayLayer;
+	std::unique_ptr<Canvas> overlayLayer;
+	std::unique_ptr<Canvas> waterMaskLayer;
+	std::unique_ptr<Canvas> windMaskLayer;
+	std::unique_ptr<Canvas> reliefLayer;
 
 	/// Canvas of the given logical size, drawing onto a GPU render target when this view
 	/// uses the GPU layer and onto a plain surface otherwise
@@ -91,8 +146,27 @@ class MapViewCache
 
 	std::shared_ptr<CAnimation> iconsStorage;
 
-	Canvas getTile(const int3 & coordinates);
 	void updateTile(const std::shared_ptr<IMapRendererContext> & context, const int3 & coordinates);
+
+	/// 本帧要重画的图块。先在 updateTile() 里收集，等所有图块判断完再批量画：
+	/// 每换一张目标画布，gpu 渲染器就要结束并新开一个渲染通道，逐块轮流换画布会慢到个位数帧率。
+	struct PendingTile
+	{
+		int3 coordinates;
+		TileChecksum checksum;
+		/// 分层模式下要重画的层，位掩码，第 n 位对应 MapTileLayer 值为 n 的层。
+		/// 只有物件动画换帧时只重画物件层，缩到最小时满屏的树、旗子才不会每次都把四层全重画一遍
+		uint8_t layers;
+	};
+	std::vector<PendingTile> pendingTiles;
+
+	/// 把 pendingTiles 画完再记下各图块的校验值：分层时按 地面、水面遮罩、物件、摇摆物件、风场遮罩、起伏层、覆盖 一层一层画，
+	/// 不分层时整块画进 terrain；缓存存缩小图块时经图集分批中转
+	void drawPendingLayers(const std::shared_ptr<IMapRendererContext> & context);
+
+	/// 把缓存中的一块区域画到 target 上；分层模式下依次叠上地面、物件、摇摆物件、覆盖物（没有水面、风场特效，
+	/// 摇摆物件一律叠在静止物件之上，站在树前的英雄这时会被树盖住；只在文字覆盖、传送过渡这类短暂画面里用到）
+	void drawCachedArea(Canvas & target, const Rect & cacheArea, const Point & position, const Point & size) const;
 
 	/// Walks the visible window of the cache. Because tiles are stored wrapped around on both
 	/// axes it falls into at most four bands, each contiguous in the cache and on screen.
@@ -112,6 +186,9 @@ public:
 
 	/// invalidates cache of specified object
 	void invalidate(const std::shared_ptr<IMapRendererContext> & context, const ObjectInstanceID & object);
+
+	/// 英雄走到了 tile（看得见的一步）：只记下，下一帧在渲染线程上决定要不要惊起附近树林里的鸟。可在任何线程调用
+	void noteHeroStep(const int3 & tile);
 
 	/// updates internal terrain cache according to provided time delta
 	/// True when update() already ran this frame and the view still shows the same tiles. A scroll
