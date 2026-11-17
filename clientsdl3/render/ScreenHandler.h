@@ -74,6 +74,7 @@ class ScreenHandler final : public IScreenHandler
 		SDL_Texture * waterMask = nullptr;
 		SDL_Texture * windMask = nullptr;
 		SDL_Texture * relief = nullptr;
+		SDL_Texture * splat = nullptr;
 		Point slots;
 		Point worldOrigin;
 		Point slotOrigin;
@@ -198,6 +199,8 @@ public:
 	void setMapVegetationField(const std::vector<uint8_t> & rgba, const Point & size) final;
 	void startMapBirdFlock(float x, float y, float directionX, float directionY) final;
 	void setMapAtmosphereField(const std::vector<uint8_t> & rgba, const Point & size) final;
+	void setMapTerrainField(const std::vector<uint8_t> & rgba, const Point & size) final;
+	void setMapTerrainMaterials(const std::vector<uint8_t> & png) final;
 	void updateScreenTexture() final;
 	void presentScreenTexture() final;
 

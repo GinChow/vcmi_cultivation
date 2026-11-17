@@ -1006,6 +1006,7 @@ void ScreenHandler::presentFromCanvas(GpuRenderLayer layer, const Canvas & sourc
 	presented.waterMask = nullptr;
 	presented.windMask = nullptr;
 	presented.relief = nullptr;
+	presented.splat = nullptr;
 
 	// What is registered here is drawn instead of the layer, so the layer has to stop being
 	// composited - otherwise whatever it held last stays on screen on top of it. Only while it is
@@ -1043,6 +1044,16 @@ void ScreenHandler::setMapAtmosphereField(const std::vector<uint8_t> & rgba, con
 	mapCompositor->setAtmosphereField(rgba, size);
 }
 
+void ScreenHandler::setMapTerrainField(const std::vector<uint8_t> & rgba, const Point & size)
+{
+	mapCompositor->setTerrainField(rgba, size);
+}
+
+void ScreenHandler::setMapTerrainMaterials(const std::vector<uint8_t> & png)
+{
+	mapCompositor->setTerrainMaterials(png);
+}
+
 /// presentMapLayers() 登记的大地图图层，整理成合成器要的输入
 template<typename Presented>
 static MapLayerCompositor::Inputs mapCompositorInputs(const Presented & presented)
@@ -1055,6 +1066,7 @@ static MapLayerCompositor::Inputs mapCompositorInputs(const Presented & presente
 	inputs.waterMask = presented.waterMask;
 	inputs.windMask = presented.windMask;
 	inputs.relief = presented.relief;
+	inputs.splat = presented.splat;
 	inputs.slots = presented.slots;
 	inputs.worldOrigin = presented.worldOrigin;
 	inputs.slotOrigin = presented.slotOrigin;
@@ -1079,12 +1091,13 @@ void ScreenHandler::presentMapLayers(const Canvas & ground, const MapLayerSet & 
 	presented.waterMask = layers.waterMask ? layers.waterMask->getRenderTargetTexture() : nullptr;
 	presented.windMask = layers.windMask ? layers.windMask->getRenderTargetTexture() : nullptr;
 	presented.relief = layers.relief ? layers.relief->getRenderTargetTexture() : nullptr;
+	presented.splat = layers.splat ? layers.splat->getRenderTargetTexture() : nullptr;
 	presented.slots = layers.slots;
 	presented.worldOrigin = layers.worldOrigin;
 	presented.slotOrigin = layers.slotOrigin;
 
 	// 缺任何一层都没法分层合成，只能不画，免得只显示地面、物件全丢
-	if(!presented.objects || !presented.sway || !presented.overlay || !presented.waterMask || !presented.windMask || !presented.relief)
+	if(!presented.objects || !presented.sway || !presented.overlay || !presented.waterMask || !presented.windMask || !presented.relief || !presented.splat)
 	{
 		logGlobal->error("Map layers are not all GPU render targets - map not drawn this frame");
 		presented = PresentedCanvas{};

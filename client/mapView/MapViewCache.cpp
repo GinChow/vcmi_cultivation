@@ -28,6 +28,7 @@
 #include "../widgets/TextControls.h"
 
 #include "../../lib/TerrainHandler.h"
+#include "../../lib/filesystem/Filesystem.h"
 #include "../../lib/filesystem/PngStripWriter.h"
 #include "../../lib/int3.h"
 #include "../../lib/mapping/TerrainTile.h"
@@ -113,6 +114,7 @@ void MapViewCache::ensureCanvases()
 		waterMaskLayer = createCanvas(cacheDimensions);
 		windMaskLayer = createCanvas(cacheDimensions);
 		reliefLayer = createCanvas(cacheDimensions);
+		splatLayer = createCanvas(cacheDimensions);
 		logGlobal->info("Map cache uses separate layers for water, wind and lighting effects (%dx%d)", cacheDimensions.x, cacheDimensions.y);
 	}
 	else
@@ -123,6 +125,7 @@ void MapViewCache::ensureCanvases()
 		waterMaskLayer.reset();
 		windMaskLayer.reset();
 		reliefLayer.reset();
+		splatLayer.reset();
 	}
 
 	// the new canvases are empty, so nothing cached about the old ones still holds
@@ -170,7 +173,9 @@ static constexpr uint8_t tileLayerBit(MapTileLayer layer)
 }
 /// 物件变了要重画的层：静止物件、摇摆物件、记着它们前后关系的风场遮罩和起伏层总是一起变
 static constexpr uint8_t objectTileLayers = tileLayerBit(MapTileLayer::OBJECTS) | tileLayerBit(MapTileLayer::SWAY_OBJECTS) | tileLayerBit(MapTileLayer::WIND_MASK) | tileLayerBit(MapTileLayer::RELIEF);
-static constexpr uint8_t allTileLayers = tileLayerBit(MapTileLayer::GROUND) | tileLayerBit(MapTileLayer::WATER_MASK) | objectTileLayers | tileLayerBit(MapTileLayer::OVERLAY);
+/// 地面变了（不只是动画换帧）要重画的遮罩层：水面遮罩、地形分布
+static constexpr uint8_t groundMaskLayers = tileLayerBit(MapTileLayer::WATER_MASK) | tileLayerBit(MapTileLayer::TERRAIN_SPLAT);
+static constexpr uint8_t allTileLayers = tileLayerBit(MapTileLayer::GROUND) | groundMaskLayers | objectTileLayers | tileLayerBit(MapTileLayer::OVERLAY);
 
 /// Indices of the terrain and river components of MapRenderer::getTileChecksum()
 static constexpr size_t terrainChecksumIndex = 1;
@@ -227,15 +232,15 @@ void MapViewCache::updateTile(const std::shared_ptr<IMapRendererContext> & conte
 		auto changed = [&](size_t index) { return before[index] != after[index]; };
 
 		layers = 0;
-		// 只是地形、河流动画换帧时只重画地面层；其他地面变化（如迷雾揭开、地形改变）还要重画水面遮罩
+		// 只是地形、河流动画换帧时只重画地面层；其他地面变化（如迷雾揭开、地形改变）还要重画水面遮罩和地形分布
 		if(changed(0) || changed(1) || changed(2) || changed(3))
-			layers |= animationOnly ? tileLayerBit(MapTileLayer::GROUND) : tileLayerBit(MapTileLayer::GROUND) | tileLayerBit(MapTileLayer::WATER_MASK);
+			layers |= animationOnly ? tileLayerBit(MapTileLayer::GROUND) : tileLayerBit(MapTileLayer::GROUND) | groundMaskLayers;
 		if(changed(4))
 		{
 			layers |= objectTileLayers;
-			// 湖这类水面装饰物画在地面层，它们换帧时地面层也要重画
+			// 湖这类水面装饰物画在地面层（地形分布层上挖空），它们换帧时这两层也要重画
 			if(layered && mapRenderer->hasWaterSurface(*context, coordinates))
-				layers |= tileLayerBit(MapTileLayer::GROUND);
+				layers |= tileLayerBit(MapTileLayer::GROUND) | tileLayerBit(MapTileLayer::TERRAIN_SPLAT);
 		}
 		if(changed(5) || changed(6) || changed(7))
 			layers |= tileLayerBit(MapTileLayer::OVERLAY);
@@ -265,6 +270,7 @@ void MapViewCache::drawPendingLayers(const std::shared_ptr<IMapRendererContext> 
 			{MapTileLayer::SWAY_OBJECTS, swayLayer.get()},
 			{MapTileLayer::WIND_MASK, windMaskLayer.get()},
 			{MapTileLayer::RELIEF, reliefLayer.get()},
+			{MapTileLayer::TERRAIN_SPLAT, splatLayer.get()},
 			{MapTileLayer::OVERLAY, overlayLayer.get()}
 		};
 	else
@@ -282,8 +288,9 @@ void MapViewCache::drawPendingLayers(const std::shared_ptr<IMapRendererContext> 
 
 	for(const auto & [layer, canvas] : passes)
 	{
-		// 槽位里还留着上一个图块的内容，先清空：水面遮罩清成黑（不是水），其余（含风场遮罩、起伏层）清成透明
-		const ColorRGBA clearColor = layer == MapTileLayer::WATER_MASK ? ColorRGBA(0, 0, 0, 255) : ColorRGBA(0, 0, 0, 0);
+		// 槽位里还留着上一个图块的内容，先清空：水面遮罩、地形分布清成不透明的黑（不是水、不铺材质），其余（含风场遮罩、起伏层）清成透明
+		const bool opaqueMask = layer == MapTileLayer::WATER_MASK || layer == MapTileLayer::TERRAIN_SPLAT;
+		const ColorRGBA clearColor = opaqueMask ? ColorRGBA(0, 0, 0, 255) : ColorRGBA(0, 0, 0, 0);
 
 		std::vector<size_t> tiles;
 		for(size_t i = 0; i < pendingTiles.size(); ++i)
@@ -638,6 +645,40 @@ void MapViewCache::sendAtmosphereField(const std::shared_ptr<IMapRendererContext
 	ENGINE->screenHandler().setMapAtmosphereField(rgba, Point(width, height));
 }
 
+void MapViewCache::sendTerrainField(const std::shared_ptr<IMapRendererContext> & context)
+{
+	// 材质图集只读一次：模组 Content/Data/MapMaterials.png（地形模组 tools/materials.py 生成），没有就不铺地表材质
+	if(!terrainMaterialsSent)
+	{
+		terrainMaterialsSent = true;
+		const ResourcePath atlasPath("DATA/MAPMATERIALS", EResType::IMAGE);
+		if(CResourceHandler::get()->existsResource(atlasPath))
+		{
+			auto [data, size] = CResourceHandler::get()->load(atlasPath)->readAll();
+			ENGINE->screenHandler().setMapTerrainMaterials(std::vector<uint8_t>(data.get(), data.get() + size));
+		}
+		else
+			logGlobal->info("No adventure map terrain materials (DATA/MAPMATERIALS) - terrain keeps its tile art");
+	}
+
+	// 每个图块属于哪套材质：0~7 依次是泥地、沙地、草地、雪地、沼泽、碎石、地下、岩浆（与 TerrainId 的编号、材质图集的行一致），
+	// 255 为没有材质（水面、岩石、模组新增地形），照旧显示图块原画
+	const int3 mapSize = context->getMapSize();
+	const int level = model->getLevel();
+	std::vector<uint8_t> rgba(static_cast<size_t>(mapSize.x * mapSize.y) * 4, 0);
+	for(int y = 0; y < mapSize.y; ++y)
+	{
+		for(int x = 0; x < mapSize.x; ++x)
+		{
+			const int id = context->getMapTile(int3(x, y, level)).getTerrainID().getNum();
+			const size_t i = static_cast<size_t>(y * mapSize.x + x) * 4;
+			rgba[i] = id >= ETerrainId::DIRT && id <= ETerrainId::LAVA ? static_cast<uint8_t>(id) : 255;
+			rgba[i + 3] = 255;
+		}
+	}
+	ENGINE->screenHandler().setMapTerrainField(rgba, Point(mapSize.x, mapSize.y));
+}
+
 void MapViewCache::noteHeroStep(const int3 & tile)
 {
 	std::lock_guard lock(heroStepsMutex);
@@ -783,6 +824,7 @@ void MapViewCache::update(const std::shared_ptr<IMapRendererContext> & context)
 		sendDepthField(context);
 		sendVegetationField(context);
 		sendAtmosphereField(context);
+		sendTerrainField(context);
 	}
 
 	if(layered)
@@ -937,6 +979,7 @@ void MapViewCache::present(const Rect & targetArea)
 		layers.waterMask = waterMaskLayer.get();
 		layers.windMask = windMaskLayer.get();
 		layers.relief = reliefLayer.get();
+		layers.splat = splatLayer.get();
 		layers.slots = slots;
 		layers.worldOrigin = tilesRect.topLeft();
 		layers.slotOrigin = Point(((tilesRect.x % slots.x) + slots.x) % slots.x, ((tilesRect.y % slots.y) + slots.y) % slots.y);

@@ -197,13 +197,14 @@ void MapRendererTerrain::renderTile(IMapRendererContext & context, Canvas & targ
 }
 
 /// 图块动画名对应的水面遮罩动画（<名称>_MASK），模组没提供时返回空路径
-static AnimationPath waterMaskPath(const AnimationPath & tiles)
+/// 模组为图块动画提供的同名辅助动画（如水面遮罩 _MASK、地形分布图 _SPLAT）；没有就返回空
+static AnimationPath tileCompanionPath(const AnimationPath & tiles, const std::string & suffix)
 {
 	std::string name = tiles.getName();
 	if(boost::starts_with(name, "SPRITES/"))
 		name = name.substr(std::string("SPRITES/").length());
 
-	const AnimationPath path = AnimationPath::builtin("SPRITES/" + name + "_MASK");
+	const AnimationPath path = AnimationPath::builtin("SPRITES/" + name + suffix);
 	if(CResourceHandler::get()->existsResource(path) || CResourceHandler::get()->existsResource(path.toType<EResType::JSON>()))
 		return path;
 	return {};
@@ -216,7 +217,7 @@ MapRendererWaterMask::MapRendererWaterMask()
 	// 遮罩是可选的：模组没提供就不画，水面也就没有特效，不报错
 	for(const auto & terrain : LIBRARY->terrainTypeHandler->objects)
 	{
-		const AnimationPath path = terrain->isWater() ? waterMaskPath(terrain->tilesFilename) : AnimationPath();
+		const AnimationPath path = terrain->isWater() ? tileCompanionPath(terrain->tilesFilename, "_MASK") : AnimationPath();
 		if(!path.empty())
 			storage.load(terrain->getIndex(), path, EImageBlitMode::OPAQUE);
 	}
@@ -224,7 +225,7 @@ MapRendererWaterMask::MapRendererWaterMask()
 	// 河流遮罩只有清水河、泥水河：冰河结冰、岩浆河是熔岩，模组不提供
 	for(const auto & river : LIBRARY->riverTypeHandler->objects)
 	{
-		const AnimationPath path = waterMaskPath(river->tilesFilename);
+		const AnimationPath path = tileCompanionPath(river->tilesFilename, "_MASK");
 		if(!path.empty())
 			riverStorage.load(river->getIndex(), path, EImageBlitMode::COLORKEY);
 	}
@@ -249,6 +250,30 @@ void MapRendererWaterMask::renderTile(IMapRendererContext & context, Canvas & ta
 	}
 }
 
+MapRendererTerrainSplat::MapRendererTerrainSplat()
+	: storage(LIBRARY->terrainTypeHandler->objects.size())
+{
+	// 分布图是可选的：模组没提供就不画，那种地形照旧显示图块原画。水面图块也有（岸上的沙滩算沙地），岩石没有
+	for(const auto & terrain : LIBRARY->terrainTypeHandler->objects)
+	{
+		if(terrain->isRock())
+			continue;
+		const AnimationPath path = tileCompanionPath(terrain->tilesFilename, "_SPLAT");
+		if(!path.empty())
+			storage.load(terrain->getIndex(), path, EImageBlitMode::OPAQUE);
+	}
+}
+
+void MapRendererTerrainSplat::renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
+{
+	const TerrainTile & mapTile = context.getMapTile(coordinates);
+
+	// 帧号和翻转与地形图块相同；分布图没有动画，只取第 0 组
+	const auto & image = storage.find(mapTile.getTerrainID().getNum(), mapTile.extTileFlags % 4, mapTile.terView);
+	if(image)
+		target.draw(image, Point(0, 0));
+}
+
 uint8_t MapRendererTerrain::checksum(IMapRendererContext & context, const int3 & coordinates)
 {
 	const TerrainTile & mapTile = context.getMapTile(coordinates);
@@ -267,7 +292,7 @@ MapRendererRiver::MapRendererRiver()
 	logGlobal->debug("Done loading map rivers");
 }
 
-void MapRendererRiver::renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
+void MapRendererRiver::renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates, std::optional<MapMaskBlend> mask)
 {
 	const TerrainTile & mapTile = context.getMapTile(coordinates);
 
@@ -281,7 +306,10 @@ void MapRendererRiver::renderTile(IMapRendererContext & context, Canvas & target
 	int groupCount = storage.groupCount(terrainIndex, rotationIndex, imageIndex);
 	const auto & image = storage.find(terrainIndex, rotationIndex, imageIndex, groupCount > 1 ? context.terrainImageIndex(groupCount) : 0);
 
-	target.draw(image, Point(0, 0));
+	if(mask && image)
+		target.drawMapMask(image, Point(0, 0), Rect(Point(0, 0), image->dimensions()), *mask);
+	else
+		target.draw(image, Point(0, 0));
 }
 
 uint8_t MapRendererRiver::checksum(IMapRendererContext & context, const int3 & coordinates)
@@ -302,8 +330,16 @@ MapRendererRoad::MapRendererRoad()
 	logGlobal->debug("Done loading map roads");
 }
 
-void MapRendererRoad::renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
+void MapRendererRoad::renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates, std::optional<MapMaskBlend> mask)
 {
+	auto draw = [&](const std::shared_ptr<IImage> & image, const Point & position, const Rect & source)
+	{
+		if(mask && image)
+			target.drawMapMask(image, position, source, *mask);
+		else
+			target.draw(image, position, source);
+	};
+
 	const int3 coordinatesAbove = coordinates - int3(0, 1, 0);
 
 	if(context.isInMap(coordinatesAbove))
@@ -316,7 +352,7 @@ void MapRendererRoad::renderTile(IMapRendererContext & context, Canvas & target,
 			int32_t rotationIndex = (mapTileAbove.extTileFlags >> 4) % 4;
 
 			const auto & image = storage.find(terrainIndex, rotationIndex, imageIndex);
-			target.draw(image, Point(0, 0), Rect(0, 16, 32, 16));
+			draw(image, Point(0, 0), Rect(0, 16, 32, 16));
 		}
 	}
 
@@ -328,7 +364,7 @@ void MapRendererRoad::renderTile(IMapRendererContext & context, Canvas & target,
 		int32_t rotationIndex = (mapTile.extTileFlags >> 4) % 4;
 
 		const auto & image = storage.find(terrainIndex, rotationIndex, imageIndex);
-		target.draw(image, Point(0, 16), Rect(0, 0, 32, 16));
+		draw(image, Point(0, 16), Rect(0, 0, 32, 16));
 	}
 }
 
@@ -870,6 +906,16 @@ MapAtmosphere MapRendererObjects::atmosphereAt(IMapRendererContext & context, co
 		result.cloud = std::max(result.cloud, it->second.cloud);
 	}
 	return result;
+}
+
+void MapRendererObjects::renderGroundCutouts(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
+{
+	for(const auto & objectID : context.getObjects(coordinates))
+	{
+		const CGObjectInstance * object = context.getObject(objectID);
+		if(object && (MapObjectDrawOrder::isSpecialGround(object) || getEffectKind(object).waterSurface))
+			renderObject(context, target, coordinates, object, 1.0, MapMaskBlend::CUTOUT);
+	}
 }
 
 void MapRendererObjects::renderRelief(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
@@ -1486,6 +1532,15 @@ void MapRenderer::renderTileLayer(IMapRendererContext & context, Canvas & target
 			break;
 		case MapTileLayer::RELIEF:
 			rendererObjects.renderRelief(context, target, coordinates);
+			break;
+		case MapTileLayer::TERRAIN_SPLAT:
+			// 先画本图块的分布图，再把画在地面层上的道路、河流、贴地物件挖空：那些地方保留原画
+			rendererTerrainSplat.renderTile(context, target, coordinates);
+			if(context.showRivers())
+				rendererRiver.renderTile(context, target, coordinates, MapMaskBlend::CUTOUT);
+			if(context.showRoads())
+				rendererRoad.renderTile(context, target, coordinates, MapMaskBlend::CUTOUT);
+			rendererObjects.renderGroundCutouts(context, target, coordinates);
 			break;
 		case MapTileLayer::OVERLAY:
 			if(withOverlays)

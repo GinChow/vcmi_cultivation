@@ -58,6 +58,7 @@ struct MapLayerSet
 	const Canvas * waterMask = nullptr; ///< 水面遮罩，R 通道 1 为水、0 为岸
 	const Canvas * windMask = nullptr;  ///< 风场遮罩：RGB 为摇摆物件的弯曲权重、叶片抖动、覆盖度（预乘），A 为上面盖着不摇摆物件的程度
 	const Canvas * relief = nullptr;    ///< 起伏层：RG 为物件表面法线、B 为离地高度（预乘），A 为物件本体覆盖度；RGB 为 0 处是没有起伏图的物件
+	const Canvas * splat = nullptr;     ///< 地形分布层：RGB 为本地形、泥地、沙地的比重（见 MapRendererTerrainSplat），之和不足 1 处保留图块原画
 	Point slots;       ///< 缓存的图块槽位数（宽、高）
 	Point worldOrigin; ///< 可见窗口左上角图块的地图坐标
 	Point slotOrigin;  ///< 该图块在缓存中的槽位
@@ -192,4 +193,11 @@ public:
 	/// A 地表大尺度明暗、干湿变化的幅度（按地形，水面为 0）；R 不用。
 	/// 着色器据此让流动的雾只在山脚、林地、水边浓起来，云海只绕着山。换地图或切换地上地下时由地图缓存调用
 	virtual void setMapAtmosphereField(const std::vector<uint8_t> & rgba, const Point & size) = 0;
+
+	/// 地形场（2026-11-17）：rgba 按行存放 size.x × size.y 个地图图块，R 是该图块的地表材质组（0~7，255 为没有）。
+	/// 换地图或切换地上地下时由地图缓存调用
+	virtual void setMapTerrainField(const std::vector<uint8_t> & rgba, const Point & size) = 0;
+
+	/// 地表材质图集（2026-11-17）：模组提供的 PNG 文件内容，8 行（材质组）× 4 列（子材质），RGB 颜色、A 高度。只给一次
+	virtual void setMapTerrainMaterials(const std::vector<uint8_t> & png) = 0;
 };

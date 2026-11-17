@@ -34,6 +34,7 @@ struct MapLayerSet
 	const Canvas * waterMask = nullptr;
 	const Canvas * windMask = nullptr;
 	const Canvas * relief = nullptr;
+	const Canvas * splat = nullptr;
 	Point slots;
 	Point worldOrigin;
 	Point slotOrigin;
@@ -144,4 +145,6 @@ public:
 	void setMapVegetationField(const std::vector<uint8_t> &, const Point &) {}
 	void startMapBirdFlock(float, float, float, float) {}
 	void setMapAtmosphereField(const std::vector<uint8_t> &, const Point &) {}
+	void setMapTerrainField(const std::vector<uint8_t> &, const Point &) {}
+	void setMapTerrainMaterials(const std::vector<uint8_t> &) {}
 };

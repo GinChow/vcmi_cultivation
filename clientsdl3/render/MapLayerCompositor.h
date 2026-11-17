@@ -51,6 +51,7 @@ public:
 		SDL_Texture * waterMask = nullptr;
 		SDL_Texture * windMask = nullptr;
 		SDL_Texture * relief = nullptr;
+		SDL_Texture * splat = nullptr;
 		Point slots;
 		Point worldOrigin;
 		Point slotOrigin;
@@ -83,6 +84,16 @@ public:
 	/// 设置雾云场（含义见 IScreenHandler::setMapAtmosphereField）：与离岸距离图共用一张纹理，存在它的 G、B、A 通道。须在渲染线程上调用
 	void setAtmosphereField(const std::vector<uint8_t> & rgba, const Point & size);
 
+	/// 设置地形场（含义见 IScreenHandler::setMapTerrainField）。须在渲染线程上调用
+	void setTerrainField(const std::vector<uint8_t> & rgba, const Point & size);
+
+	/// 设置地表材质图集（PNG 文件内容，含义见 IScreenHandler::setMapTerrainMaterials），在渲染线程上按需解码。须在渲染线程上调用
+	void setTerrainMaterials(const std::vector<uint8_t> & png);
+
+	/// 地表材质图集的布局：8 行（材质组，与 TerrainId 0~7 一致）× 4 列（子材质），每格是正方形，四周 8 像素是环绕的内容
+	static constexpr int materialSets = 8;
+	static constexpr int materialsPerSet = 4;
+
 	/// 惊起一群鸟（见 IScreenHandler::startMapBirdFlock），转给 MapParticles。须在渲染线程上调用
 	void startBirdFlock(float x, float y, float directionX, float directionY);
 
@@ -113,8 +124,20 @@ private:
 	SDL_Texture * lightMap = nullptr;
 	Point reliefLevelsSourceSize;
 
-	/// state 创建时绑定的纹理（六张缓存、两级遮罩小图、离岸距离图、光照图）；任一张换了就要重建 state
-	std::array<SDL_Texture *, 10> boundTextures = {};
+	/// state 创建时绑定的纹理（七张缓存、两级遮罩小图、离岸距离图、光照图、材质图集、地形场）；任一张换了就要重建 state
+	std::array<SDL_Texture *, 13> boundTextures = {};
+
+	/// 地表材质图集：PNG 内容由地图缓存给，渲染线程上解码成纹理；同时算出每格的平均颜色（六边形随机铺贴保持方差要用）
+	std::vector<uint8_t> materialsPng;
+	bool materialsDirty = false;
+	SDL_Texture * materialAtlas = nullptr;
+	bool materialsLoaded = false; ///< 图集有效（模组提供了、解码成功、尺寸对）
+	Point materialAtlasSize;
+	int materialCell = 0;
+	std::array<std::array<float, 4>, 32> materialMeans = {};
+
+	/// 解码图集、建纹理；没有图集时建一张 1×1 的占位，materialsLoaded 为假
+	bool ensureMaterialAtlas(SDL_Renderer * renderer);
 
 	/// 这一帧的太阳：在 prepare() 里按设置和时间算好，合成时用
 	struct Sun
@@ -144,6 +167,7 @@ private:
 		SDL_Texture * texture = nullptr;
 	};
 	TileField depthField;
+	TileField terrainField;
 	SDL_GPUSampler * clampSampler = nullptr;
 
 	/// 建好或更新场的纹理；还没收到数据时用 1×1 的 fallback

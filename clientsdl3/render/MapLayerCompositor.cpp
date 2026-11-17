@@ -15,6 +15,7 @@
 #include "lib/CConfigHandler.h"
 
 #include <SDL3/SDL.h>
+#include <SDL3_image/SDL_image.h>
 
 namespace
 {
@@ -47,6 +48,9 @@ struct Params
 	float4 atmos;     // x：雾的浓度；y：云海的浓度
 	float4 shadowDir; // xy：离地 1 个图块的点，影子在屏幕上落出多远（图块）
 	float4 grade;     // rgb：整幅画面的时段色调
+	float4 terrain;   // x：地表材质强度（缩得太小时为 0）；y：一格材质铺多少图块；zw：地形场尺寸（图块）
+	float4 atlas;     // xy：材质图集像素尺寸；z：一格多少像素；w：每格四周环绕边的宽度（像素）
+	float4 cellMean[32]; // 材质图集每格的平均颜色（rgb）与平均高度（a），按 组 × 4 + 子材质 排
 };
 
 struct main0_in
@@ -247,6 +251,107 @@ static inline float3 groundVariation(float3 c, float2 world, float t, float amou
 	return v;
 }
 
+// ---- 地表材质（2026-11-17）：按世界坐标铺的真实地表 ----
+// 地形图块只告诉着色器“哪里是什么地形”（地形分布层：本地形、泥地、沙地的比重），颜色改从材质图集按地图坐标取，
+// 跨图块连续、不重复。图集 8 行 × 4 列：行是材质组（与 TerrainId 0~7 一致：泥地、沙地、草地、雪地、沼泽、碎石、地下、岩浆），
+// 列是该组的 4 种子材质（地形模组 tools/gen_v4.sh 生成，tools/materials.py 做成无缝并推出高度），RGB 颜色、A 高度。
+// 一种地形 = 底子材质 + 成片的大斑 + 中等斑块 + 零星点缀，子材质交界按高度参差（石子、草尖先从土里露出来）；
+// 再加大尺度的缓坡起伏（雪地加风吹出的雪垄），按游戏里的太阳打光，地表就有了真实的层次和光影。
+
+// 每组的子材质覆盖率：x 大斑（第 1 列）、y 中斑（第 2 列）、z 点缀（第 3 列），w 是材质高度换成的起伏幅度（图块）
+constant float4 setCoverage[8] = {
+	float4(0.32, 0.28, 0.18, 0.10), // 泥地：黄土底，龟裂黏土、深色腐殖土、碎石浮土
+	float4(0.28, 0.18, 0.14, 0.06), // 沙地：风纹细沙，粗砂贝壳、湿沙、沙丘草
+	float4(0.34, 0.22, 0.20, 0.08), // 草地：茂草，干草三叶草、踩秃的土、苔藓蕨类
+	float4(0.14, 0.24, 0.07, 0.08), // 雪地：粉雪，风壳雪脊（只零星几片，太多像揉皱的布）、薄雪露地、踩过的雪（灰脚印多了像脏水坑）
+	float4(0.38, 0.30, 0.24, 0.08), // 沼泽：烂泥水洼，苔草墩、浅水芦苇、泥炭
+	float4(0.30, 0.30, 0.16, 0.14), // 碎石：碎石坡，石板地衣、石土枯草、大石块
+	float4(0.30, 0.24, 0.16, 0.12), // 地下：湿石地，碎石蘑菇、乱石、矿晶
+	float4(0.34, 0.26, 0.16, 0.12)  // 岩浆：玄武岩红裂缝，火山灰、绳状熔岩、硫磺焦土
+};
+// 靠近山脚时加多的子材质（1~3 列）：碎石、乱石这类
+constant int mountainSub[8] = {3, 1, 3, 2, 3, 3, 2, 1};
+
+static inline float2 hash22(float2 p)
+{
+	float3 p3 = fract(float3(p.xyx) * float3(0.1031, 0.1030, 0.0973));
+	p3 += dot(p3, p3.yzx + 33.33);
+	return fract((p3.xx + p3.yz) * p3.zy);
+}
+
+// 图集一格里的一点：local 以格为单位，可以是任意实数（取小数部分环绕）。四周的环绕边保证线性取样跨过格边也连续
+static inline float4 atlasTexel(texture2d<float> atlasTex, sampler atlasSmp, constant Params & P, int cellIndex, float2 local)
+{
+	float cell = P.atlas.z;
+	float gutter = P.atlas.w;
+	float2 origin = float2(float(cellIndex % 4), float(cellIndex / 4)) * cell + gutter;
+	return atlasTex.sample(atlasSmp, (origin + fract(local) * (cell - 2.0 * gutter)) / P.atlas.xy, level(0.0));
+}
+
+// 六边形随机铺贴（Heitz & Neyret 2018 的思路）：在三角网格的三个顶点上各取一个随机错位的样本，按到顶点的距离混合，
+// 再按权重还原方差（不然混合处发灰发糊）。同一张材质铺满地图也看不出周期；不旋转，免得画上的光影朝向乱掉
+static inline float4 hexMaterial(texture2d<float> atlasTex, sampler atlasSmp, constant Params & P, int cellIndex, float2 uv)
+{
+	float2 g = uv * 1.7;
+	float2 sk = float2(g.x - g.y * 0.57735, g.y * 1.1547);
+	float2 b = floor(sk);
+	float2 f = sk - b;
+	bool up = f.x + f.y > 1.0;
+	float2 v0 = up ? b + 1.0 : b;
+	float3 w = up ? float3(f.x + f.y - 1.0, 1.0 - f.y, 1.0 - f.x) : float3(1.0 - f.x - f.y, f.x, f.y);
+	w = pow(max(w, 0.0), 4.0);
+	float salt = float(cellIndex) * 7.13;
+	float4 a0 = atlasTexel(atlasTex, atlasSmp, P, cellIndex, uv + hash22(v0 + salt));
+	float4 a1 = atlasTexel(atlasTex, atlasSmp, P, cellIndex, uv + hash22(b + float2(1.0, 0.0) + salt));
+	float4 a2 = atlasTexel(atlasTex, atlasSmp, P, cellIndex, uv + hash22(b + float2(0.0, 1.0) + salt));
+	float wsum = w.x + w.y + w.z;
+	float4 blended = (a0 * w.x + a1 * w.y + a2 * w.z) / wsum;
+	float4 mean = P.cellMean[cellIndex];
+	return mean + (blended - mean) * (wsum / sqrt(dot(w, w)));
+}
+
+// 按高度混合：子材质的覆盖度 cover 越高越能盖过底子；交界处底子里高起的颗粒先露出来，交界参差，不是一圈柔边
+static inline float heightBlend(float baseHeight, float layerHeight, float cover)
+{
+	return smoothstep(-0.32, 0.32, (layerHeight + cover * 1.6 - 0.8) - baseHeight);
+}
+
+// 一组地表材质在地图坐标 world 处的颜色（rgb）与高度（a，0~1）。mountain：离山多近，shore：离水多近（都 0~1）
+static inline float4 terrainMaterial(int set, float2 world, float mountain, float shore, constant Params & P,
+	texture2d<float> atlasTex, sampler atlasSmp, texture2d<float> noiseTex, sampler noiseSmp)
+{
+	float2 uv = world / P.terrain.y;
+	int base = set * 4;
+	float4 m = hexMaterial(atlasTex, atlasSmp, P, base, uv);
+
+	// 子材质分布：大斑约 6 个图块（带扭曲，边缘不圆）、中斑约 2.5 个图块、点缀不到一个图块
+	float2 salt = float2(float(set) * 0.173, float(set) * 0.291);
+	float2 warp = (noiseTex.sample(noiseSmp, world * 0.05 + salt + float2(0.5, 0.2)).rg - 0.5) * 1.2;
+	float n1 = noiseTex.sample(noiseSmp, (world + warp) * 0.021 + salt).r;
+	float n2 = noiseTex.sample(noiseSmp, (world + warp * 0.5) * 0.05 + salt + float2(0.41, 0.07)).g;
+	float n3 = noiseTex.sample(noiseSmp, world * 0.07 + salt + float2(0.19, 0.63)).b;
+
+	float3 cover = setCoverage[set].xyz;
+	int bias = mountainSub[set] - 1;
+	cover[bias] += mountain * 0.35;
+	if(set == 1)
+		cover.y += shore * 0.6; // 沙地靠水处多湿沙
+
+	// 斑块边缘留得宽一些：覆盖度从 0 到 1 有一大段过渡，交界由高度参差决定，不是一刀切
+	float3 masks = float3(smoothstep(0.84 - cover.x * 1.2, 1.12 - cover.x * 1.2, n1),
+		smoothstep(0.84 - cover.y * 1.2, 1.12 - cover.y * 1.2, n2),
+		smoothstep(0.88 - cover.z * 1.1, 1.08 - cover.z * 1.1, n3));
+
+	for(int k = 0; k < 3; ++k)
+	{
+		if(masks[k] < 0.01)
+			continue;
+		float4 layer = hexMaterial(atlasTex, atlasSmp, P, base + k + 1, uv * (1.0 + 0.11 * float(k)) + float2(0.37, 0.61) * float(k + 1));
+		m = mix(m, layer, heightBlend(m.a, layer.a, masks[k]));
+	}
+	return m;
+}
+
 // 流动的雾：雾云场的 G 说这里生雾多少（山脚、林地、水边、沼泽浓），两层顺风飘移的低频噪声把它撕成一缕一缕；
 // 只贴着地面：可见表面离地越高雾越淡，树根、山脚埋在雾里，树冠、山峰露出来
 static inline float fogAt(float2 world, float t, float mist, float height, texture2d<float> noiseTex, sampler noiseSmp)
@@ -300,7 +405,10 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	texture2d<float> swayTex [[texture(8)]], sampler swaySmp [[sampler(8)]],
 	texture2d<float> windTex [[texture(9)]], sampler windSmp [[sampler(9)]],
 	texture2d<float> reliefTex [[texture(10)]], sampler reliefSmp [[sampler(10)]],
-	texture2d<float> lightTex [[texture(11)]], sampler lightSmp [[sampler(11)]])
+	texture2d<float> lightTex [[texture(11)]], sampler lightSmp [[sampler(11)]],
+	texture2d<float> splatTex [[texture(12)]], sampler splatSmp [[sampler(12)]],
+	texture2d<float> atlasTex [[texture(13)]], sampler atlasSmp [[sampler(13)]],
+	texture2d<float> terrainTex [[texture(14)]], sampler terrainSmp [[sampler(14)]])
 {
 	float2 uv = in.uv;
 	float3 color = groundTex.sample(groundSmp, uv).rgb;
@@ -329,14 +437,110 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	float riverShare = river / max(wet, 0.001);     // 河面在这一点水面里的比重
 	float lakeShare = saturate(maskRGB.r - maskRGB.b) / max(maskRGB.g, 0.001); // 湖面的比重
 
-	// 地表：先抹开图块接缝，再加按地图坐标连续变化的明暗、干湿冷暖（只在陆地上）。
-	// 地形的变化幅度在雾云场的 A 通道（与离岸距离图同一张，按地图坐标取样）
+	// 地表：有地形分布的地方按世界坐标铺材质、按起伏打光；其余（岩石、道路、河流、湖、没有材质的地形）抹开图块接缝，
+	// 再加按地图坐标连续变化的明暗、干湿。地形的变化幅度在雾云场的 A 通道（与离岸距离图同一张，按地图坐标取样）
 	float land = (1.0 - saturate(maskRGB.g)) * P.misc.y;
+	float4 fieldHere = depthTex.sample(depthSmp, world / max(P.misc.zw, float2(1.0)));
+	float3 splat = splatTex.sample(splatSmp, uv).rgb;
+	float materialShare = saturate(splat.r + splat.g + splat.b) * P.terrain.x * land;
+
+	// 大尺度缓坡：两层低频噪声，起伏约一个图块（与材质无关，所有像素都算，导数才连续）
+	float macro = noiseTex.sample(noiseSmp, world * 0.03 + float2(0.71, 0.29)).r * 0.75
+		+ noiseTex.sample(noiseSmp, world * 0.085 + float2(0.13, 0.83)).g * 0.25;
+	float terrainHeight = macro * 0.9 * materialShare;
+	float3 terrainColor = color;
+	float snowShare = 0.0;
+
+	if(materialShare > 0.003)
+	{
+		uint2 tile = uint2(clamp(floor(world), float2(0.0), P.terrain.zw - 1.0));
+		int own = int(terrainTex.read(tile).r * 255.0 + 0.5);
+
+		// 离山多近（雾云场的云量）、离水多近（1/16 水面遮罩在半个图块外的四点）
+		float mountain = smoothstep(0.15, 0.7, fieldHere.b);
+		float near = maskLow.sample(maskLowSmp, windowToUV(rel + float2(0.5, 0.0), slots, slotOrigin)).g
+			+ maskLow.sample(maskLowSmp, windowToUV(rel - float2(0.5, 0.0), slots, slotOrigin)).g
+			+ maskLow.sample(maskLowSmp, windowToUV(rel + float2(0.0, 0.5), slots, slotOrigin)).g
+			+ maskLow.sample(maskLowSmp, windowToUV(rel - float2(0.0, 0.5), slots, slotOrigin)).g;
+		float shore = smoothstep(0.05, 0.6, near * 0.25);
+
+		// 本地形、泥地、沙地三组按分布图的比重混合；比重很小的组不算
+		float3 weights = splat;
+		int sets[3] = {own, 0, 1};
+		float4 sum = float4(0.0);
+		float total = 0.0;
+		float detail = 0.0;
+		for(int k = 0; k < 3; ++k)
+		{
+			if(weights[k] < 0.02 || sets[k] > 7)
+				continue;
+			float4 m = terrainMaterial(sets[k], world, mountain, shore, P, atlasTex, atlasSmp, noiseTex, noiseSmp);
+			sum += m * weights[k];
+			total += weights[k];
+			detail += (m.a - 0.5) * setCoverage[sets[k]].w * weights[k];
+			if(sets[k] == 3)
+				snowShare += weights[k];
+		}
+		if(total > 0.001)
+		{
+			terrainColor = sum.rgb / total;
+			terrainHeight += detail / total * materialShare;
+			snowShare /= total;
+			// 水边湿：颜色略深、更浓
+			float wetLum = dot(terrainColor, float3(0.3, 0.59, 0.11));
+			terrainColor = mix(terrainColor, (wetLum + (terrainColor - wetLum) * 1.25) * 0.8, shore * 0.55);
+		}
+		else
+			materialShare = 0.0;
+
+		// 雪垄：风从西偏北吹来，雪垄横在风向上，按噪声断续、弯曲
+		if(snowShare > 0.01)
+		{
+			const float2 windDir = float2(0.94, 0.34);
+			float across = dot(world, float2(-windDir.y, windDir.x));
+			float along = dot(world, windDir);
+			float bend = noiseTex.sample(noiseSmp, world * 0.06 + float2(0.3, 0.9)).r;
+			float drift = sin(across * 3.6 + bend * 7.0 + 0.6 * sin(along * 0.45)) * 0.5 + 0.5;
+			drift = drift * drift * smoothstep(0.25, 0.75, noiseTex.sample(noiseSmp, world * 0.025 + float2(0.6, 0.1)).g);
+			terrainHeight += drift * 0.09 * snowShare * materialShare;
+		}
+	}
+
+	// 起伏打光：屏幕空间的高度导数（每 2×2 像素一组）换成地面坡度，再换到屏幕坐标里算朝向太阳的程度。导数要在分支外取
+	float2 dWorld = float2(length(dfdx(world)), length(dfdy(world)));
+	float2 slope = float2(dfdx(terrainHeight), dfdy(terrainHeight)) / max(dWorld, float2(1e-5));
+	float splatEdgeWidth = fwidth(splat.r);
+	float sandEdgeWidth = fwidth(splat.g - splat.b);
+
+	if(materialShare > 0.003)
+	{
+		// 地面坐标（x 右、y 北、z 上）里的法线 → 屏幕坐标（与 groundNormal 同一套俯视角）
+		float3 n = normalize(float3(-slope.x, slope.y, 1.0));
+		float3 nScreen = n.x * float3(1.0, 0.0, 0.0) + n.y * float3(0.0, 0.917, -0.399) + n.z * groundNormal;
+		const float ambient = 0.55;
+		float flat = ambient + (1.0 - ambient) * max(dot(groundNormal, P.sun.xyz), 0.05);
+		float k = clamp((ambient + (1.0 - ambient) * max(dot(nScreen, P.sun.xyz), 0.0)) / flat, 0.5, 1.6);
+		k = mix(1.0, k, saturate(P.sun.w * 1.2));
+		float3 lit = terrainColor * k;
+		// 背阴处偏冷，雪地更明显
+		lit = mix(lit, lit * mix(P.shade.rgb, P.shade.rgb * float3(0.92, 0.96, 1.04), snowShare), saturate((1.0 - k) * 1.8));
+
+		// 地形交界的淡墨线：本地形与泥地、沙地之间，泥地与沙地之间；按噪声断续，像干笔
+		float breakup = smoothstep(0.25, 0.65, noiseTex.sample(noiseSmp, world * 0.9 + float2(0.7, 0.4)).b);
+		float inkOwn = 1.0 - smoothstep(0.0, max(splatEdgeWidth * 1.4, 1e-4), abs(splat.r - 0.5));
+		float inkSand = (1.0 - smoothstep(0.0, max(sandEdgeWidth * 1.4, 1e-4), abs(splat.g - splat.b))) * smoothstep(0.3, 0.6, splat.g + splat.b);
+		float ink = max(inkOwn * step(0.05, splat.g + splat.b), inkSand * 0.6) * (0.35 + 0.65 * breakup) * 0.32;
+		lit = mix(lit, float3(0.15, 0.17, 0.18), ink);
+
+		color = mix(color, lit, materialShare);
+	}
+
 	if(land > 0.003)
 	{
-		float groundAmount = depthTex.sample(depthSmp, world / max(P.misc.zw, float2(1.0))).a;
-		float3 varied = blendTileSeams(color, rel, slots, slotOrigin, groundTex, groundSmp, maskTex, maskSmp);
-		varied = groundVariation(varied, world, t, groundAmount, noiseTex, noiseSmp);
+		// 剩下的图块原画：抹开接缝；所有陆地再加大尺度的明暗干湿（有材质处减半，材质和起伏光影已经有层次）
+		float3 varied = materialShare < 0.99 ? blendTileSeams(color, rel, slots, slotOrigin, groundTex, groundSmp, maskTex, maskSmp) : color;
+		varied = mix(varied, color, materialShare);
+		varied = groundVariation(varied, world, t, fieldHere.a * (1.0 - 0.5 * materialShare), noiseTex, noiseSmp);
 		color = mix(color, varied, land);
 	}
 
@@ -618,6 +822,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	// 时段色调：清晨、傍晚整体偏暖
 	color *= mix(float3(1.0), P.grade.rgb, P.misc.y);
 
+
 	// 植被粒子（MapParticles）和覆盖层（迷雾、路径）在这一遍之后另外画上去，粒子才能夹在物件和迷雾之间
 
 	main0_out out;
@@ -728,6 +933,9 @@ struct MapUniforms
 	float atmos[4];
 	float shadowDir[4];
 	float grade[4];
+	float terrain[4];
+	float atlas[4];
+	float cellMean[MapLayerCompositor::materialSets * MapLayerCompositor::materialsPerSet][4];
 };
 
 /// 与长投影预处理着色器的 Params 一一对应
@@ -738,9 +946,16 @@ struct ShadowUniforms
 	float sun[4];
 };
 
-/// 着色器声明的取样器数：SDL 的主纹理加本类绑定的十一张（含离岸距离图、摇摆层、风场遮罩、起伏层、光照图）。
-/// Metal 每个阶段最多 16 个取样器，离岸距离图因此兼存雾云场，没有另占一个
-constexpr Uint32 shaderSamplerCount = 12;
+/// 着色器声明的取样器数：SDL 的主纹理加本类绑定的十四张（含离岸距离图、摇摆层、风场遮罩、起伏层、光照图、
+/// 地形分布层、材质图集、地形场）。Metal 每个阶段最多 16 个取样器，离岸距离图因此兼存雾云场，没有另占一个
+constexpr Uint32 shaderSamplerCount = 15;
+
+/// 一格材质在地图上铺多大（图块）：图集一格 768 像素、内容 752 像素，铺 4.8 个图块（约 157 像素一块，比缓存的 96 像素细，
+/// 草丛、石子与树、英雄的比例才对）
+constexpr float materialCellTiles = 4.8f;
+/// 屏幕上一个图块小于这么多像素时，地表材质淡出、退回图块原画（没有多级纹理，缩得太小会闪烁）
+constexpr float materialFadeStart = 22.0f;
+constexpr float materialFadeEnd = 40.0f;
 /// 长投影预处理着色器：主纹理加一张环绕取样的 1/4 起伏层
 constexpr Uint32 shadowSamplerCount = 2;
 
@@ -870,6 +1085,10 @@ bool MapLayerCompositor::ensureShaderResources(SDL_Renderer * renderer)
 		clampSampler = nullptr;
 		depthField.texture = nullptr;
 		depthField.dirty = true;
+		terrainField.texture = nullptr;
+		terrainField.dirty = true;
+		materialAtlas = nullptr;
+		materialsDirty = true;
 		maskLevels = {};
 		maskLevelsSourceSize = Point();
 		shadowShader = nullptr;
@@ -1194,6 +1413,7 @@ void MapLayerCompositor::prepare(SDL_Renderer * renderer, const Inputs & inputs)
 
 	renderLightMap(renderer, inputs);
 
+
 	SDL_SetRenderTarget(renderer, previousTarget);
 }
 
@@ -1206,6 +1426,101 @@ void MapLayerCompositor::setDepthField(const std::vector<uint8_t> & distances, c
 		depthField.rgba[i * 4] = distances[i];
 	depthField.size = size;
 	depthField.dirty = true;
+}
+
+void MapLayerCompositor::setTerrainField(const std::vector<uint8_t> & rgba, const Point & size)
+{
+	terrainField.rgba = rgba;
+	terrainField.size = size;
+	terrainField.dirty = true;
+}
+
+void MapLayerCompositor::setTerrainMaterials(const std::vector<uint8_t> & png)
+{
+	materialsPng = png;
+	materialsDirty = true;
+}
+
+bool MapLayerCompositor::ensureMaterialAtlas(SDL_Renderer * renderer)
+{
+	if(materialAtlas && !materialsDirty)
+		return true;
+
+	if(materialAtlas)
+		SDL_DestroyTexture(materialAtlas);
+	materialAtlas = nullptr;
+	materialsLoaded = false;
+	materialsDirty = false;
+	inputsForgotten = true; // 新纹理可能分到旧纹理的地址
+
+	SDL_Surface * decoded = nullptr;
+	if(!materialsPng.empty())
+	{
+		SDL_Surface * raw = IMG_Load_IO(SDL_IOFromConstMem(materialsPng.data(), materialsPng.size()), true);
+		if(raw)
+		{
+			decoded = SDL_ConvertSurface(raw, SDL_PIXELFORMAT_RGBA32);
+			SDL_DestroySurface(raw);
+		}
+		if(!decoded)
+			logGlobal->error("Failed to decode the adventure map terrain materials: %s", SDL_GetError());
+	}
+
+	// 图集必须正好是 4 列 × 8 行的正方形格子
+	if(decoded && (decoded->w % materialsPerSet != 0 || decoded->w / materialsPerSet * materialSets != decoded->h))
+	{
+		logGlobal->error("Adventure map terrain materials are %dx%d, expected 4 columns by 8 rows of square cells - not used", decoded->w, decoded->h);
+		SDL_DestroySurface(decoded);
+		decoded = nullptr;
+	}
+
+	if(decoded)
+	{
+		materialAtlas = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, decoded->w, decoded->h);
+		if(materialAtlas)
+		{
+			SDL_UpdateTexture(materialAtlas, nullptr, decoded->pixels, decoded->pitch);
+			materialAtlasSize = Point(decoded->w, decoded->h);
+			materialCell = decoded->w / materialsPerSet;
+
+			// 每格的平均颜色与高度（隔几个像素取一个就够）
+			for(int set = 0; set < materialSets; ++set)
+			{
+				for(int sub = 0; sub < materialsPerSet; ++sub)
+				{
+					std::array<double, 4> sum = {};
+					int count = 0;
+					for(int y = set * materialCell; y < (set + 1) * materialCell; y += 4)
+					{
+						const auto * row = static_cast<const uint8_t *>(decoded->pixels) + static_cast<size_t>(y) * decoded->pitch;
+						for(int x = sub * materialCell; x < (sub + 1) * materialCell; x += 4)
+						{
+							for(size_t c = 0; c < 4; ++c)
+								sum[c] += row[x * 4 + c];
+							++count;
+						}
+					}
+					for(size_t c = 0; c < 4; ++c)
+						materialMeans[set * materialsPerSet + sub][c] = static_cast<float>(sum[c] / std::max(count, 1) / 255.0);
+				}
+			}
+			materialsLoaded = true;
+			logGlobal->info("Adventure map terrain materials ready (%dx%d)", decoded->w, decoded->h);
+		}
+		SDL_DestroySurface(decoded);
+	}
+
+	if(!materialAtlas)
+	{
+		// 占位：着色器照样绑一张纹理，地表材质强度为 0
+		materialAtlas = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, 1, 1);
+		const uint8_t pixel[4] = {0, 0, 0, 0};
+		if(materialAtlas)
+			SDL_UpdateTexture(materialAtlas, nullptr, pixel, 4);
+	}
+	if(materialAtlas)
+		SDL_SetTextureScaleMode(materialAtlas, SDL_SCALEMODE_LINEAR);
+	return materialAtlas != nullptr;
 }
 
 void MapLayerCompositor::setAtmosphereField(const std::vector<uint8_t> & rgba, const Point & size)
@@ -1284,7 +1599,7 @@ void MapLayerCompositor::forgetInputs()
 
 bool MapLayerCompositor::ensureRenderState(SDL_Renderer * renderer, const Inputs & inputs)
 {
-	const std::array<SDL_Texture *, 10> wanted = {inputs.ground, inputs.objects, inputs.sway, inputs.waterMask, inputs.windMask, maskLevels[2], maskLevels[3], depthField.texture, inputs.relief, lightMap};
+	const std::array<SDL_Texture *, 13> wanted = {inputs.ground, inputs.objects, inputs.sway, inputs.waterMask, inputs.windMask, maskLevels[2], maskLevels[3], depthField.texture, inputs.relief, lightMap, inputs.splat, materialAtlas, terrainField.texture};
 
 	// 缓存画布重建后，新纹理可能恰好分到旧纹理的地址，单比指针不可靠，所以还要看 forgetInputs() 的标记
 	const bool forgotten = inputsForgotten.exchange(false);
@@ -1301,13 +1616,17 @@ bool MapLayerCompositor::ensureRenderState(SDL_Renderer * renderer, const Inputs
 
 	// 顺序与着色器的 texture(1)~texture(11) 一一对应；离岸距离图按地图坐标取样、不环绕，用夹边采样器。
 	// 覆盖层不在这里：粒子要夹在物件和迷雾之间，覆盖层在粒子之后另画（见 composeWithShader）
-	const std::array<SDL_Texture *, 11> textures = {inputs.ground, inputs.objects, inputs.waterMask, noise, maskLevels[2], maskLevels[3], depthField.texture, inputs.sway, inputs.windMask, inputs.relief, lightMap};
-	std::array<SDL_GPUTextureSamplerBinding, 11> bindings = {};
+	const std::array<SDL_Texture *, 14> textures = {inputs.ground, inputs.objects, inputs.waterMask, noise, maskLevels[2], maskLevels[3], depthField.texture, inputs.sway, inputs.windMask, inputs.relief, lightMap, inputs.splat, materialAtlas, terrainField.texture};
+	// 绑定数与纹理数一致（2026-11-17 曾只改了纹理表、绑定数还是 11：后三张没绑上，循环还写出了数组）
+	std::array<SDL_GPUTextureSamplerBinding, std::tuple_size_v<decltype(textures)>> bindings = {};
+	static_assert(std::tuple_size_v<decltype(textures)> + 1 == shaderSamplerCount, "纹理数要与着色器声明的取样器数（含 SDL 的主纹理）一致");
 
 	for(size_t i = 0; i < textures.size(); ++i)
 	{
 		bindings[i].texture = textures[i] ? gpuTextureOf(textures[i]) : nullptr;
-		bindings[i].sampler = textures[i] == depthField.texture ? clampSampler : sampler;
+		// 离岸距离图、地形场按地图坐标取样、不环绕；材质图集在格子里自己环绕（四周有环绕的边），也用夹边
+		const bool clamped = textures[i] == depthField.texture || textures[i] == terrainField.texture || textures[i] == materialAtlas;
+		bindings[i].sampler = clamped ? clampSampler : sampler;
 		if(!bindings[i].texture)
 		{
 			logGlobal->error("Map compositor input %d has no GPU texture - drawing map layers without the water shader", static_cast<int>(i));
@@ -1340,6 +1659,9 @@ void MapLayerCompositor::compose(SDL_Renderer * renderer, const Inputs & inputs,
 {
 	const bool shaderReady = ensureShaderResources(renderer) && maskLevels.back() && maskLevelsSourceSize.x > 0 && lightMap
 		&& ensureFieldTexture(renderer, depthField, {128, 0, 0, 255}, "sea depth")
+		&& ensureFieldTexture(renderer, terrainField, {255, 0, 0, 255}, "terrain")
+		&& ensureMaterialAtlas(renderer)
+		&& inputs.splat
 		&& ensureRenderState(renderer, inputs);
 
 	if(shaderReady)
@@ -1399,6 +1721,26 @@ void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs
 	uniforms.camera[3] = cloudAltitude;
 	uniforms.atmos[0] = 0.36f; // 雾
 	uniforms.atmos[1] = 0.85f; // 云
+
+	// 地表材质：按屏幕上一个图块多大淡入（缩得太小时退回图块原画）
+	float materialStrength = 0.0f;
+	if(materialsLoaded && !regions.empty() && regions.front().source.w > 0 && inputs.slots.x > 0)
+	{
+		const float tilePixels = static_cast<float>(regions.front().target.w) / static_cast<float>(regions.front().source.w) * width / static_cast<float>(inputs.slots.x);
+		const float fade = std::clamp((tilePixels - materialFadeStart) / (materialFadeEnd - materialFadeStart), 0.0f, 1.0f);
+		materialStrength = fade * fade * (3.0f - 2.0f * fade);
+	}
+	uniforms.terrain[0] = materialStrength;
+	uniforms.terrain[1] = materialCellTiles;
+	uniforms.terrain[2] = static_cast<float>(std::max(1, terrainField.size.x));
+	uniforms.terrain[3] = static_cast<float>(std::max(1, terrainField.size.y));
+	uniforms.atlas[0] = static_cast<float>(std::max(1, materialAtlasSize.x));
+	uniforms.atlas[1] = static_cast<float>(std::max(1, materialAtlasSize.y));
+	uniforms.atlas[2] = static_cast<float>(std::max(1, materialCell));
+	uniforms.atlas[3] = 8.0f; // 每格四周环绕边的宽度（像素），与 tools/materials.py 一致
+	for(size_t i = 0; i < materialMeans.size(); ++i)
+		for(size_t c = 0; c < 4; ++c)
+			uniforms.cellMean[i][c] = materialMeans[i][c];
 
 	SDL_SetGPURenderStateFragmentUniforms(state, 0, &uniforms, sizeof(uniforms));
 	SDL_SetGPURenderState(renderer, state);
@@ -1501,10 +1843,17 @@ void MapLayerCompositor::release()
 	}
 	shadowShader = nullptr;
 
-	if(depthField.texture)
-		SDL_DestroyTexture(depthField.texture);
-	depthField.texture = nullptr;
-	depthField.dirty = true; // 数据留着，下一个渲染器上重建纹理
+	for(TileField * field : {&depthField, &terrainField})
+	{
+		if(field->texture)
+			SDL_DestroyTexture(field->texture);
+		field->texture = nullptr;
+		field->dirty = true; // 数据留着，下一个渲染器上重建纹理
+	}
+	if(materialAtlas)
+		SDL_DestroyTexture(materialAtlas);
+	materialAtlas = nullptr;
+	materialsDirty = true;
 	clampSampler = nullptr;
 
 	particles.release();

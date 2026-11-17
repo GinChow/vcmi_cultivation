@@ -63,7 +63,8 @@ public:
 	MapRendererRiver();
 
 	uint8_t checksum(IMapRendererContext & context, const int3 & coordinates);
-	void renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates);
+	/// mask：画进遮罩画布（如地形分布层的挖空，见 MapMaskBlend）；为空时照常画
+	void renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates, std::optional<MapMaskBlend> mask = std::nullopt);
 };
 
 class MapRendererRoad
@@ -74,6 +75,23 @@ public:
 	MapRendererRoad();
 
 	uint8_t checksum(IMapRendererContext & context, const int3 & coordinates);
+	/// mask：同 MapRendererRiver::renderTile
+	void renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates, std::optional<MapMaskBlend> mask = std::nullopt);
+};
+
+/// 地形分布图（2026-11-17，大地图地表材质）：给陆地图块画出“这一点本地形、泥地、沙地各占多少”。
+///
+/// 分布图动画名为图块动画名加 "_SPLAT"（如 GRASTL_SPLAT），由地形模组提供，与图块逐帧对应，帧号和翻转取自图块，
+/// 所以交界形状与原版一致。R 为本地形、G 为泥地、B 为沙地的比重，三者之和不足 1 处（岩石、道路、河流、湖……）保留图块原画。
+/// 合成着色器据此按世界坐标铺各地形的材质（见 MapLayerCompositor），图块里只剩“哪里是什么地形”的信息。
+/// 水面图块的分布图只有沙地（岸上的沙滩），水由水面着色器管。没有提供分布图的地形（岩石、模组新增地形）不画（保持黑色），照旧显示图块原画。
+class MapRendererTerrainSplat
+{
+	MapTileStorage storage;
+
+public:
+	MapRendererTerrainSplat();
+
 	void renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates);
 };
 
@@ -103,6 +121,7 @@ enum class MapTileLayer : uint8_t
 	SWAY_OBJECTS, ///< 随风摇摆的物件本体（树、灌木、花草），由着色器按风场扭动
 	WIND_MASK,    ///< 风场遮罩（不参与叠加）：RGB 是摇摆物件的风场参数，A 是“上面盖着不摇摆物件”的程度
 	RELIEF,       ///< 起伏层（不参与叠加）：RG 是物件表面的法线，B 是离地高度，A 是本体覆盖度（预乘），给长投影、打光、雾和云用
+	TERRAIN_SPLAT,///< 地形分布层（不参与叠加）：RGB 是本地形、泥地、沙地的比重，道路、河流、湖等贴地物件处挖空，见 MapRendererTerrainSplat
 	OVERLAY,      ///< 行军路径、覆盖图标、战争迷雾
 	ALL           ///< 不分层：整块图块，与 renderTile 相同
 };
@@ -277,6 +296,9 @@ public:
 	/// 图块上各物件雾、云参数的最大值
 	MapAtmosphere atmosphereAt(IMapRendererContext & context, const int3 & coordinates);
 
+	/// 把图块上画在地面层的物件（特殊地面、湖这类水面装饰物）按清零剪影画进地形分布层，那里保留原画、不铺地表材质
+	void renderGroundCutouts(IMapRendererContext & context, Canvas & target, const int3 & coordinates);
+
 	/// 把图块画进起伏层（target 须先清成全透明）：按与物件层相同的前后顺序，有起伏图的物件画起伏图，
 	/// 其余物件画清零剪影（见 MapMaskBlend::CUTOUT），阴影、水面装饰物不画。
 	/// 着色器据此算长投影、给物件重新打光，并让雾贴着山脚、峰顶伸出云海
@@ -369,6 +391,7 @@ class MapRenderer
 	MapRendererPath rendererPath;
 	MapRendererOverlay rendererOverlay;
 	MapRendererWaterMask rendererWaterMask;
+	MapRendererTerrainSplat rendererTerrainSplat;
 
 	/// 地面部分：地形、贴地物件、河流、道路（顺序与原版一致）
 	void renderGroundParts(IMapRendererContext & context, Canvas & target, const int3 & coordinates);

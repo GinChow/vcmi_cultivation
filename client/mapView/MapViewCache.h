@@ -135,6 +135,12 @@ class MapViewCache
 	std::unique_ptr<Canvas> waterMaskLayer;
 	std::unique_ptr<Canvas> windMaskLayer;
 	std::unique_ptr<Canvas> reliefLayer;
+	std::unique_ptr<Canvas> splatLayer;
+
+	/// 地表材质（2026-11-17）：分层时给屏幕处理器一张当前地图层的地形场（每个图块属于哪套地表材质），
+	/// 以及模组提供的材质图集（只给一次）。合成着色器据此按世界坐标铺地表材质
+	void sendTerrainField(const std::shared_ptr<IMapRendererContext> & context);
+	bool terrainMaterialsSent = false;
 
 	/// Canvas of the given logical size, drawing onto a GPU render target when this view
 	/// uses the GPU layer and onto a plain surface otherwise
@@ -160,7 +166,7 @@ class MapViewCache
 	};
 	std::vector<PendingTile> pendingTiles;
 
-	/// 把 pendingTiles 画完再记下各图块的校验值：分层时按 地面、水面遮罩、物件、摇摆物件、风场遮罩、起伏层、覆盖 一层一层画，
+	/// 把 pendingTiles 画完再记下各图块的校验值：分层时按 地面、水面遮罩、物件、摇摆物件、风场遮罩、起伏层、地形分布、覆盖 一层一层画，
 	/// 不分层时整块画进 terrain；缓存存缩小图块时经图集分批中转
 	void drawPendingLayers(const std::shared_ptr<IMapRendererContext> & context);
 
