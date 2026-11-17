@@ -875,9 +875,9 @@ CastAnimation::CastAnimation(BattleInterface & owner_, const CStack * attacker, 
 		assert(spell->animationInfo.projectile.empty());
 
 		if (defender)
-			dest = defender->getPosition();
+			this->dest = defender->getPosition();
 		else
-			dest = attacker->getPosition();
+			this->dest = attacker->getPosition();
 	}
 }
 

@@ -46,7 +46,9 @@
 #include "../../lib/UnlockGuard.h"
 #include "../../lib/battle/CPlayerBattleCallback.h"
 #include "../../lib/callback/CCallback.h"
+#include "../../lib/entities/hero/CHero.h"
 #include "../../lib/gameState/InfoAboutArmy.h"
+#include "../../lib/mapObjects/CGHeroInstance.h"
 #include "../../lib/mapObjects/CGTownInstance.h"
 #include "../../lib/networkPacks/PacksForClientBattle.h"
 #include "../../lib/spells/CSpell.h"
@@ -408,6 +410,21 @@ void BattleInterface::spellCast(const BattleSpellCast * sc)
 	if ( sc->activeCast )
 	{
 		const CStack * casterStack = getBattle()->battleGetStackByID(sc->casterStack);
+		const auto * casterHero = sc->side == BattleSide::DEFENDER ? defendingHeroInstance : attackingHeroInstance;
+		if(sc->castByHero && casterHero && casterHero->getCommander()
+			&& casterHero->getHeroType()->getJsonKey().starts_with("cultivation:"))
+		{
+			// The visible commander replaces the hidden battlefield-side hero animation.
+			for(const auto * unit : getBattle()->battleGetAllStacks())
+			{
+				if(unit->unitSide() == sc->side && unit->unitSlot() == SlotID::COMMANDER_SLOT_PLACEHOLDER
+					&& unit->alive() && !unit->isClone())
+				{
+					casterStack = unit;
+					break;
+				}
+			}
+		}
 
 		if(casterStack != nullptr )
 		{
