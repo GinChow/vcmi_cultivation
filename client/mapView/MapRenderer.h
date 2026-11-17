@@ -396,14 +396,36 @@ class MapRenderer
 	/// 地面部分：地形、贴地物件、河流、道路（顺序与原版一致）
 	void renderGroundParts(IMapRendererContext & context, Canvas & target, const int3 & coordinates);
 
+	/// 水墨云海迷雾（见 setCloudFog）
+	bool cloudFog = false;
+
 public:
 	using TileChecksum = std::array<uint8_t, 8>;
+
+	/// 图块的迷雾状态，从校验值读出（见 fogStateOf）
+	enum class FogState : uint8_t
+	{
+		VISIBLE,         ///< 看得见，或在地图外
+		HIDDEN,          ///< 在迷雾里
+		HIDDEN_OUT_OF_RANGE ///< 在迷雾里，且正在选冒险法术的目标、这里在射程外（原版画成纯黑）
+	};
+
+	/// 校验值第 7 项是迷雾：看得见时保持 0xff，在迷雾里时是迷雾的校验值。地图缓存每帧本来就要算可见范围内每个图块的校验值，
+	/// 从这里读迷雾状态不必再查一遍可见性（缩到全图时几万个图块，每次查询都要经游戏状态找本方的迷雾图）
+	static FogState fogStateOf(const TileChecksum & checksum);
+
+	/// 水墨云海迷雾（2026-11-18）：开启时分层画的覆盖层不再画原版的黑色迷雾图块，迷雾改由合成器按地图缓存给的云雾场画成流动的云。
+	/// 只影响 renderTileLayer() 的覆盖层，renderTile()（不分层的缓存、导出整张地图）照旧画原版迷雾。
+	/// 切换时迷雾的校验值随之改变，地图缓存会把迷雾里图块的覆盖层重画一遍
+	void setCloudFog(bool enabled);
 
 	/// Refreshes state that is constant for the whole frame. Must be called before the
 	/// per-tile getTileChecksum() / renderTile() calls of that frame.
 	void prepareFrame(IMapRendererContext & context);
 
-	TileChecksum getTileChecksum(IMapRendererContext & context, const int3 & coordinates);
+	/// fullyHidden 不为空时顺带给出图块是否完全被迷雾盖住（自己和四周都看不见：这时只有覆盖层画迷雾，其余各层都是空的）。
+	/// 判断要查四周 8 格的可见性，算校验值时本来就要查，地图缓存据此按层批量重画，不必再算一遍（2026-11-18，缩放掉帧）
+	TileChecksum getTileChecksum(IMapRendererContext & context, const int3 & coordinates, bool * fullyHidden = nullptr);
 
 	void renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates, bool withOverlays);
 
@@ -418,10 +440,6 @@ public:
 
 	/// 图块上植物会掉多少落叶、飘多少花瓣、栖多少鸟，见 MapRendererObjects::vegetationAt；地图外为 0
 	MapVegetation vegetationAt(IMapRendererContext & context, const int3 & coordinates);
-
-	/// 图块完全被迷雾盖住（自己和四周都看不见）：这时只有覆盖层画迷雾，其余各层都是空的。
-	/// 地图缓存按层批量重画时每个图块只判断一次，不必每层都算一遍四周的可见性（2026-11-18，缩放掉帧）
-	bool isFullyHidden(IMapRendererContext & context, const int3 & coordinates);
 
 	/// 只画图块的某一层（target 须先清空：遮罩为黑，其余为透明）。
 	/// 每层单独一个调用，调用方就能把许多图块的同一层连着画，不必在几张画布间来回切换渲染目标。

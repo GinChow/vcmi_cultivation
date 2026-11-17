@@ -204,7 +204,15 @@ void MapViewCache::updateTile(const std::shared_ptr<IMapRendererContext> & conte
 
 	newCacheEntry.tileX = coordinates.x;
 	newCacheEntry.tileY = coordinates.y;
-	newCacheEntry.checksum = mapRenderer->getTileChecksum(*context, coordinates);
+	bool fullyHidden = false;
+	newCacheEntry.checksum = mapRenderer->getTileChecksum(*context, coordinates, &fullyHidden);
+
+	// 云雾场：可见窗口里的图块每帧都要算校验值，迷雾状态顺便从里面读出来
+	if(layered)
+	{
+		const MapRenderer::FogState fog = MapRenderer::fogStateOf(newCacheEntry.checksum);
+		noteFogState(coordinates, fog == MapRenderer::FogState::VISIBLE ? 0 : (fog == MapRenderer::FogState::HIDDEN ? 1 : 2));
+	}
 
 	if(cachedLevel == coordinates.z && oldCacheEntry == newCacheEntry && !context->tileAnimated(coordinates))
 		return;
@@ -252,7 +260,7 @@ void MapViewCache::updateTile(const std::shared_ptr<IMapRendererContext> & conte
 	}
 
 	// 先记下，等这一帧的图块都判断完，再在 drawPendingLayers() 里批量画
-	pendingTiles.push_back({coordinates, newCacheEntry, layers});
+	pendingTiles.push_back({coordinates, newCacheEntry, layers, fullyHidden});
 }
 
 void MapViewCache::drawPendingLayers(const std::shared_ptr<IMapRendererContext> & context)
@@ -303,10 +311,8 @@ void MapViewCache::drawPendingLayers(const std::shared_ptr<IMapRendererContext> 
 		return layer == MapTileLayer::SWAY_OBJECTS || layer == MapTileLayer::WIND_MASK || layer == MapTileLayer::RELIEF || layer == MapTileLayer::TERRAIN_SPLAT;
 	};
 
-	std::vector<uint8_t> hidden(pendingTiles.size(), 0);
-	if(layered)
-		for(size_t i = 0; i < pendingTiles.size(); ++i)
-			hidden[i] = mapRenderer->isFullyHidden(*context, pendingTiles[i].coordinates);
+	// 完全在迷雾里的图块（算校验值时已顺带判断）：分层时除覆盖层外各层都是空的
+	auto hidden = [&](size_t i) { return layered && pendingTiles[i].fullyHidden; };
 
 	for(const auto & [layer, canvas] : passes)
 	{
@@ -334,6 +340,11 @@ void MapViewCache::drawPendingLayers(const std::shared_ptr<IMapRendererContext> 
 			continue;
 		}
 
+		// 整层重画时完全在迷雾里的图块不用碰：整张已经清过，它们各层本来就是空的（云雾模式下覆盖层也是空的，云由合成器画）。
+		// 原来它们照样占图集的格子、照样逐块拷回缓存，迷雾盖住大半屏时缩放一步要多出好几批图集中转和渲染目标切换（2026-11-18 用户反馈迷雾多时缩放掉帧）
+		if(wholeLayer)
+			std::erase_if(tiles, [&](size_t i) { return hidden(i) && (layer != MapTileLayer::OVERLAY || cloudFogActive); });
+
 		const size_t batch = direct ? tiles.size() : static_cast<size_t>(atlasCapacity);
 		for(size_t begin = 0; begin < tiles.size(); begin += batch)
 		{
@@ -353,8 +364,8 @@ void MapViewCache::drawPendingLayers(const std::shared_ptr<IMapRendererContext> 
 				if(direct && !wholeLayer)
 					target.drawColor(Rect(Point(0, 0), nativeTileSize), clearColor);
 
-				// 完全在迷雾里的图块，除了覆盖层都是空的
-				if(hidden[tiles[k]] && layer != MapTileLayer::OVERLAY)
+				// 完全在迷雾里的图块，除了覆盖层都是空的（云雾模式下覆盖层也是空的）
+				if(hidden(tiles[k]) && (layer != MapTileLayer::OVERLAY || cloudFogActive))
 					continue;
 
 				const uint32_t placeholdersBefore = ENGINE->renderHandler().getPlaceholderDrawCount();
@@ -766,6 +777,230 @@ void MapViewCache::sendTerrainField(const std::shared_ptr<IMapRendererContext> &
 	ENGINE->screenHandler().setMapTerrainField(rgba, Point(width, height));
 }
 
+/// 云雾散开（2026-11-18）：揭开后多少秒散尽；揭开的图块按离原先看得见的地方的步数依次开始，每一步晚这么多秒，最多排这么多步；
+/// 另有每个图块固定的随机延迟，免得一整圈同时散
+constexpr float fogRevealSeconds = 1.6f;
+constexpr float fogRevealStepDelay = 0.07f;
+constexpr int fogRevealMaxSteps = 14;
+constexpr float fogRevealJitter = 0.22f;
+
+void MapViewCache::resetFogField(const std::shared_ptr<IMapRendererContext> & context)
+{
+	const int3 mapSize = context->getMapSize();
+	fogLevel = model->getLevel();
+	fogSize = Point(mapSize.x, mapSize.y);
+
+	const size_t count = static_cast<size_t>(fogSize.x) * static_cast<size_t>(fogSize.y);
+	fogHidden.assign(count, 0);
+	fogAmount.assign(count, 0.0f);
+	fogDelay.assign(count, 0.0f);
+	fogRgba.assign(count * 4, 0);
+	fogAnimating.clear();
+	fogRevealed.clear();
+	fogScanRow = 0;
+
+	for(int y = 0; y < fogSize.y; ++y)
+	{
+		for(int x = 0; x < fogSize.x; ++x)
+		{
+			const size_t i = static_cast<size_t>(y) * static_cast<size_t>(fogSize.x) + static_cast<size_t>(x);
+			const bool hidden = !context->isVisible(int3(x, y, fogLevel));
+			fogHidden[i] = hidden ? 1 : 0;
+			fogAmount[i] = hidden ? 1.0f : 0.0f;
+			encodeFogTile(i);
+		}
+	}
+
+	fogDirty = true;
+	fogClock = std::chrono::steady_clock::now();
+}
+
+void MapViewCache::encodeFogTile(size_t index)
+{
+	const float amount = std::clamp(fogAmount[index], 0.0f, 1.0f);
+	const float eased = amount * amount * (3.0f - 2.0f * amount);
+	// 散开的程度：还没开始散（浓度 1）和散尽（0）时为 0，散到一半最大
+	const float activity = fogHidden[index] == 0 ? std::sin(static_cast<float>(M_PI) * (1.0f - amount)) : 0.0f;
+
+	uint8_t * pixel = fogRgba.data() + index * 4;
+	pixel[0] = static_cast<uint8_t>(std::round(eased * 255.0f));
+	pixel[1] = static_cast<uint8_t>(std::round(std::clamp(activity, 0.0f, 1.0f) * 255.0f));
+	pixel[2] = fogHidden[index] == 2 ? 255 : 0;
+	pixel[3] = 255;
+}
+
+void MapViewCache::noteFogState(const int3 & tile, uint8_t hidden)
+{
+	if(tile.z != fogLevel || tile.x < 0 || tile.y < 0 || tile.x >= fogSize.x || tile.y >= fogSize.y)
+		return;
+
+	const size_t i = static_cast<size_t>(tile.y) * static_cast<size_t>(fogSize.x) + static_cast<size_t>(tile.x);
+	const uint8_t before = fogHidden[i];
+	if(before == hidden)
+		return;
+
+	fogHidden[i] = hidden;
+	if(hidden != 0)
+	{
+		// 重新被迷雾盖住：云立即补满（还在散的由 advanceFog() 从列表里拿掉）
+		fogAmount[i] = 1.0f;
+		fogDelay[i] = 0.0f;
+	}
+	else
+	{
+		fogRevealed.push_back(static_cast<int>(i));
+	}
+
+	encodeFogTile(i);
+	fogDirty = true;
+}
+
+void MapViewCache::scanFogOffscreen(const std::shared_ptr<IMapRendererContext> & context)
+{
+	if(fogSize.x <= 0 || fogSize.y <= 0)
+		return;
+
+	// 每帧约两千个图块：最大的地图（256 × 256）约半分钟查完一遍，窗口里的图块不在这里查
+	const Rect view = model->getTilesTotalRect();
+	const int rows = std::clamp(2048 / fogSize.x, 1, fogSize.y);
+	for(int r = 0; r < rows; ++r)
+	{
+		const int y = fogScanRow;
+		fogScanRow = (fogScanRow + 1) % fogSize.y;
+
+		for(int x = 0; x < fogSize.x; ++x)
+		{
+			if(view.isInside(x, y))
+				continue;
+
+			const size_t i = static_cast<size_t>(y) * static_cast<size_t>(fogSize.x) + static_cast<size_t>(x);
+			const bool hidden = !context->isVisible(int3(x, y, fogLevel));
+			if(hidden == (fogHidden[i] != 0))
+				continue;
+
+			// 看不见那里，直接定格；法术射程只在可见窗口里有意义，这里不查
+			fogHidden[i] = hidden ? 1 : 0;
+			fogAmount[i] = hidden ? 1.0f : 0.0f;
+			fogDelay[i] = 0.0f;
+			encodeFogTile(i);
+			fogDirty = true;
+		}
+	}
+}
+
+void MapViewCache::advanceFog()
+{
+	const auto now = std::chrono::steady_clock::now();
+	// 卡顿、切出窗口回来时不一下子跳完
+	const float elapsed = std::min(std::chrono::duration<float>(now - fogClock).count(), 0.1f);
+	fogClock = now;
+
+	if(!fogRevealed.empty())
+	{
+		// 这一帧刚揭开的图块里，挨着原先就看得见的为第 0 步，往外一步步排：云就从已探索的地方往外被推开。
+		// 不和看得见的地方相连的（如远处的瞭望塔揭开一片）都算第 0 步。steps 与 fogRevealed 一一对应，-1 为还没排到
+		const int width = fogSize.x;
+		const int height = fogSize.y;
+		std::vector<int> steps(fogRevealed.size(), -1);
+		std::unordered_map<int, size_t> slot;
+		slot.reserve(fogRevealed.size() * 2);
+		for(size_t k = 0; k < fogRevealed.size(); ++k)
+			slot[fogRevealed[k]] = k;
+
+		auto forNeighbours = [&](int index, const auto & visit)
+		{
+			const int x = index % width;
+			const int y = index / width;
+			for(int dy = -1; dy <= 1; ++dy)
+				for(int dx = -1; dx <= 1; ++dx)
+					if((dx != 0 || dy != 0) && x + dx >= 0 && y + dy >= 0 && x + dx < width && y + dy < height)
+						visit((y + dy) * width + x + dx);
+		};
+
+		std::vector<int> frontier;
+		for(size_t k = 0; k < fogRevealed.size(); ++k)
+		{
+			bool touchesKnown = false;
+			forNeighbours(fogRevealed[k], [&](int neighbour)
+			{
+				if(fogHidden[neighbour] == 0 && !slot.count(neighbour))
+					touchesKnown = true;
+			});
+			if(touchesKnown)
+			{
+				steps[k] = 0;
+				frontier.push_back(fogRevealed[k]);
+			}
+		}
+		for(size_t head = 0; head < frontier.size(); ++head)
+		{
+			const int step = steps[slot[frontier[head]]];
+			forNeighbours(frontier[head], [&](int neighbour)
+			{
+				auto it = slot.find(neighbour);
+				if(it != slot.end() && steps[it->second] < 0)
+				{
+					steps[it->second] = step + 1;
+					frontier.push_back(neighbour);
+				}
+			});
+		}
+
+		for(size_t k = 0; k < fogRevealed.size(); ++k)
+		{
+			const int index = fogRevealed[k];
+			if(fogHidden[index] != 0)
+				continue;
+			const uint32_t hash = static_cast<uint32_t>(index) * 2654435761u;
+			const float jitter = static_cast<float>((hash >> 16) & 1023u) / 1023.0f;
+			fogDelay[index] = static_cast<float>(std::min(std::max(steps[k], 0), fogRevealMaxSteps)) * fogRevealStepDelay + jitter * fogRevealJitter;
+			// 散到一半又被盖上、再揭开的图块可能还在列表里
+			if(std::find(fogAnimating.begin(), fogAnimating.end(), index) == fogAnimating.end())
+				fogAnimating.push_back(index);
+		}
+		fogRevealed.clear();
+	}
+
+	for(size_t k = 0; k < fogAnimating.size();)
+	{
+		const int index = fogAnimating[k];
+		float step = elapsed;
+		if(fogHidden[index] == 0 && fogDelay[index] > 0.0f)
+		{
+			fogDelay[index] -= step;
+			if(fogDelay[index] > 0.0f)
+			{
+				++k;
+				continue;
+			}
+			step = -fogDelay[index];
+			fogDelay[index] = 0.0f;
+		}
+
+		if(fogHidden[index] == 0)
+		{
+			fogAmount[index] = std::max(0.0f, fogAmount[index] - step / fogRevealSeconds);
+			encodeFogTile(index);
+			fogDirty = true;
+		}
+
+		// 散尽或又被盖上：拿出列表（与最后一个对调）
+		if(fogHidden[index] != 0 || fogAmount[index] <= 0.0f)
+		{
+			fogAnimating[k] = fogAnimating.back();
+			fogAnimating.pop_back();
+		}
+		else
+			++k;
+	}
+
+	if(fogDirty)
+	{
+		ENGINE->screenHandler().setMapFogField(fogRgba, fogSize);
+		fogDirty = false;
+	}
+}
+
 void MapViewCache::sendDayProgress(const std::shared_ptr<IMapRendererContext> & context)
 {
 	const auto now = std::chrono::steady_clock::now();
@@ -1077,6 +1312,20 @@ void MapViewCache::update(const std::shared_ptr<IMapRendererContext> & context)
 	// 缓存存缩小图块（图块不到 16 像素）时也按不分层画物件：摇摆层、风场、起伏层这时不画（见 drawPendingLayers）
 	mapRenderer->setLayeredEffects(layered && model->getCacheTileSize() == MapViewModel::getNativeTileSize());
 
+	// 云雾迷雾：只有交给合成器直接画到屏幕上时才有着色器画云；世界视图、文字覆盖、传送过渡要自己的图层（见 render()），
+	// 那时覆盖层照旧画原版迷雾。切换时迷雾里的图块校验值会变，覆盖层随之重画
+	cloudFogActive = layered && !forceOriginalFog && !needsOwnLayer(context);
+	mapRenderer->setCloudFog(cloudFogActive);
+
+	if(layered)
+	{
+		const int3 mapSize = context->getMapSize();
+		if(fogLevel != model->getLevel() || fogSize != Point(mapSize.x, mapSize.y))
+			resetFogField(context);
+		else
+			scanFogOffscreen(context);
+	}
+
 	if(layered && depthFieldLevel != model->getLevel())
 	{
 		sendDepthField(context);
@@ -1126,6 +1375,9 @@ void MapViewCache::update(const std::shared_ptr<IMapRendererContext> & context)
 			updateTile(context, {x, y, model->getLevel()});
 
 	drawPendingLayers(context);
+
+	if(layered)
+		advanceFog();
 
 	drainingAnimationBurst = animatedTilesDirty > animatedTilesRedrawn;
 	animatedTilesDirtyBefore = animatedTilesDirty;
@@ -1271,6 +1523,11 @@ void MapViewCache::render(const std::shared_ptr<IMapRendererContext> & context, 
 {
 	ensureCanvases();
 
+	// 这条路径不经合成器，没有云：若这一帧的缓存是按云雾模式填的（例如 tick 之后才打开世界视图），覆盖层里没有迷雾，
+	// 先按原版迷雾重填一遍，免得完全盖住的图块露出空地面
+	if(cloudFogActive)
+		update(context);
+
 	bool mapMoved = (cachedPosition != model->getMapViewCenter());
 	bool textOverlayVisible = context->showTextOverlay();
 	bool overlayVisible = context->showImageOverlay() || textOverlayVisible;
@@ -1411,6 +1668,9 @@ void MapViewCache::exportMapLevel(const std::shared_ptr<IMapRendererContext> & c
 
 void MapViewCache::createTransitionSnapshot(const std::shared_ptr<IMapRendererContext> & context)
 {
+	// 快照画进普通画布、过渡时淡出，没有合成器画云，所以这一次覆盖层画原版迷雾
+	forceOriginalFog = true;
 	update(context);
 	render(context, *terrainTransition, true);
+	forceOriginalFog = false;
 }

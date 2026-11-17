@@ -43,6 +43,12 @@
 #include "../../lib/mapping/TerrainTile.h"
 #include "../../lib/pathfinder/CGPathNode.h"
 
+/// 迷雾的校验值（getTileChecksum 第 7 项）：原版迷雾在法术射程外为 0xfd、完全盖住为 0xfe、半遮是图块编号（远小于这些值）；
+/// 云雾模式（2026-11-18）用另外两个值，切换模式时迷雾里的图块校验值一定变化
+constexpr uint8_t fogChecksumOutOfRange = 0xff - 2;
+constexpr uint8_t fogChecksumCloud = 0xff - 4;
+constexpr uint8_t fogChecksumCloudOutOfRange = 0xff - 5;
+
 struct NeighborTilesInfo
 {
 	//567
@@ -478,7 +484,7 @@ void MapRendererFow::renderTile(IMapRendererContext & context, Canvas & target, 
 uint8_t MapRendererFow::checksum(IMapRendererContext & context, const int3 & coordinates, const NeighborTilesInfo & neighborInfo)
 {
 	if (context.showSpellRange(coordinates))
-		return 0xff - 2;
+		return fogChecksumOutOfRange;
 
 	int retBitmapID = neighborInfo.getBitmapID();
 	if(retBitmapID < 0)
@@ -1361,8 +1367,11 @@ void MapRenderer::prepareFrame(IMapRendererContext & context)
 	rendererObjects.prepareFrame();
 }
 
-MapRenderer::TileChecksum MapRenderer::getTileChecksum(IMapRendererContext & context, const int3 & coordinates)
+MapRenderer::TileChecksum MapRenderer::getTileChecksum(IMapRendererContext & context, const int3 & coordinates, bool * fullyHidden)
 {
+	if(fullyHidden)
+		*fullyHidden = false;
+
 	// computes basic checksum to determine whether tile needs an update
 	// if any component gives different value, tile will be updated
 	TileChecksum result;
@@ -1382,9 +1391,20 @@ MapRenderer::TileChecksum MapRenderer::getTileChecksum(IMapRendererContext & con
 	if(!visible)
 		neighborInfo.emplace(context, coordinates);
 
+	// 云雾模式下覆盖层不画迷雾图块，迷雾的校验值只分“在迷雾里”和“在法术射程外”两种，取原版用不到的值，
+	// 切换模式时迷雾里的图块校验值必然改变、覆盖层随之重画（fogStateOf 认这两种值和原版的值）
+	auto fogChecksum = [&]() -> uint8_t
+	{
+		if(cloudFog)
+			return context.showSpellRange(coordinates) ? fogChecksumCloudOutOfRange : fogChecksumCloud;
+		return rendererFow.checksum(context, coordinates, *neighborInfo);
+	};
+
 	if(!visible && neighborInfo->areAllHidden())
 	{
-		result[7] = rendererFow.checksum(context, coordinates, *neighborInfo);
+		result[7] = fogChecksum();
+		if(fullyHidden)
+			*fullyHidden = true;
 	}
 	else
 	{
@@ -1398,9 +1418,28 @@ MapRenderer::TileChecksum MapRenderer::getTileChecksum(IMapRendererContext & con
 		result[6] = rendererOverlay.checksum(context, coordinates);
 
 		if(!visible)
-			result[7] = rendererFow.checksum(context, coordinates, *neighborInfo);
+			result[7] = fogChecksum();
 	}
 	return result;
+}
+
+MapRenderer::FogState MapRenderer::fogStateOf(const TileChecksum & checksum)
+{
+	switch(checksum[7])
+	{
+		case 0xff:
+			return FogState::VISIBLE;
+		case fogChecksumCloudOutOfRange:
+		case fogChecksumOutOfRange:
+			return FogState::HIDDEN_OUT_OF_RANGE;
+		default:
+			return FogState::HIDDEN;
+	}
+}
+
+void MapRenderer::setCloudFog(bool enabled)
+{
+	cloudFog = enabled;
 }
 
 void MapRenderer::renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates, bool withOverlays)
@@ -1480,13 +1519,6 @@ MapVegetation MapRenderer::vegetationAt(IMapRendererContext & context, const int
 	return rendererObjects.vegetationAt(context, coordinates);
 }
 
-bool MapRenderer::isFullyHidden(IMapRendererContext & context, const int3 & coordinates)
-{
-	if(!context.isInMap(coordinates) || context.isVisible(coordinates))
-		return false;
-	return NeighborTilesInfo(context, coordinates).areAllHidden();
-}
-
 void MapRenderer::renderTileLayer(IMapRendererContext & context, Canvas & target, const int3 & coordinates, MapTileLayer layer, bool withOverlays)
 {
 	if(layer == MapTileLayer::ALL)
@@ -1509,10 +1541,11 @@ void MapRenderer::renderTileLayer(IMapRendererContext & context, Canvas & target
 	if(!visible)
 		neighborInfo.emplace(context, coordinates);
 
-	// 完全被迷雾盖住的图块只有迷雾，画在覆盖层；地面、物件、遮罩都留空
+	// 完全被迷雾盖住的图块只有迷雾，画在覆盖层；地面、物件、遮罩都留空。
+	// 云雾模式下覆盖层也留空：合成器按云雾场把这里整片盖成不透明的云
 	if(!visible && neighborInfo->areAllHidden())
 	{
-		if(layer == MapTileLayer::OVERLAY)
+		if(layer == MapTileLayer::OVERLAY && !cloudFog)
 			rendererFow.renderTile(context, target, coordinates, *neighborInfo);
 		return;
 	}
@@ -1555,7 +1588,7 @@ void MapRenderer::renderTileLayer(IMapRendererContext & context, Canvas & target
 				rendererPath.renderTile(context, target, coordinates);
 				rendererOverlay.renderTile(context, target, coordinates);
 			}
-			if(!visible)
+			if(!visible && !cloudFog)
 				rendererFow.renderTile(context, target, coordinates, *neighborInfo);
 			break;
 		case MapTileLayer::ALL:

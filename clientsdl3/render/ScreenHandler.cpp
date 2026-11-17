@@ -1064,6 +1064,11 @@ void ScreenHandler::setMapLights(const std::vector<MapLight> & lights)
 	mapCompositor->setLights(lights);
 }
 
+void ScreenHandler::setMapFogField(const std::vector<uint8_t> & rgba, const Point & size)
+{
+	mapCompositor->setFogField(rgba, size);
+}
+
 /// presentMapLayers() 登记的大地图图层，整理成合成器要的输入
 template<typename Presented>
 static MapLayerCompositor::Inputs mapCompositorInputs(const Presented & presented)
@@ -1086,9 +1091,11 @@ static MapLayerCompositor::Inputs mapCompositorInputs(const Presented & presente
 
 bool ScreenHandler::isMapLayeringSupported() const
 {
+	// 着色器建不起来时退回原版单层缓存：分层时覆盖层不画原版迷雾（云由着色器画），没有着色器就会露出迷雾下的地图
 	return isGpuRenderingEnabled()
 		&& settings["video"]["mapEffects"].Bool()
-		&& MapLayerCompositor::isShaderPathAvailable(GpuResources::get().renderer());
+		&& MapLayerCompositor::isShaderPathAvailable(GpuResources::get().renderer())
+		&& !mapCompositor->isShaderBroken();
 }
 
 void ScreenHandler::presentMapLayers(const Canvas & ground, const MapLayerSet & layers, const std::vector<PresentedRegion> & regions)

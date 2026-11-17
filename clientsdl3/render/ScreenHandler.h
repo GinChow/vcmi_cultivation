@@ -204,6 +204,7 @@ public:
 	void setMapTerrainMaterials(const std::vector<uint8_t> & png) final;
 	void setMapDayProgress(int day, std::optional<float> dayProgress) final;
 	void setMapLights(const std::vector<MapLight> & lights) final;
+	void setMapFogField(const std::vector<uint8_t> & rgba, const Point & size) final;
 	void updateScreenTexture() final;
 	void presentScreenTexture() final;
 

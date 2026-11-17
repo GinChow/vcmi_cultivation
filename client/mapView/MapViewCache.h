@@ -161,6 +161,40 @@ class MapViewCache
 	std::vector<uint32_t> litStamp;
 	uint32_t litFrame = 0;
 
+	/// 水墨云海迷雾（2026-11-18）：分层并且由合成器直接画到屏幕上时（不需要自己的图层），覆盖层不画原版的黑色迷雾，
+	/// 改由合成器按云雾场画流动的云（见 MapRenderer::setCloudFog）。云雾场每个图块一个像素：
+	///   R 云的浓度（在迷雾里为 1，揭开后慢慢降到 0，已按缓入缓出取好），G 正在散开的程度（散到一半最大，平时 0，着色器据此让云翻卷、往外推），
+	///   B 在冒险法术射程外（原版画成纯黑，云也压暗）。
+	/// 可见窗口里的图块每帧从校验值读迷雾状态（updateTile），窗口外的每帧轮着查几行（看不见那里，变了直接定格，不放动画）。
+	/// 揭开的图块按离原先看得见的地方远近依次散开，云就像被从已探索的地方往外推开；重新被迷雾盖住时立即为 1，
+	/// 否则那一瞬间完全盖住的图块地面是空的（只画覆盖层），会露出黑块
+	std::vector<uint8_t> fogHidden;      ///< 0 看得见、1 在迷雾里、2 在迷雾里且在法术射程外
+	std::vector<float> fogAmount;        ///< 云的浓度 0~1（未缓动）
+	std::vector<float> fogDelay;         ///< 揭开后还要等多少秒才开始散
+	std::vector<int> fogAnimating;       ///< 正在散开（或等着散开）的图块下标
+	std::vector<int> fogRevealed;        ///< 这一帧刚揭开的图块下标，advanceFog() 里排好先后再放进 fogAnimating
+	std::vector<uint8_t> fogRgba;        ///< 编码好的云雾场
+	Point fogSize;
+	int fogLevel = -1;
+	int fogScanRow = 0;                  ///< 窗口外轮查到第几行
+	bool fogDirty = false;               ///< 云雾场这一帧变了，要交给屏幕处理器
+	std::chrono::steady_clock::time_point fogClock;
+	/// 拍传送过渡的快照时用原版迷雾：快照是画进普通画布的，没有合成器画云
+	bool forceOriginalFog = false;
+	/// 这一帧的覆盖层是按云雾模式画的
+	bool cloudFogActive = false;
+
+	/// 换了地图层（或第一次）：整层查一遍迷雾，直接定格，不放动画
+	void resetFogField(const std::shared_ptr<IMapRendererContext> & context);
+	/// 可见窗口里的图块这一帧的迷雾状态（updateTile 从校验值读出）
+	void noteFogState(const int3 & tile, uint8_t hidden);
+	/// 窗口外每帧轮着查几行：别的英雄、盟友在别处揭开的地方，滚过去时不该再看到云散开
+	void scanFogOffscreen(const std::shared_ptr<IMapRendererContext> & context);
+	/// 推进散开的动画，云雾场变了就交给屏幕处理器
+	void advanceFog();
+	/// 按 fogAmount、fogHidden 重新编码一个图块
+	void encodeFogTile(size_t index);
+
 	/// Canvas of the given logical size, drawing onto a GPU render target when this view
 	/// uses the GPU layer and onto a plain surface otherwise
 	std::unique_ptr<Canvas> createCanvas(const Point & size) const;
@@ -182,6 +216,8 @@ class MapViewCache
 		/// 分层模式下要重画的层，位掩码，第 n 位对应 MapTileLayer 值为 n 的层。
 		/// 只有物件动画换帧时只重画物件层，缩到最小时满屏的树、旗子才不会每次都把四层全重画一遍
 		uint8_t layers;
+		/// 完全被迷雾盖住（算校验值时顺带得出）：分层时除了覆盖层（云雾模式下连覆盖层）都是空的
+		bool fullyHidden;
 	};
 	std::vector<PendingTile> pendingTiles;
 

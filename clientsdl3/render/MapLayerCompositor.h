@@ -37,6 +37,10 @@ struct SDL_GPURenderState;
 /// 大块云影顺风缓缓飘过全图，有的云下着阵雨，雨点在水面上打出涟漪；沙地、岩浆上热浪扭曲，沼泽上飘着黄绿的瘴气，
 /// 飘雪、余烬、瘴气团和雨丝由 MapParticles 画。
 ///
+/// 水墨云海迷雾（2026-11-18）：分层合成时地图缓存的覆盖层不画原版的黑色迷雾，改给一张每图块一个像素的云雾场（setFogField）。
+/// 粒子画完后，第三个着色器按它画流动的云（宣纸留白、淡墨勾边，边缘不规则地慢慢淡开），再把覆盖层（路径、图标）叠在云上。
+/// 探索时地图缓存让揭开处的云按离已探索处的远近依次散去，着色器让它们翻卷着往迷雾深处推开。
+///
 /// 性能：着色器对每个屏幕像素运行，满屏是水时取样次数决定帧率。离岸远近、向上找岸线这类要看一大片
 /// 遮罩的计算，都改在每帧逐级缩小出的 1/8、1/16 遮罩小图上做，全分辨率纹理每个水面像素只取约十次。
 /// 海面的近海、深海按每个图块离最近陆地的距离上色，这张距离图按地图坐标取样，与屏幕边缘、缩放无关。
@@ -110,6 +114,12 @@ public:
 	/// 地表材质图集的布局：8 行（材质组，与 TerrainId 0~7 一致）× 4 列（子材质），每格是正方形，四周 8 像素是环绕的内容
 	static constexpr int materialSets = 8;
 	static constexpr int materialsPerSet = 4;
+
+	/// 设置云雾场（含义见 IScreenHandler::setMapFogField）。须在渲染线程上调用
+	void setFogField(const std::vector<uint8_t> & rgba, const Point & size);
+
+	/// 着色器在这个渲染器上建不起来（或缺纹理）、已退回逐层叠加：这时分层的地图缓存画不出云，屏幕处理器据此让它退回原版单层缓存
+	bool isShaderBroken() const { return shaderUnavailable; }
 
 	/// 惊起一群鸟（见 IScreenHandler::startMapBirdFlock），转给 MapParticles。须在渲染线程上调用
 	void startBirdFlock(float x, float y, float directionX, float directionY);
@@ -209,6 +219,17 @@ private:
 	/// 建好或更新场的纹理；还没收到数据时用 1×1 的 fallback
 	bool ensureFieldTexture(SDL_Renderer * renderer, TileField & field, const std::array<uint8_t, 4> & fallback, const char * name);
 
+	/// 水墨云海迷雾：云雾着色器、它的渲染状态（绑云雾场与噪声；主纹理是覆盖层，每次绘制由 SDL 绑定）
+	SDL_GPUShader * fogShader = nullptr;
+	SDL_GPURenderState * fogState = nullptr;
+	TileField fogField;
+	std::array<SDL_Texture *, 2> fogBoundTextures = {};
+	/// 与 inputsForgotten 同时置位：纹理可能换过（新纹理可能分到旧地址），云雾的渲染状态也要重建
+	std::atomic<bool> fogInputsForgotten{false};
+	bool ensureFogState(SDL_Renderer * renderer);
+	/// 画覆盖层：云雾着色器可用时先画云、再把覆盖层叠在云上；不可用时直接叠覆盖层
+	void drawOverlay(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions);
+
 	/// 植被与天气粒子：落叶、飞花、萤火虫、惊鸟、飘雪、余烬、瘴气团、雨丝，在合成之后、覆盖层之前画
 	MapParticles particles;
 
@@ -230,5 +251,6 @@ private:
 	/// 把起伏层缩成 1/4，再用预处理着色器算出这一帧的长投影光照图
 	void renderLightMap(SDL_Renderer * renderer, const Inputs & inputs);
 	void composeWithShader(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions);
+	/// 退回路径：逐层叠地面、物件、摇摆物件（覆盖层由 drawOverlay() 画）
 	void composeLayerByLayer(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions, int scaleMode) const;
 };

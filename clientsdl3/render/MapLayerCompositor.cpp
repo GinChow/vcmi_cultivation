@@ -1117,6 +1117,253 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 }
 )SHADOWMSL";
 
+/// 水墨云海迷雾（2026-11-18）：第三个片元着色器，在粒子之后画，代替原来直接叠覆盖层的那一步。
+/// 主纹理就是覆盖层（路径、图标；云雾模式下没有原版迷雾），先按云雾场画云，再把覆盖层按预乘 alpha 叠在云上，输出预乘颜色。
+///
+/// 云雾场每个图块一个像素（R 浓度、G 正在散开的程度、B 在法术射程外），按地图坐标线性取样，四点平均抹圆，同时得出梯度（迷雾深处在哪边）。
+/// 云的边缘在“浓度 + 噪声起伏”过阈值处：浓度 0.5 正好在看得见与看不见的图块交界，噪声让它不规则地鼓出、凹进，并随风缓缓流动；
+/// 边缘外还有一圈半透明的薄雾慢慢淡开。完全在迷雾里的图块（地图缓存那里只有空地面）浓度为 1，不论噪声多少都是不透明的。
+/// 揭开时浓度由地图缓存按离已探索处的远近依次降到 0，边缘一路退向迷雾深处；散开的程度越大，噪声扭得越厉害、打着旋、
+/// 往迷雾深处推开，纸面变薄、墨边变浓往外洇——像墨被水晕开散去。
+///
+/// 画法是东方水墨（2026-11-18 用户嫌白色体积云没有水墨韵味，重做）：暖米色宣纸底带纤维，横向大片湿笔淡墨烟云随风流动、
+/// 墨干处有水渍边；云靠淡墨烘托留白；云海里有装饰性的淡墨远山（固定在地图上）；边缘是宣纸洇墨的毛边、淡墨勾边，外面一层淡墨烟。
+/// 昼夜色调与合成着色器一致，夜里纸色压暗偏青；在法术射程外的云压暗（原版画成纯黑）。
+///
+/// 取样：覆盖层 1 次、云雾场 5 次（小纹理）；有云的像素再取噪声十几次（256 × 256 的小纹理），远山每组 2 次。看得见的地方取完云雾场就返回。
+const char * const fogShaderSource = R"FOGMSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct Params
+{
+	float4 cache;  // xy：缓存纹理像素尺寸；zw：槽位数（图块）
+	float4 world;  // xy：可见窗口左上角图块的地图坐标；zw：该图块所在槽位
+	float4 misc;   // x：时间（秒）；y：屏幕上一个图块多少像素；zw：云雾场尺寸（图块）
+	float4 sun;    // xyz：指向太阳的方向（屏幕坐标：x 右、y 上、z 朝镜头）；w：天黑的程度
+	float4 grade;  // rgb：整幅画面的时段色调；w：夜里颜色褪掉多少
+};
+
+struct main0_in
+{
+	float4 color [[user(locn0)]];
+	float2 uv [[user(locn1)]];
+};
+
+struct main0_out
+{
+	float4 color [[color(0)]];
+};
+
+static inline float2 windowPosition(float2 uv, float2 slots, float2 slotOrigin)
+{
+	return fmod(uv * slots - slotOrigin + slots, slots);
+}
+
+// 云雾场按地图坐标取样：图块 (x, y) 的像素中心在地图坐标 (x + 0.5, y + 0.5)，线性插值，地图外夹到边缘的值
+static inline float4 fogAt(texture2d<float> fogTex, sampler fogSmp, float2 world, float2 size)
+{
+	return fogTex.sample(fogSmp, world / size);
+}
+
+// 云团：大团约 3.5 个图块（噪声 R），上面鼓着约 1.7 个图块的云头（G）。
+// x 是云头的形状——取“鼓包”（|2n−1|，两团之间凹进去，谷底磨圆），边缘就是一个个圆鼓鼓的云头；y 是平滑的高低
+static inline float2 cloudForm(texture2d<float> noiseTex, sampler noiseSmp, float2 p)
+{
+	float big = noiseTex.sample(noiseSmp, p * (1.0 / 28.0)).r;
+	float mid = noiseTex.sample(noiseSmp, p * (1.0 / 14.0) + float2(0.71, 0.23)).g;
+	float d = mid * 2.0 - 1.0;
+	float puff = sqrt(d * d + 0.03) - 0.17;
+	return float2(big * 0.58 + puff * 0.40, big * 0.62 + mid * 0.38);
+}
+
+static inline float2 hash22(float2 p)
+{
+	float3 q = fract(float3(p.xyx) * float3(0.1031, 0.1030, 0.0973));
+	q += dot(q, q.yzx + 33.33);
+	return fract((q.xx + q.yz) * q.zy);
+}
+
+// 一组山在 q 处的墨（0~1）。id 是这组山所在的格子，cell 是格子大小，shift 是这一行横向错开多少
+static inline float mountainGroup(float2 q, float2 id, float2 cell, float shift, texture2d<float> noiseTex, sampler noiseSmp)
+{
+	float2 a = hash22(id);
+	float2 b = hash22(id + float2(17.3, 5.1));
+	float2 c = hash22(id + float2(3.7, 29.9));
+	if(a.x > 0.5)
+		return 0.0;
+	// 位置、大小都放开：有的是一座孤峰，有的是一溜矮山，山脚高低错开，不排成一行
+	float x0 = (id.x + 0.2 + 0.6 * a.y) * cell.x - shift;
+	float baseY = (id.y + 0.4 + 0.5 * b.x) * cell.y;
+	float halfWidth = 2.2 + 4.0 * b.y;
+	float height = (1.2 + 2.6 * c.x) * (0.6 + 0.4 * halfWidth / 6.2);
+	float dx = (q.x - x0) / halfWidth;
+	if(abs(dx) >= 1.3)
+		return 0.0;
+	// 主峰位置、尖锐程度随机，两侧的次峰有的有、有的没有
+	float sharp = 1.1 + 0.7 * c.y;
+	float main = pow(max(1.0 - abs(dx - (c.x - 0.5) * 0.5) / 0.75, 0.0), sharp);
+	float left = pow(max(1.0 - abs(dx + 0.5 + 0.2 * b.x) / 0.5, 0.0), 1.3) * step(0.35, c.y) * (0.35 + 0.35 * a.y);
+	float right = pow(max(1.0 - abs(dx - 0.55 - 0.2 * a.y) / 0.55, 0.0), 1.3) * step(c.y, 0.75) * (0.3 + 0.4 * b.x);
+	float ridge = noiseTex.sample(noiseSmp, float2(q.x * (1.0 / 2.7), id.y * 0.37 + a.x)).g;
+	float profile = max(main, max(left, right)) * (0.88 + 0.24 * ridge);
+	if(profile <= 0.0)
+		return 0.0;
+	float top = baseY - height * profile;
+	float below = q.y - top;
+	if(below < -0.1)
+		return 0.0;
+	// 山脊一笔：轮廓处最浓，往下很快淡成一层薄墨，再淡进云里；山脚整片淡出
+	float crest = smoothstep(-0.05, 0.04, below);
+	float stroke = 1.0 - smoothstep(0.0, 0.18, below);
+	float body = exp(-below / (0.45 + 0.35 * height * profile));
+	float foot = 1.0 - smoothstep(baseY - 1.2, baseY + 0.2, q.y);
+	float rub = noiseTex.sample(noiseSmp, (q - float2(x0, 0.0)) * float2(1.0 / 0.6, 1.0 / 2.4)).b;
+	float m = crest * (stroke * 0.55 + body * 0.6 * (0.7 + 0.6 * rub)) * foot;
+	// 远近：有的淡、有的浓一些
+	return m * (0.3 + 0.45 * b.x * b.x);
+}
+
+// 远山：云海里若隐若现的淡墨山。固定在地图上（不随镜头移动），按 13 × 9 个图块分格，约一半的格子里有一组山；
+// 每一行横向错开、山脚高低不一，免得排成整齐的一排。山顶最高可伸进上一行，所以每个像素看本行和下一行、左中右三格。
+// 纯装饰，与迷雾下真实的地形无关；只画在完全看不见的地方，不会和看得见的地形混淆
+static inline float inkMountains(float2 q, texture2d<float> noiseTex, sampler noiseSmp)
+{
+	const float2 cell = float2(13.0, 9.0);
+	float row = floor(q.y / cell.y);
+	float ink = 0.0;
+	for(int j = 0; j <= 1; ++j)
+	{
+		float ry = row + float(j);
+		float shift = fract(ry * 0.618) * cell.x;
+		float home = floor((q.x + shift) / cell.x);
+		for(int i = -1; i <= 1; ++i)
+			ink = max(ink, mountainGroup(q, float2(home + float(i), ry), cell, shift, noiseTex, noiseSmp));
+	}
+	return ink;
+}
+
+fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(0)]],
+	texture2d<float> overlayTex [[texture(0)]], sampler overlaySmp [[sampler(0)]],
+	texture2d<float> fogTex [[texture(1)]], sampler fogSmp [[sampler(1)]],
+	texture2d<float> noiseTex [[texture(2)]], sampler noiseSmp [[sampler(2)]])
+{
+	main0_out out;
+	float4 over = overlayTex.sample(overlaySmp, in.uv);
+	float2 world = P.world.xy + windowPosition(in.uv, P.cache.zw, P.world.zw);
+	float2 size = P.misc.zw;
+	float t = P.misc.x;
+
+	// 四点平均把按图块的场抹圆（半径不到半个图块：完全在迷雾里的图块，四个点仍只落在它四周的迷雾图块上，浓度保持 1）
+	const float r = 0.45;
+	float4 fe = fogAt(fogTex, fogSmp, world + float2(r, 0.0), size);
+	float4 fw = fogAt(fogTex, fogSmp, world - float2(r, 0.0), size);
+	float4 fs = fogAt(fogTex, fogSmp, world + float2(0.0, r), size);
+	float4 fn = fogAt(fogTex, fogSmp, world - float2(0.0, r), size);
+	float4 field = (fe + fw + fs + fn) * 0.25;
+
+	// 地图外夹着边缘的值，云在边框外一个多图块内淡掉
+	float2 beyond = max(-world, world - size);
+	float fade = 1.0 - smoothstep(0.0, 1.2, max(beyond.x, beyond.y));
+	float density = field.r * fade;
+	if(density <= 0.003)
+	{
+		out.color = over;
+		return out;
+	}
+
+	float stir = field.g;  // 正在散开的程度
+	float dark = field.b;  // 在法术射程外
+	float2 deeper = float2(fe.r - fw.r, fs.r - fn.r) / (2.0 * r); // 指向迷雾深处
+	float detail = smoothstep(7.0, 20.0, P.misc.y); // 缩得很小时细纹淡出，免得闪
+
+	// 烟云随风缓缓流动（与树木风场同向：往右、略往下）；低频噪声扭曲取样位置，形状慢慢变化。
+	// 散开时扭曲加大、打着旋，往迷雾深处推开
+	float2 drift = float2(0.16, 0.05) * t;
+	float2 wq = world * (1.0 / 31.0) + float2(0.37, 0.11) + t * float2(0.0021, -0.0013);
+	float2 warp = float2(noiseTex.sample(noiseSmp, wq).a, noiseTex.sample(noiseSmp, wq.yx + float2(0.53, 0.29)).r) - 0.5;
+	float turn = stir * 1.3;
+	warp = float2x2(cos(turn), sin(turn), -sin(turn), cos(turn)) * warp * (1.0 + stir * 0.7);
+	float2 p = world - drift - deeper * stir * 0.9 + warp * 2.2;
+
+	float2 form = cloudForm(noiseTex, noiseSmp, p);
+	float fine = noiseTex.sample(noiseSmp, p * (1.0 / 10.0) + float2(0.13, 0.57)).b;
+	// 宣纸的纤维：洇墨的边缘顺着纤维走，是毛的，不是光滑的弧
+	float fiber = noiseTex.sample(noiseSmp, world * (1.0 / 2.1) + float2(0.41, 0.83)).a * 0.6
+		+ noiseTex.sample(noiseSmp, world * (1.0 / 0.8) + float2(0.17, 0.29)).b * 0.4;
+
+	// 边缘：浓度加起伏过阈值。起伏有大团、云头和纸纤维三层，边缘是一个个云头，细看是洇开的毛边；散开时毛边更乱
+	float small = noiseTex.sample(noiseSmp, p * (1.0 / 7.2) + float2(0.29, 0.83)).g * 2.0 - 1.0;
+	float shape = form.x * 0.85 + (sqrt(small * small + 0.02) - 0.14) * 0.32 + (fine - 0.5) * 0.08 * detail;
+	float wobble = 1.0 + stir * 0.3;
+	float level = density + (shape - 0.46) * wobble + (fiber - 0.5) * (0.09 + 0.12 * stir) * detail;
+	float body = smoothstep(0.42 - stir * 0.12, 0.52, level);
+	// 完全在迷雾里（浓度 1，地图缓存那里只有空地面）必须不透明
+	body = max(body, smoothstep(0.96, 0.995, density));
+	// 边缘外一层淡墨烟，慢慢淡开
+	float haze = smoothstep(0.24, 0.48, level) * (0.5 + 0.5 * fine) * 0.32;
+
+	// ---- 画面：宣纸为底，淡墨烘出留白的云 ----
+	const float3 paper = float3(0.86, 0.835, 0.78);
+	const float3 inkColor = float3(0.13, 0.13, 0.14);
+	float edgeZone = 1.0 - smoothstep(0.86, 0.985, density);
+	float deep = smoothstep(0.9, 1.0, density); // 只在完全看不见的地方画远山、烟云的重墨
+
+	// 烟云：横向拉长的淡墨带，随风流动；墨干处边上略聚（水渍边）
+	float2 bq = float2(p.x * (1.0 / 40.0), p.y * (1.0 / 12.0));
+	float bandN = noiseTex.sample(noiseSmp, bq + float2(0.13, 0.71)).r * 0.78 + noiseTex.sample(noiseSmp, bq * float2(2.3, 1.9) + float2(0.57, 0.09)).g * 0.22;
+	float wash = smoothstep(0.52, 0.90, bandN);
+	float pool = smoothstep(0.50, 0.56, bandN) * (1.0 - smoothstep(0.56, 0.64, bandN));
+	float ink = wash * 0.2 + pool * 0.05 * detail;
+
+	// 远山：固定在地图上。原来带视差（比地面移得慢），镜头跟着英雄走时山也跟着滑，看上去像山在动（2026-11-18 用户反馈）
+	// 缩得很小时（屏幕上一个图块不到二十几个像素）远山只剩满屏的小三角，像撒了一地帐篷，淡出
+	float hills = inkMountains(world, noiseTex, noiseSmp) * deep * smoothstep(16.0, 28.0, P.misc.y);
+
+	// 云：留白。云头盖住烟云和山腰（云遮山），云头下沿勾一笔淡墨、染一点淡墨，笔触时断时续
+	float cloudWhite = smoothstep(0.50, 0.72, form.x);
+	float formBelow = cloudForm(noiseTex, noiseSmp, p + float2(0.0, 0.35)).x;
+	float underside = smoothstep(0.0, 0.06, form.x - formBelow);
+	float cloudShade = smoothstep(0.28, 0.50, form.x) * (1.0 - smoothstep(0.50, 0.62, form.x)) * underside;
+
+	ink = ink * (1.0 - cloudWhite * 0.85) + hills * (1.0 - cloudWhite * 0.9);
+	ink += cloudShade * 0.10;
+
+	// 边缘：里侧一道淡墨（墨洇到边上聚起来的水渍），最外一笔细一些的墨边；散开时墨被水晕开，这一道变浓、往外洇
+	float inner = smoothstep(0.46, 0.52, level) * (1.0 - smoothstep(0.52, 0.70, level)) * edgeZone;
+	float contour = smoothstep(0.42, 0.46, level) * (1.0 - smoothstep(0.46, 0.51, level)) * edgeZone;
+	ink += inner * 0.07 + contour * (0.13 + 0.25 * stir) * (0.6 + 0.4 * fiber);
+
+	float3 color = mix(paper * (0.96 + (fiber - 0.5) * 0.08 * detail), inkColor, clamp(ink, 0.0, 0.9));
+
+	// 法术射程外压暗
+	color *= 1.0 - 0.6 * dark;
+
+	// 时段色调；夜里纸色暗下来、偏青
+	color *= P.grade.rgb;
+	float night = P.sun.w;
+	float luma = dot(color, float3(0.299, 0.587, 0.114));
+	color = mix(color, float3(luma), P.grade.w * 0.6);
+	color = mix(color, color * float3(0.32, 0.35, 0.44), night);
+
+	// 外面一圈淡墨烟是半透明的灰，正在散开的云变薄
+	float3 hazeColor = mix(paper, inkColor, 0.18) * P.grade.rgb;
+	hazeColor = mix(hazeColor, hazeColor * float3(0.32, 0.35, 0.44), night);
+	float alpha = clamp(max(body, haze) * (1.0 - stir * 0.45), 0.0, 1.0);
+	color = mix(hazeColor, color, body / max(max(body, haze), 1e-4));
+
+	// 云在地上投一层淡影（光从上方来，影子落在云的下方）
+	float above = fogAt(fogTex, fogSmp, world + float2(0.2, -0.42), size).r * fade;
+	float shadow = smoothstep(0.42, 0.62, above + (shape - 0.46) * 0.6) * 0.22 * (1.0 - night * 0.6);
+
+	// 预乘颜色：影子在云下，覆盖层（路径、图标）在最上
+	float4 cloud = float4(color * alpha, alpha);
+	cloud += float4(float3(0.03, 0.03, 0.04) * shadow, shadow) * (1.0 - alpha);
+	out.color = over + cloud * (1.0 - over.a);
+	return out;
+}
+)FOGMSL";
+
 /// 与着色器里 Params 一一对应，每项 16 字节对齐
 struct MapUniforms
 {
@@ -1149,6 +1396,19 @@ struct ShadowUniforms
 	float window[4];
 	float sun[4];
 };
+
+/// 与云雾着色器的 Params 一一对应
+struct FogUniforms
+{
+	float cache[4];
+	float world[4];
+	float misc[4];
+	float sun[4];
+	float grade[4];
+};
+
+/// 云雾着色器：主纹理（覆盖层）加云雾场、噪声
+constexpr Uint32 fogSamplerCount = 3;
 
 /// 着色器声明的取样器数：SDL 的主纹理加本类绑定的十四张（含离岸距离图、摇摆层、风场遮罩、起伏层、光照图、
 /// 地形分布层、材质图集、地形场）。Metal 每个阶段最多 16 个取样器，离岸距离图因此兼存雾云场，没有另占一个
@@ -1245,6 +1505,32 @@ std::vector<uint8_t> generateNoisePixels()
 	return pixels;
 }
 
+/// 屏幕中心的地图坐标（云层视差用）：第一块区域正是可见窗口左上角图块所在的那一块，从它的屏幕位置推算
+std::array<float, 2> screenCenterTile(const MapLayerCompositor::Inputs & inputs, const std::vector<PresentedRegion> & regions, float cacheWidth)
+{
+	std::array<float, 2> center = {static_cast<float>(inputs.worldOrigin.x), static_cast<float>(inputs.worldOrigin.y)};
+	if(regions.empty() || regions.front().target.w <= 0 || inputs.slots.x <= 0)
+		return center;
+
+	Rect bounds = regions.front().target;
+	for(const PresentedRegion & region : regions)
+		bounds = bounds.include(region.target);
+	const float cachePerScreen = static_cast<float>(regions.front().source.w) / static_cast<float>(regions.front().target.w);
+	const float tileSize = cacheWidth / static_cast<float>(inputs.slots.x);
+	const Point offset = bounds.center() - regions.front().target.topLeft();
+	center[0] += static_cast<float>(offset.x) * cachePerScreen / tileSize;
+	center[1] += static_cast<float>(offset.y) * cachePerScreen / tileSize;
+	return center;
+}
+
+/// 屏幕上一个图块多少像素（屏幕像素，含缩放倍数）
+float tilePixelsOnScreen(const MapLayerCompositor::Inputs & inputs, const std::vector<PresentedRegion> & regions, float cacheWidth)
+{
+	if(regions.empty() || regions.front().source.w <= 0 || inputs.slots.x <= 0)
+		return 32.0f;
+	return static_cast<float>(regions.front().target.w) / static_cast<float>(regions.front().source.w) * cacheWidth / static_cast<float>(inputs.slots.x);
+}
+
 SDL_GPUDevice * deviceOf(SDL_Renderer * renderer)
 {
 	return static_cast<SDL_GPUDevice *>(SDL_GetPointerProperty(SDL_GetRendererProperties(renderer), SDL_PROP_RENDERER_GPU_DEVICE_POINTER, nullptr));
@@ -1301,6 +1587,11 @@ bool MapLayerCompositor::ensureShaderResources(SDL_Renderer * renderer)
 		lightMap = nullptr;
 		reliefLevelsSourceSize = Point();
 		boundTextures = {};
+		fogShader = nullptr;
+		fogState = nullptr;
+		fogField.texture = nullptr;
+		fogField.dirty = true;
+		fogBoundTextures = {};
 		shaderUnavailable = false;
 		owner = renderer;
 	}
@@ -1308,7 +1599,7 @@ bool MapLayerCompositor::ensureShaderResources(SDL_Renderer * renderer)
 	if(shaderUnavailable)
 		return false;
 
-	if(shader && shadowShader && sampler && clampSampler && noise)
+	if(shader && shadowShader && fogShader && sampler && clampSampler && noise)
 		return true;
 
 	if(!isShaderPathAvailable(renderer))
@@ -1336,6 +1627,11 @@ bool MapLayerCompositor::ensureShaderResources(SDL_Renderer * renderer)
 	shaderInfo.num_samplers = shadowSamplerCount;
 	shadowShader = SDL_CreateGPUShader(device, &shaderInfo);
 
+	shaderInfo.code = reinterpret_cast<const Uint8 *>(fogShaderSource);
+	shaderInfo.code_size = std::strlen(fogShaderSource);
+	shaderInfo.num_samplers = fogSamplerCount;
+	fogShader = SDL_CreateGPUShader(device, &shaderInfo);
+
 	SDL_GPUSamplerCreateInfo samplerInfo;
 	SDL_zero(samplerInfo);
 	samplerInfo.min_filter = SDL_GPU_FILTER_LINEAR;
@@ -1362,7 +1658,7 @@ bool MapLayerCompositor::ensureShaderResources(SDL_Renderer * renderer)
 		particles.setNoise(pixels, noiseSize);
 	}
 
-	if(!shader || !shadowShader || !sampler || !clampSampler || !noise || !gpuTextureOf(noise))
+	if(!shader || !shadowShader || !fogShader || !sampler || !clampSampler || !noise || !gpuTextureOf(noise))
 	{
 		logGlobal->error("Failed to set up the map water shader: %s - drawing map layers without it", SDL_GetError());
 		release();
@@ -1821,6 +2117,13 @@ void MapLayerCompositor::setAtmosphereField(const std::vector<uint8_t> & rgba, c
 	depthField.dirty = true;
 }
 
+void MapLayerCompositor::setFogField(const std::vector<uint8_t> & rgba, const Point & size)
+{
+	fogField.rgba = rgba;
+	fogField.size = size;
+	fogField.dirty = true;
+}
+
 void MapLayerCompositor::setVegetationField(const std::vector<uint8_t> & rgba, const Point & size)
 {
 	particles.setVegetationField(rgba, size);
@@ -1862,6 +2165,7 @@ bool MapLayerCompositor::ensureFieldTexture(SDL_Renderer * renderer, TileField &
 		}
 		// 新纹理可能分到旧纹理的地址，绑着旧纹理的渲染状态必须重建
 		inputsForgotten = true;
+		fogInputsForgotten = true;
 	}
 
 	if(hasField)
@@ -1876,6 +2180,7 @@ bool MapLayerCompositor::ensureFieldTexture(SDL_Renderer * renderer, TileField &
 void MapLayerCompositor::forgetInputs()
 {
 	inputsForgotten = true;
+	fogInputsForgotten = true;
 	particles.forgetInputs();
 }
 
@@ -1950,6 +2255,103 @@ void MapLayerCompositor::compose(SDL_Renderer * renderer, const Inputs & inputs,
 		composeWithShader(renderer, inputs, regions);
 	else
 		composeLayerByLayer(renderer, inputs, regions, scaleMode);
+
+	// 覆盖层最后叠上，盖住粒子；云雾着色器只要着色器资源在就能画，合成着色器暂时没就绪（遮罩小图还没建好之类）时也画云
+	drawOverlay(renderer, inputs, regions);
+}
+
+bool MapLayerCompositor::ensureFogState(SDL_Renderer * renderer)
+{
+	const std::array<SDL_Texture *, 2> wanted = {fogField.texture, noise};
+	const bool forgotten = fogInputsForgotten.exchange(false);
+	if(fogState && fogBoundTextures == wanted && !forgotten)
+		return true;
+
+	if(fogState)
+	{
+		SDL_DestroyGPURenderState(fogState);
+		fogState = nullptr;
+	}
+	fogBoundTextures = {};
+
+	// 顺序与着色器的 texture(1)、texture(2) 对应：云雾场按地图坐标取样、不环绕；噪声可平铺、环绕
+	std::array<SDL_GPUTextureSamplerBinding, fogSamplerCount - 1> bindings = {};
+	bindings[0].texture = fogField.texture ? gpuTextureOf(fogField.texture) : nullptr;
+	bindings[0].sampler = clampSampler;
+	bindings[1].texture = noise ? gpuTextureOf(noise) : nullptr;
+	bindings[1].sampler = sampler;
+	if(!bindings[0].texture || !bindings[1].texture || !bindings[0].sampler || !bindings[1].sampler)
+		return false;
+
+	SDL_GPURenderStateCreateInfo stateInfo;
+	SDL_zero(stateInfo);
+	stateInfo.fragment_shader = fogShader;
+	stateInfo.num_sampler_bindings = static_cast<Sint32>(bindings.size());
+	stateInfo.sampler_bindings = bindings.data();
+	fogState = SDL_CreateGPURenderState(renderer, &stateInfo);
+	if(!fogState)
+	{
+		// 画不出云，迷雾下的地图会露出来：让屏幕处理器退回原版单层缓存（isShaderBroken）
+		logGlobal->error("Failed to create the map fog render state: %s - falling back to the classic map cache", SDL_GetError());
+		shaderUnavailable = true;
+		return false;
+	}
+
+	fogBoundTextures = wanted;
+	return true;
+}
+
+void MapLayerCompositor::drawOverlay(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions)
+{
+	const bool fogReady = !shaderUnavailable && fogShader && noise && clampSampler && sampler
+		&& ensureFieldTexture(renderer, fogField, {0, 0, 0, 255}, "fog")
+		&& ensureFogState(renderer);
+
+	SDL_SetTextureBlendMode(inputs.overlay, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
+	SDL_SetTextureScaleMode(inputs.overlay, SDL_SCALEMODE_LINEAR);
+
+	if(fogReady)
+	{
+		float width = 0;
+		float height = 0;
+		SDL_GetTextureSize(inputs.overlay, &width, &height);
+
+		FogUniforms uniforms = {};
+		uniforms.cache[0] = width;
+		uniforms.cache[1] = height;
+		uniforms.cache[2] = static_cast<float>(inputs.slots.x);
+		uniforms.cache[3] = static_cast<float>(inputs.slots.y);
+		uniforms.world[0] = static_cast<float>(inputs.worldOrigin.x);
+		uniforms.world[1] = static_cast<float>(inputs.worldOrigin.y);
+		uniforms.world[2] = static_cast<float>(inputs.slotOrigin.x);
+		uniforms.world[3] = static_cast<float>(inputs.slotOrigin.y);
+		uniforms.misc[0] = shaderTime();
+		uniforms.misc[1] = tilePixelsOnScreen(inputs, regions, width);
+		uniforms.misc[2] = static_cast<float>(std::max(1, fogField.size.x));
+		uniforms.misc[3] = static_cast<float>(std::max(1, fogField.size.y));
+		for(size_t i = 0; i < 3; ++i)
+		{
+			uniforms.sun[i] = sun.direction[i];
+			uniforms.grade[i] = sun.grade[i];
+		}
+		uniforms.sun[3] = sun.night;
+		uniforms.grade[3] = sun.desaturate;
+
+		SDL_SetGPURenderStateFragmentUniforms(fogState, 0, &uniforms, sizeof(uniforms));
+		SDL_SetGPURenderState(renderer, fogState);
+	}
+
+	for(const PresentedRegion & region : regions)
+	{
+		const SDL_FRect from = CSDL_Ext::toSDLFloat(region.source);
+		const SDL_FRect to = CSDL_Ext::toSDLFloat(region.target);
+
+		if(!SDL_RenderTexture(renderer, inputs.overlay, &from, &to))
+			logGlobal->error("Failed to compose the map overlay: %s", SDL_GetError());
+	}
+
+	if(fogReady)
+		SDL_SetGPURenderState(renderer, nullptr);
 }
 
 void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions)
@@ -1990,18 +2392,10 @@ void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs
 	uniforms.shadowDir[0] = sun.shadow[0];
 	uniforms.shadowDir[1] = sun.shadow[1];
 
-	// 屏幕中心的地图坐标（云层视差用）：第一块区域正是可见窗口左上角图块所在的那一块，从它的屏幕位置推算
-	if(!regions.empty() && regions.front().target.w > 0 && inputs.slots.x > 0)
-	{
-		Rect bounds = regions.front().target;
-		for(const PresentedRegion & region : regions)
-			bounds = bounds.include(region.target);
-		const float cachePerScreen = static_cast<float>(regions.front().source.w) / static_cast<float>(regions.front().target.w);
-		const float tileSize = width / static_cast<float>(inputs.slots.x);
-		const Point center = bounds.center() - regions.front().target.topLeft();
-		uniforms.camera[0] = static_cast<float>(inputs.worldOrigin.x) + static_cast<float>(center.x) * cachePerScreen / tileSize;
-		uniforms.camera[1] = static_cast<float>(inputs.worldOrigin.y) + static_cast<float>(center.y) * cachePerScreen / tileSize;
-	}
+	// 屏幕中心的地图坐标（云层视差用）
+	const auto center = screenCenterTile(inputs, regions, width);
+	uniforms.camera[0] = center[0];
+	uniforms.camera[1] = center[1];
 	uniforms.camera[2] = cloudParallax;
 	uniforms.camera[3] = cloudAltitude;
 	uniforms.atmos[0] = 0.36f; // 雾
@@ -2140,28 +2534,16 @@ void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs
 		frame.weatherStrength = weatherFade * weatherFade * (3.0f - 2.0f * weatherFade) * frame.strength;
 	}
 	particles.draw(renderer, frame, regions);
-
-	// 覆盖层（迷雾、路径）最后叠上，盖住粒子
-	SDL_SetTextureBlendMode(inputs.overlay, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
-	SDL_SetTextureScaleMode(inputs.overlay, SDL_SCALEMODE_LINEAR);
-	for(const PresentedRegion & region : regions)
-	{
-		const SDL_FRect from = CSDL_Ext::toSDLFloat(region.source);
-		const SDL_FRect to = CSDL_Ext::toSDLFloat(region.target);
-
-		if(!SDL_RenderTexture(renderer, inputs.overlay, &from, &to))
-			logGlobal->error("Failed to compose the map overlay: %s", SDL_GetError());
-	}
+	// 覆盖层（云雾、路径）随后由 compose() 叠上，盖住粒子
 }
 
 void MapLayerCompositor::composeLayerByLayer(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions, int scaleMode) const
 {
-	// 没有着色器排前后，摇摆物件一律叠在静止物件之上
-	const std::array<std::pair<SDL_Texture *, SDL_BlendMode>, 4> layers = {{
+	// 没有着色器排前后，摇摆物件一律叠在静止物件之上；覆盖层由 drawOverlay() 画
+	const std::array<std::pair<SDL_Texture *, SDL_BlendMode>, 3> layers = {{
 		{inputs.ground, SDL_BLENDMODE_NONE},
 		{inputs.objects, SDL_BLENDMODE_BLEND_PREMULTIPLIED},
 		{inputs.sway, SDL_BLENDMODE_BLEND_PREMULTIPLIED},
-		{inputs.overlay, SDL_BLENDMODE_BLEND_PREMULTIPLIED},
 	}};
 
 	for(const auto & [texture, blendMode] : layers)
@@ -2208,7 +2590,19 @@ void MapLayerCompositor::release()
 	}
 	shadowShader = nullptr;
 
-	for(TileField * field : {&depthField, &terrainField})
+	if(fogState)
+		SDL_DestroyGPURenderState(fogState);
+	fogState = nullptr;
+	if(owner && fogShader)
+	{
+		SDL_GPUDevice * device = deviceOf(owner);
+		if(device)
+			SDL_ReleaseGPUShader(device, fogShader);
+	}
+	fogShader = nullptr;
+	fogBoundTextures = {};
+
+	for(TileField * field : {&depthField, &terrainField, &fogField})
 	{
 		if(field->texture)
 			SDL_DestroyTexture(field->texture);

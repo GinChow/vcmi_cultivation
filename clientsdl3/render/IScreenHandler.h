@@ -236,4 +236,9 @@ public:
 
 	/// 地表材质图集（2026-11-17）：模组提供的 PNG 文件内容，8 行（材质组）× 4 列（子材质），RGB 颜色、A 高度。只给一次
 	virtual void setMapTerrainMaterials(const std::vector<uint8_t> & png) = 0;
+
+	/// 云雾场（2026-11-18，水墨云海迷雾）：rgba 按行存放 size.x × size.y 个地图图块，R 云的浓度（在迷雾里为 255，揭开后慢慢降到 0），
+	/// G 正在散开的程度（散到一半最大），B 为 255 表示在冒险法术射程外（云压暗）。分层合成时覆盖层不画原版迷雾，由合成器据此画云。
+	/// 换地图层时整张给一次，之后迷雾变化、云在散开时由地图缓存每帧调用
+	virtual void setMapFogField(const std::vector<uint8_t> & rgba, const Point & size) = 0;
 };
