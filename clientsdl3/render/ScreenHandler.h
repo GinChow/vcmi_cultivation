@@ -78,6 +78,7 @@ class ScreenHandler final : public IScreenHandler
 		Point slots;
 		Point worldOrigin;
 		Point slotOrigin;
+		int tileSize = 32;
 	};
 	std::array<PresentedCanvas, static_cast<size_t>(GpuRenderLayer::COUNT)> presentedCanvases;
 
@@ -201,6 +202,8 @@ public:
 	void setMapAtmosphereField(const std::vector<uint8_t> & rgba, const Point & size) final;
 	void setMapTerrainField(const std::vector<uint8_t> & rgba, const Point & size) final;
 	void setMapTerrainMaterials(const std::vector<uint8_t> & png) final;
+	void setMapDayProgress(int day, std::optional<float> dayProgress) final;
+	void setMapLights(const std::vector<MapLight> & lights) final;
 	void updateScreenTexture() final;
 	void presentScreenTexture() final;
 

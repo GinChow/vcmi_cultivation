@@ -29,8 +29,13 @@ struct SDL_GPURenderState;
 ///
 /// 光影（2026-11-17）：地图缓存另给一张起伏层（物件表面的法线和离地高度）。每帧先把它缩成 1/4，用第二个着色器
 /// 逐点朝太阳方向找遮挡，算出整屏的长投影（不受图块裁切，山影能落到旁边的林子上）；合成时物件按法线重新打光、
-/// 加边缘光，再叠流动的雾（贴着山脚、林地、水边）和山腰云海（有视差，峰顶伸出云层）。太阳按设置
-/// video.mapSunCycle 从清晨走到傍晚，影子方向、长短与光色跟着变。
+/// 加边缘光，再叠流动的雾（贴着山脚、林地、水边）和山腰云海（有视差，峰顶伸出云层）。
+///
+/// 昼夜与天气（2026-11-18）：时段默认跟着回合走（设置 video.mapSunClock）——本方回合开始是清晨，英雄用掉行动力太阳就西斜，
+/// 行动力用完是黄昏，等别家行动时是夜里。影子方向、长短、光色、整屏色调（清晨偏暖、黄昏偏橙、夜里偏蓝）跟着变；
+/// 天越暗，城镇灯笼、营火、法光、熔岩、英雄火把这些局部光（MapLight，最多 maxLights 盏）越显眼，照亮周围的地面和物件。
+/// 大块云影顺风缓缓飘过全图，有的云下着阵雨，雨点在水面上打出涟漪；沙地、岩浆上热浪扭曲，沼泽上飘着黄绿的瘴气，
+/// 飘雪、余烬、瘴气团和雨丝由 MapParticles 画。
 ///
 /// 性能：着色器对每个屏幕像素运行，满屏是水时取样次数决定帧率。离岸远近、向上找岸线这类要看一大片
 /// 遮罩的计算，都改在每帧逐级缩小出的 1/8、1/16 遮罩小图上做，全分辨率纹理每个水面像素只取约十次。
@@ -55,6 +60,7 @@ public:
 		Point slots;
 		Point worldOrigin;
 		Point slotOrigin;
+		int tileSize = 32; ///< 屏幕上一个图块的大小（界面像素），不到 16 时起伏层等效果层是空的（见 MapLayerSet）
 	};
 
 	MapLayerCompositor() = default;
@@ -89,6 +95,17 @@ public:
 
 	/// 设置地表材质图集（PNG 文件内容，含义见 IScreenHandler::setMapTerrainMaterials），在渲染线程上按需解码。须在渲染线程上调用
 	void setTerrainMaterials(const std::vector<uint8_t> & png);
+
+	/// 本方这一天的进度（含义见 IScreenHandler::setMapDayProgress），设置 video.mapSunClock 为 turn 时推动太阳。须在渲染线程上调用
+	void setDayProgress(int day, std::optional<float> dayProgress);
+
+	/// 这一帧可见范围里的局部光（见 MapLight）。须在渲染线程上调用
+	void setLights(const std::vector<MapLight> & lights);
+
+	/// 合成着色器一帧最多照几盏局部光：多出来的取离屏幕中心最近的。着色器按 32 位掩码记每格有哪些灯，所以不能超过 32
+	static constexpr size_t maxLights = 32;
+	/// 局部光分格：可见窗口均分成这么多 × 这么多格，与着色器的 lightGridSize 一致
+	static constexpr int lightGridSize = 16;
 
 	/// 地表材质图集的布局：8 行（材质组，与 TerrainId 0~7 一致）× 4 列（子材质），每格是正方形，四周 8 像素是环绕的内容
 	static constexpr int materialSets = 8;
@@ -151,11 +168,30 @@ private:
 		float rim = 0.0f;      ///< 边缘光强度
 		float strength = 0.0f; ///< 长投影的浓度（日出日落时淡出）
 		float reach = 0.0f;    ///< 预处理着色器的射线最高找到多高（图块）
+		float night = 0.0f;       ///< 天黑的程度：白天 0，入夜 1
+		float lamps = 0.0f;       ///< 局部光显出来多少：正午几乎看不出，黄昏亮起来，夜里最亮
+		float desaturate = 0.0f;  ///< 夜里颜色褪掉多少（人眼在暗处辨色差）
+		float heat = 0.0f;        ///< 沙地热浪的强度：正午最强，夜里没有（岩浆上不论早晚都有）
+		float cloudShadow = 0.0f; ///< 大块云影的浓度：太阳越高越清楚，夜里没有
 	};
 	Sun sun;
 
-	/// 按设置 video.mapSunCycle（清晨到傍晚的秒数，0 为定在 video.mapSunTime）算出此刻的太阳
-	static Sun currentSun();
+	/// 时段：0 日出、0.5 正午、1 日落，1~1.5 是夜里，1.5 又是日出（取模）
+	static constexpr float dayCycle = 1.5f;
+	/// 某个时段的太阳、天色
+	static Sun sunAt(float phase);
+
+	/// 按设置 video.mapSunClock 推进时段：turn 跟着本方回合（setDayProgress），cycle 按 video.mapSunCycle 秒转一整天，
+	/// fixed 定在 video.mapSunTime。跟回合走时只往前走、平滑地追上目标，跨回合时经过夜里到第二天清晨
+	void advanceDayClock();
+	float dayPhase = -1.0f;              ///< 此刻的时段；小于 0 表示还没开始，第一帧直接跳到目标
+	std::optional<float> dayProgress = 0.0f; ///< 最近一次收到的本方进度，空为不在本方回合
+	int dayNumber = 0;                   ///< 最近一次收到的是哪一天
+	float dayProgressMax = 0.0f;         ///< 本方这一天走到过的最远进度：英雄途中补了行动力，天也不会倒回早上
+	uint64_t dayClockTicks = 0;          ///< 上次推进时段的时间（毫秒）
+
+	/// 这一帧的局部光，由地图缓存给
+	std::vector<MapLight> lights;
 
 	/// 每个地图图块一个像素的场（离岸距离图兼雾云场）：RGBA 数据由地图缓存给，纹理在渲染线程上按需建。
 	/// 着色器按地图坐标线性取样，地图外夹到边缘的值
@@ -173,7 +209,7 @@ private:
 	/// 建好或更新场的纹理；还没收到数据时用 1×1 的 fallback
 	bool ensureFieldTexture(SDL_Renderer * renderer, TileField & field, const std::array<uint8_t, 4> & fallback, const char * name);
 
-	/// 植被粒子：落叶、飞花、萤火虫、惊鸟，在合成之后、覆盖层之前画
+	/// 植被与天气粒子：落叶、飞花、萤火虫、惊鸟、飘雪、余烬、瘴气团、雨丝，在合成之后、覆盖层之前画
 	MapParticles particles;
 
 	/// 着色器用的时钟（秒）。约 2.8 小时后从头开始，保证 float 精度足够让动画平滑

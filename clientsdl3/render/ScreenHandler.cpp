@@ -1054,6 +1054,16 @@ void ScreenHandler::setMapTerrainMaterials(const std::vector<uint8_t> & png)
 	mapCompositor->setTerrainMaterials(png);
 }
 
+void ScreenHandler::setMapDayProgress(int day, std::optional<float> dayProgress)
+{
+	mapCompositor->setDayProgress(day, dayProgress);
+}
+
+void ScreenHandler::setMapLights(const std::vector<MapLight> & lights)
+{
+	mapCompositor->setLights(lights);
+}
+
 /// presentMapLayers() 登记的大地图图层，整理成合成器要的输入
 template<typename Presented>
 static MapLayerCompositor::Inputs mapCompositorInputs(const Presented & presented)
@@ -1070,6 +1080,7 @@ static MapLayerCompositor::Inputs mapCompositorInputs(const Presented & presente
 	inputs.slots = presented.slots;
 	inputs.worldOrigin = presented.worldOrigin;
 	inputs.slotOrigin = presented.slotOrigin;
+	inputs.tileSize = presented.tileSize;
 	return inputs;
 }
 
@@ -1095,6 +1106,7 @@ void ScreenHandler::presentMapLayers(const Canvas & ground, const MapLayerSet & 
 	presented.slots = layers.slots;
 	presented.worldOrigin = layers.worldOrigin;
 	presented.slotOrigin = layers.slotOrigin;
+	presented.tileSize = layers.tileSize;
 
 	// 缺任何一层都没法分层合成，只能不画，免得只显示地面、物件全丢
 	if(!presented.objects || !presented.sway || !presented.overlay || !presented.waterMask || !presented.windMask || !presented.relief || !presented.splat)

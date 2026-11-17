@@ -59,6 +59,10 @@ public:
 	/// returns true if specified object is the currently active hero
 	virtual bool isActiveHero(const CGObjectInstance* obj) const = 0;
 
+	/// 本方这一天到哪了（2026-11-18，大地图昼夜）。first 标出是哪一天（游戏天数与玩家合成，热座时每位玩家各算一天）；
+	/// second 是这一天过了多少：0 为刚开始行动，1 为本方醒着的英雄行动力都已用完，不在本方回合（等其他玩家、AI 行动）时为空，大地图入夜
+	virtual std::pair<int, std::optional<float>> dayProgress() const = 0;
+
 	/// Returns moveDir of hero that attacked this wandering monster, or -1 on failure
 	virtual int attackedMonsterDirection(const CGObjectInstance * wanderingMonster) const = 0;
 

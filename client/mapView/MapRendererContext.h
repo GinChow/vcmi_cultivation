@@ -33,6 +33,7 @@ public:
 	bool tileAnimated(const int3 & coordinates) const override;
 
 	bool isActiveHero(const CGObjectInstance* obj) const override;
+	std::pair<int, std::optional<float>> dayProgress() const override;
 	int attackedMonsterDirection(const CGObjectInstance * wanderingMonster) const override;
 
 	const TerrainTile & getMapTile(const int3 & coordinates) const override;

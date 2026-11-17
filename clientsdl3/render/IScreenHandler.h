@@ -62,6 +62,32 @@ struct MapLayerSet
 	Point slots;       ///< 缓存的图块槽位数（宽、高）
 	Point worldOrigin; ///< 可见窗口左上角图块的地图坐标
 	Point slotOrigin;  ///< 该图块在缓存中的槽位
+	int tileSize = 32; ///< 屏幕上一个图块的大小（界面像素，不含缩放倍数）。不到 16 时摇摆层、风场遮罩、起伏层、地形分布层是空的
+};
+
+/// 大地图上的一盏局部光（2026-11-18，大地图光照）：城镇的灯笼、营火、灯塔、传送门和神殿的法光、熔岩、英雄手里的火把。
+/// 由地图缓存每帧从可见的物件收集，合成着色器按它照亮周围的地面和物件；天越暗越明显，正午几乎看不出
+struct MapLight
+{
+	/// 光的种类，决定怎么闪：火光跳动、法光缓慢明灭、熔岩慢慢呼吸、灯笼几乎不动
+	enum class Flicker : uint8_t
+	{
+		STEADY,
+		FIRE,
+		MAGIC,
+		LAVA
+	};
+
+	float x = 0.0f;      ///< 光源在地面上的位置（地图坐标，以图块为单位，可带小数）
+	float y = 0.0f;
+	float height = 0.5f; ///< 离地多高（图块），越高照得越开、物件顶上也亮
+	float radius = 2.0f; ///< 照多远（图块），之外为 0
+	float r = 1.0f;      ///< 颜色乘强度
+	float g = 0.7f;
+	float b = 0.4f;
+	float halo = 0.0f;   ///< 夜里光源周围空气里的一团辉光，0~1
+	Flicker flicker = Flicker::STEADY;
+	float seed = 0.0f;   ///< 闪动的相位，每盏灯不同
 };
 
 class IScreenHandler
@@ -194,9 +220,19 @@ public:
 	/// 着色器据此让流动的雾只在山脚、林地、水边浓起来，云海只绕着山。换地图或切换地上地下时由地图缓存调用
 	virtual void setMapAtmosphereField(const std::vector<uint8_t> & rgba, const Point & size) = 0;
 
-	/// 地形场（2026-11-17）：rgba 按行存放 size.x × size.y 个地图图块，R 是该图块的地表材质组（0~7，255 为没有）。
+	/// 地形场（2026-11-17，2026-11-18 加天气）：rgba 按行存放 size.x × size.y 个地图图块。
+	/// R 是该图块的地形（TerrainId 0~9：泥地、沙地、草地、雪地、沼泽、碎石、地下、岩浆、水、岩石；0~7 也是地表材质组，255 为模组新增的地形）；
+	/// G 热浪多少（沙地、岩浆），B 瘴气多少（沼泽），A 熔岩的红光照到这里多少，三者都向四周晕开一两个图块。
 	/// 换地图或切换地上地下时由地图缓存调用
 	virtual void setMapTerrainField(const std::vector<uint8_t> & rgba, const Point & size) = 0;
+
+	/// 大地图的时段（2026-11-18）：day 标出是哪一天（换了就是新的一天，从早上重新算）；dayProgress 是本方这一天过了多少，
+	/// 0 为刚开始行动、1 为本方英雄的行动力都已用完，为空表示不在本方回合（等其他玩家、AI 行动），大地图入夜。
+	/// 设置 video.mapSunClock 为 turn 时由它推动太阳，地图缓存每 0.25 秒调用一次
+	virtual void setMapDayProgress(int day, std::optional<float> dayProgress) = 0;
+
+	/// 这一帧可见范围里的局部光（见 MapLight），地图缓存每帧调用；多于合成器能处理的盏数时只用离屏幕中心最近的
+	virtual void setMapLights(const std::vector<MapLight> & lights) = 0;
 
 	/// 地表材质图集（2026-11-17）：模组提供的 PNG 文件内容，8 行（材质组）× 4 列（子材质），RGB 颜色、A 高度。只给一次
 	virtual void setMapTerrainMaterials(const std::vector<uint8_t> & png) = 0;

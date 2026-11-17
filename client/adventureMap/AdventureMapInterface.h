@@ -85,7 +85,6 @@ private:
 	std::shared_ptr<TurnTimerWidget> watches;
 
 private:
-	EAdventureState getState() const;
 	void setState(EAdventureState state);
 
 	/// updates active state of game window whenever game state changes
@@ -140,6 +139,9 @@ protected:
 	void onScreenResize() override;
 
 public:
+	/// 冒险地图此刻的状态（本方行动、等别家、AI 行动……）。大地图昼夜按它判断是不是本方回合
+	EAdventureState getState() const;
+
 	AdventureMapInterface();
 
 	/// Provides access to the shortcut/action registry (callbacks + enabled states)

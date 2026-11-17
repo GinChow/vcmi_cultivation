@@ -235,6 +235,7 @@
 				"useHdTextures",
 				"assetCacheSize",
 				"mapEffects",
+				"mapSunClock",
 				"mapSunCycle",
 				"mapSunTime"
 			],
@@ -284,15 +285,21 @@
 					"default" : true,
 					"description" : "adventure map shader effects (water reflections, ripples, foam, wind, long shadows, lighting, fog, clouds). Needs the SDL3 build with driver 'gpu'"
 				},
+				"mapSunClock" : {
+					"type" : "string",
+					"enum" : [ "turn", "cycle", "fixed" ],
+					"default" : "turn",
+					"description" : "what drives the adventure map time of day. turn: dawn when the player's turn starts, the sun goes down as the player's heroes use up their movement points, night while other players move; cycle: a full day and night every mapSunCycle seconds; fixed: stays at mapSunTime"
+				},
 				"mapSunCycle" : {
 					"type" : "number",
 					"default" : 900,
-					"description" : "seconds the adventure map sun takes from dawn to dusk (long shadows and lighting turn with it); 0 keeps it at mapSunTime"
+					"description" : "seconds of a full day and night on the adventure map when mapSunClock is cycle"
 				},
 				"mapSunTime" : {
 					"type" : "number",
-					"default" : 0.2,
-					"description" : "time of day of the adventure map sun when mapSunCycle is 0: 0 dawn, 0.5 noon, 1 dusk"
+					"default" : 0.3,
+					"description" : "time of day on the adventure map when mapSunClock is fixed: 0 dawn, 0.5 noon, 1 dusk, 1.25 midnight, 1.5 next dawn"
 				},
 				"displayIndex" : {
 					"type" : "number",

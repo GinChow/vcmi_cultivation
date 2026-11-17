@@ -419,6 +419,10 @@ public:
 	/// 图块上植物会掉多少落叶、飘多少花瓣、栖多少鸟，见 MapRendererObjects::vegetationAt；地图外为 0
 	MapVegetation vegetationAt(IMapRendererContext & context, const int3 & coordinates);
 
+	/// 图块完全被迷雾盖住（自己和四周都看不见）：这时只有覆盖层画迷雾，其余各层都是空的。
+	/// 地图缓存按层批量重画时每个图块只判断一次，不必每层都算一遍四周的可见性（2026-11-18，缩放掉帧）
+	bool isFullyHidden(IMapRendererContext & context, const int3 & coordinates);
+
 	/// 只画图块的某一层（target 须先清空：遮罩为黑，其余为透明）。
 	/// 每层单独一个调用，调用方就能把许多图块的同一层连着画，不必在几张画布间来回切换渲染目标。
 	void renderTileLayer(IMapRendererContext & context, Canvas & target, const int3 & coordinates, MapTileLayer layer, bool withOverlays);

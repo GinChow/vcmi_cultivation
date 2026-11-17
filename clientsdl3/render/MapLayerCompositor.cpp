@@ -32,6 +32,8 @@ namespace
 /// 树冠附近的像素为倒推摇摆来源再多取约 6 次风场遮罩。
 /// 光影（2026-11-17）每个像素再取 3 次：起伏层、1/4 光照图（长投影由预处理着色器算好）、雾云场；
 /// 有雾或云的地方另取噪声 2~8 次。
+/// 昼夜与天气（2026-11-18）每个像素再取 5 次：地形场的天气通道 1 次、大块云影 3 次、阵雨 1 次（都是小纹理）；
+/// 热浪、瘴气、熔岩处另取噪声 1~3 次。局部光不取样，是 uniform 里最多 32 盏灯的循环（照不到的灯第一步就跳过）。
 const char * const waterShaderSource = R"MSL(
 #include <metal_stdlib>
 using namespace metal;
@@ -51,6 +53,13 @@ struct Params
 	float4 terrain;   // x：地表材质强度（缩得太小时为 0）；y：一格材质铺多少图块；zw：地形场尺寸（图块）
 	float4 atlas;     // xy：材质图集像素尺寸；z：一格多少像素；w：每格四周环绕边的宽度（像素）
 	float4 cellMean[32]; // 材质图集每格的平均颜色（rgb）与平均高度（a），按 组 × 4 + 子材质 排
+	float4 night;     // x：天黑的程度；y：局部光显出来多少；z：夜里颜色褪掉多少；w：沙地热浪的强度
+	float4 weather;   // x：大块云影的浓度；y：阵雨开关（0 或 1）
+	float4 lightInfo; // x：这一帧有几盏局部光
+	float4 lightPos[32];   // 局部光：xy 地面位置（地图坐标），z 照多远（图块），w 离地多高（图块）
+	float4 lightColor[32]; // rgb 颜色乘强度（已含闪动），w 夜里空气中辉光的多少
+	float4 lightGrid;      // 局部光分格：xy 第一格左上角的地图坐标，zw 一格多大（图块）
+	uint4 lightCells[64];  // 16 × 16 格，每格一个 32 位掩码：第 i 位为 1 表示第 i 盏灯照得到这一格
 };
 
 struct main0_in
@@ -156,7 +165,8 @@ static inline Relief decodeRelief(float4 r)
 // 物件按法线重新打光（颜色为预乘 alpha）。原画本身就画了明暗，所以按“相对平地”的比例调：
 // 朝太阳的一面提亮、偏暖，背阴的一面压暗、偏冷，平地和没有起伏图的物件不变；
 // 轮廓上朝着太阳的一圈再加一道边缘光（低太阳时更明显，像《八方旅人》的逆光描边）
-static inline float3 relight(float3 rgb, float alpha, Relief r, constant Params & P)
+// sunlit：这一点直射阳光还剩多少（大块云影里只剩散射的天光，朝向明暗就淡了）
+static inline float3 relight(float3 rgb, float alpha, Relief r, float sunlit, constant Params & P)
 {
 	float3 L = P.sun.xyz;
 	float ndl = dot(r.normal, L);
@@ -168,7 +178,7 @@ static inline float3 relight(float3 rgb, float alpha, Relief r, constant Params 
 	float3 refTint = mix(P.shade.rgb, P.sunColor.rgb, saturate(gdl * 1.6 + 0.25));
 	// 色调只按比例轻推：清晨、傍晚阳光很暖，背阴处直接除下来会整片发蓝发紫（2026-11-17 离线预览）
 	float3 tint = clamp(mix(float3(1.0), litTint / max(refTint, float3(0.05)), 0.5), float3(0.85), float3(1.15));
-	float strength = P.sun.w * r.known;
+	float strength = P.sun.w * r.known * sunlit;
 	rgb *= mix(float3(1.0), k * tint, strength);
 
 	float2 facing = r.normal.xy / max(length(r.normal.xy), 1e-4);
@@ -393,6 +403,96 @@ static inline float4 stackObjects(float4 s, float4 tree, float front)
 	return mix(treeOver, staticOver, front);
 }
 
+// ---- 天气（2026-11-18）：大块云影、阵雨、热浪、瘴气 ----
+
+// 大块云影的形状：一片片十几个图块大的云影顺风缓缓飘过全图（约一分钟飘过一屏），边缘被扭得不规则。
+// 云本身在镜头之上看不见，只看见影子扫过地面。MapParticles::cloudShape 在 CPU 上按同一公式算阵雨落在哪，两边必须一致
+static inline float bigCloudShape(float2 world, float t, texture2d<float> noiseTex, sampler noiseSmp)
+{
+	const float2 cloudWind = float2(0.94, 0.34);
+	float2 p = world - cloudWind * (t * 0.3);
+	float warp = noiseTex.sample(noiseSmp, p * 0.02 + float2(0.31, 0.77)).r;
+	return noiseTex.sample(noiseSmp, p * 0.0085 + float2(warp * 0.06, 0.13)).g * 0.75
+		+ noiseTex.sample(noiseSmp, p * 0.031 + float2(0.57, 0.21)).r * 0.25;
+}
+
+// 阵雨：只有一部分云下雨（另一层更慢、更大的噪声挑出来），雨下在云影最浓的那一块。与 MapParticles::showerAt 一致
+static inline float showerAt(float2 world, float t, float shape, texture2d<float> noiseTex, sampler noiseSmp)
+{
+	const float2 cloudWind = float2(0.94, 0.34);
+	float2 p = world - cloudWind * (t * 0.3);
+	float rainy = noiseTex.sample(noiseSmp, p * 0.0045 + float2(0.71, 0.37)).r;
+	return smoothstep(0.56, 0.66, shape) * smoothstep(0.46, 0.58, rainy);
+}
+
+// 雨点打在水面上：两层错开的网格，每格按自己的周期落一滴，打出一圈向外扩散、渐淡的涟漪，落点先溅起一个亮点。
+// 落点留在格子中间，涟漪扩到最大也不出格，所以每层只看本格。rain 越大，每个周期落雨的格子越多
+// pixel：一个缓存像素是多少图块，涟漪的线宽至少一个多像素
+static inline float rainRipples(float2 world, float t, float rain, float pixel)
+{
+	const float cell = 0.5; // 图块
+	float result = 0.0;
+	for(int layer = 0; layer < 2; ++layer)
+	{
+		float2 g = world / cell + float2(0.5, 0.37) * float(layer);
+		float2 id = floor(g);
+		float2 f = g - id;
+		float2 h = hash22(id + float(layer) * 17.0);
+		float period = 0.8 + 0.7 * h.x;
+		float clock = t / period + h.y;
+		float cycle = floor(clock);
+		float phase = clock - cycle;
+		float2 drop = hash22(id * 1.7 + float2(cycle * 0.37, float(layer) * 3.1));
+		if(drop.x > rain)
+			continue;
+		float2 center = 0.3 + 0.4 * hash22(id * 2.3 + cycle * 0.71);
+		float d = length(f - center);
+		float radius = 0.28 * sqrt(phase);
+		float width = max(0.045, 1.6 * pixel / cell);
+		float ring = (1.0 - smoothstep(0.0, width, abs(d - radius))) * (1.0 - phase) * (1.0 - phase);
+		float splash = (1.0 - smoothstep(0.0, 0.07, d)) * (1.0 - smoothstep(0.0, 0.15, phase));
+		result += ring + splash * 0.8;
+	}
+	return result;
+}
+
+// ---- 局部光（2026-11-18）：城镇灯笼、营火、法光、熔岩、英雄火把 ----
+// ground：这一点在地面上的位置（物件表面已按离地高度挪回它脚下），h：离地高度，N：屏幕坐标里的法线。
+// 光按三维距离衰减，按朝向加一点包裹光：朝着光的一面亮，背面也不至于全黑。halo 累加光源周围空气里的辉光。
+// 只算照得到这一点的灯：CPU 把可见窗口分成 16 × 16 格，按每盏灯照到的范围记下每格有哪些灯（缩到全图时
+// 每个像素都把 32 盏灯挨个看一遍，GPU 吃紧，2026-11-18 用户反馈缩放掉帧）
+constant int lightGridSize = 16;
+
+static inline float3 localLights(float2 ground, float2 screen, float h, float3 N, constant Params & P, thread float3 & halo)
+{
+	float3 sum = float3(0.0);
+	int2 cell = clamp(int2(floor((screen - P.lightGrid.xy) / P.lightGrid.zw)), int2(0), int2(lightGridSize - 1));
+	int index = cell.y * lightGridSize + cell.x;
+	uint mask = P.lightCells[index >> 2][index & 3];
+	while(mask != 0u)
+	{
+		int i = int(ctz(mask));
+		mask &= mask - 1u;
+		float4 lp = P.lightPos[i];
+		float2 d = lp.xy - ground;
+		float r = lp.z;
+		if(abs(d.x) > r || abs(d.y) > r)
+			continue;
+		float3 L = float3(d.x, d.y, lp.w - h); // 地面坐标：x 东、y 南（屏幕往下）、z 上
+		float dist = length(L);
+		float fall = saturate(1.0 - (dist * dist) / (r * r));
+		fall *= fall;
+		float3 Ls = L.x * float3(1.0, 0.0, 0.0) - L.y * float3(0.0, 0.917, -0.399) + L.z * groundNormal;
+		float wrap = saturate((dot(N, Ls / max(dist, 1e-3)) + 0.45) / 1.45);
+		sum += P.lightColor[i].rgb * (fall * wrap);
+
+		// 辉光：光源在屏幕上的位置是地面位置往上挪离地高度
+		float2 g = screen - float2(lp.x, lp.y - lp.w * 0.8);
+		halo += P.lightColor[i].rgb * (P.lightColor[i].w * exp(-dot(g, g) / (0.12 * r * r)));
+	}
+	return sum;
+}
+
 fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(0)]],
 	texture2d<float> mainTex [[texture(0)]], sampler mainSmp [[sampler(0)]],
 	texture2d<float> groundTex [[texture(1)]], sampler groundSmp [[sampler(1)]],
@@ -411,7 +511,6 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	texture2d<float> terrainTex [[texture(14)]], sampler terrainSmp [[sampler(14)]])
 {
 	float2 uv = in.uv;
-	float3 color = groundTex.sample(groundSmp, uv).rgb;
 
 	float2 slots = P.cache.zw;
 	float t = P.misc.x;
@@ -420,6 +519,39 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	float2 slotOrigin = P.world.zw;
 	float2 rel = windowPosition(uv, slots, slotOrigin);
 	float2 world = P.world.xy + rel;
+
+	// 地形场的天气通道（按地图坐标线性取样）：G 热浪、B 瘴气、A 熔岩红光
+	float4 weatherField = terrainTex.sample(terrainSmp, world / max(P.terrain.zw, float2(1.0)));
+
+	// 大块云影与阵雨（2026-11-18）。云影里直射阳光只剩一小半：地面、物件压暗偏冷，长投影、朝向明暗、水面波光都淡下去
+	float cloudShade = 0.0;
+	float rain = 0.0;
+	if(P.weather.x * P.misc.y > 0.001)
+	{
+		float shape = bigCloudShape(world, t, noiseTex, noiseSmp);
+		// 约三成地面在云影里；边缘收得比较利落，一眼看得出是云的影子，不是一片模糊的暗斑
+		cloudShade = smoothstep(0.47, 0.55, shape) * P.weather.x * P.misc.y;
+		rain = showerAt(world, t, shape, noiseTex, noiseSmp) * P.weather.y * P.misc.y;
+	}
+	float sunlit = 1.0 - 0.7 * cloudShade;
+
+	// 热浪（2026-11-18）：沙地正午、岩浆上不论早晚，地面像隔着一层晃动的热空气。只扭地面层（地表、水），
+	// 物件不扭：站在沙漠里的英雄、建筑跟着晃会像画面坏了。地面这一段用扭过的坐标，算完再换回来
+	float2 uvTrue = uv;
+	float2 relTrue = rel;
+	float2 worldTrue = world;
+	float haze = weatherField.g * mix(P.night.w, 1.0, weatherField.a) * P.misc.y;
+	if(haze > 0.01)
+	{
+		// 细碎的热纹往上飘（屏幕往上约每秒一个图块），两层不同快慢叠起来不成规则的波
+		float2 h1 = noiseTex.sample(noiseSmp, world * float2(0.07, 0.05) + float2(0.0, t * 0.08)).ba;
+		float2 h2 = noiseTex.sample(noiseSmp, world * float2(0.11, 0.08) + float2(0.43, t * 0.13)).ab;
+		float2 shimmer = (h1 - 0.5) * 0.6 + (h2 - 0.5) * 0.4;
+		rel = rel + shimmer * float2(0.035, 0.05) * haze;
+		uv = windowToUV(rel, slots, slotOrigin);
+		world = P.world.xy + rel;
+	}
+	float3 color = groundTex.sample(groundSmp, uv).rgb;
 
 	// 这一点的风；关闭特效时不动
 	WindSample wind = windAt(world, t, noiseTex, noiseSmp);
@@ -511,16 +643,18 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	float2 slope = float2(dfdx(terrainHeight), dfdy(terrainHeight)) / max(dWorld, float2(1e-5));
 	float splatEdgeWidth = fwidth(splat.r);
 	float sandEdgeWidth = fwidth(splat.g - splat.b);
+	float3 groundN = groundNormal; // 地面的法线（屏幕坐标），局部光也按它照
 
 	if(materialShare > 0.003)
 	{
 		// 地面坐标（x 右、y 北、z 上）里的法线 → 屏幕坐标（与 groundNormal 同一套俯视角）
 		float3 n = normalize(float3(-slope.x, slope.y, 1.0));
 		float3 nScreen = n.x * float3(1.0, 0.0, 0.0) + n.y * float3(0.0, 0.917, -0.399) + n.z * groundNormal;
+		groundN = normalize(mix(groundNormal, nScreen, materialShare));
 		const float ambient = 0.55;
 		float flat = ambient + (1.0 - ambient) * max(dot(groundNormal, P.sun.xyz), 0.05);
 		float k = clamp((ambient + (1.0 - ambient) * max(dot(nScreen, P.sun.xyz), 0.0)) / flat, 0.5, 1.6);
-		k = mix(1.0, k, saturate(P.sun.w * 1.2));
+		k = mix(1.0, k, saturate(P.sun.w * 1.2) * sunlit);
 		float3 lit = terrainColor * k;
 		// 背阴处偏冷，雪地更明显
 		lit = mix(lit, lit * mix(P.shade.rgb, P.shade.rgb * float3(0.92, 0.96, 1.04), snowShare), saturate((1.0 - k) * 1.8));
@@ -701,13 +835,27 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		float caps = smoothstep(0.42, 0.65, texLum); // 按贴图本身的白浪判断，不受海面重新上色影响
 		fx = mix(fx, foamColor, caps * surge * envelope * 0.8 * (1.0 - lakeShare));
 
-		// 5. 波光：两层流向不同的噪声叠加后只取高值，稀疏地闪动；海、湖只在开阔处，河面整条都有
+		// 5. 波光：两层流向不同的噪声叠加后只取高值，稀疏地闪动；海、湖只在开阔处，河面整条都有。
+		//    要有直射阳光：云影里、夜里都暗下去
 		float g = nC.b * 0.6 + nB.a * 0.4;
-		float glint = smoothstep(0.66, 0.82, g) * max(deep, riverShare * 0.8);
+		float glint = smoothstep(0.66, 0.82, g) * max(deep, riverShare * 0.8) * (1.0 - 0.8 * cloudShade) * (1.0 - 0.75 * P.night.x);
 		fx += glint * 0.38 * float3(1.0, 0.98, 0.92);
+
+		// 6. 阵雨（2026-11-18）：雨点打出一圈圈涟漪；下雨处水面略灰暗
+		if(rain > 0.01)
+		{
+			// 水面先压暗、褪色（雨云下、水面被打毛），涟漪才显得出来；原画的白浪笔触很碎，涟漪太淡会淹没在里面
+			fx = mix(fx, float3(dot(fx, float3(0.3, 0.59, 0.11))) * float3(0.86, 0.91, 0.98), 0.3 * rain);
+			fx += rainRipples(world, t, rain, pixel) * 0.42 * float3(0.88, 0.94, 1.0) * saturate(wet * 1.5);
+		}
 
 		color = mix(color, fx, saturate(wet));
 	}
+
+	// 地面画完，换回没扭过的坐标：物件不受热浪扭曲
+	uv = uvTrue;
+	rel = relTrue;
+	world = worldTrue;
 
 	// 物件层、摇摆层、覆盖层都是画在透明底上的，颜色已是预乘 alpha
 	float4 objects = objectTex.sample(objectSmp, uv);
@@ -760,7 +908,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	// 2D 打光：物件按法线重新打光、加边缘光（平地不变）
 	Relief surface = decodeRelief(relief);
 	if(P.sun.w * P.misc.y > 0.001 && surface.known > 0.001)
-		objects.rgb = relight(objects.rgb, objects.a, surface, P);
+		objects.rgb = relight(objects.rgb, objects.a, surface, sunlit, P);
 
 	color = objects.rgb + color * (1.0 - objects.a);
 
@@ -771,7 +919,12 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	float2 shadowWarp = (nShadow.rg - 0.5) * 0.3;
 	float sunShadow = lightTex.sample(lightSmp, windowToUV(rel + shadowWarp, slots, slotOrigin)).r * P.shade.w * P.misc.y;
 	sunShadow *= 0.72 + 0.28 * smoothstep(0.15, 0.85, noiseTex.sample(noiseSmp, world * 0.7).b);
+	// 大块云影里没有直射阳光，长投影也就淡了
+	sunShadow *= sunlit;
 	color *= mix(float3(1.0), P.shade.rgb * 0.6, sunShadow);
+
+	// 大块云影：整片压暗、略偏冷（天光），边缘是柔的
+	color *= mix(float3(1.0), float3(0.74, 0.77, 0.86), cloudShade);
 
 	// 雾云场：G 生雾多少，B 山腰绕云多少（与离岸距离图同一张，按地图坐标取样）。
 	// 没有起伏图的物件（英雄、城镇、宝物、资源、船……都是可交互的）上不起雾、不盖云：雾和云只是气氛，不能挡住要点的东西
@@ -795,12 +948,26 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		color *= 1.0 - 0.25 * shading * P.atmos.y * P.sun.w * (1.0 - smoothstep(cloudAltitude - 0.3, cloudAltitude + 0.3, surface.height));
 	}
 
-	// 流动的雾，贴着地面，在物件与粒子之间
+	// 流动的雾，贴着地面，在物件与粒子之间。沼泽上的雾带着黄绿的瘴气色
+	float miasma = weatherField.b * P.misc.y * (1.0 - interactive);
+	const float3 miasmaColor = float3(0.60, 0.70, 0.42);
 	if(field.g * P.atmos.x > 0.003)
 	{
 		float fog = fogAt(world, t, field.g, surface.height, noiseTex, noiseSmp) * P.atmos.x;
 		float3 fogColor = mix(float3(0.86, 0.89, 0.92), float3(0.86, 0.89, 0.92) * P.sunColor.rgb, 0.35);
+		fogColor = mix(fogColor, miasmaColor, miasma * 0.55);
 		color = mix(color, fogColor, saturate(fog));
+	}
+
+	// 瘴气（2026-11-18）：沼泽上贴地的黄绿浊气，一团团缓慢打旋、一胀一缩地呼吸，比白雾慢、比白雾稠
+	if(miasma > 0.003)
+	{
+		float m1 = noiseTex.sample(noiseSmp, (world - cloudWind * (t * 0.05)) * 0.12 + float2(0.21, 0.66)).g;
+		float m2 = noiseTex.sample(noiseSmp, world * 0.3 + float2(t * 0.012, -t * 0.019)).r;
+		float swirl = smoothstep(0.35, 0.85, m1 * 0.6 + m2 * 0.4);
+		float breath = 0.7 + 0.3 * sin(t * 0.35 + m1 * 6.283);
+		float density = miasma * (0.2 + 0.6 * swirl) * breath * exp(-surface.height / 0.5) * 0.42;
+		color = mix(color, miasmaColor * mix(float3(1.0), P.sunColor.rgb, 0.3), saturate(density));
 	}
 
 	// 云层（山腰云海）：在离地 cloudAltitude 处。滚动地图时云层比地面移得快（视差），像离镜头更近；
@@ -819,8 +986,38 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		}
 	}
 
-	// 时段色调：清晨、傍晚整体偏暖
+	// 时段色调（2026-11-18 起含夜晚）：清晨偏暖、黄昏偏橙、夜里偏蓝变暗。夜里颜色也褪一些——人眼在暗处辨不清颜色，
+	// 只把亮度压暗、颜色照旧，会像一张调暗了的白天照片
+	float3 albedo = color;
+	float lum = dot(color, float3(0.3, 0.59, 0.11));
+	color = mix(color, lum * float3(0.92, 0.97, 1.08), P.night.z * P.misc.y);
 	color *= mix(float3(1.0), P.grade.rgb, P.misc.y);
+
+	// 局部光（2026-11-18）：灯笼、营火、法光、英雄火把照亮周围的地面和物件，熔岩的红光照亮岩浆地和它旁边的地面。
+	// 按上面算好的颜色（调色之前）乘光，天越暗越显眼；物件表面按它的离地高度挪回脚下再算距离，朝着光的一面更亮
+	// 正午局部光显出来不到一成、几乎看不出，整段跳过（平滑地淡出，不会一下子灭掉）
+	float lamps = P.night.y * smoothstep(0.08, 0.2, P.night.y) * P.misc.y;
+	if(lamps > 0.001)
+	{
+		float cover = saturate(objects.a);
+		float h = surface.height * cover;
+		float3 N = normalize(mix(groundN, surface.normal, cover));
+		float3 halo = float3(0.0);
+		float3 light = localLights(world + float2(0.0, h), world, h, N, P, halo) * 1.7;
+		float3 glow = float3(0.0);
+		if(weatherField.a > 0.003)
+		{
+			// 熔岩：暗红的光漫到旁边的地面和物件上；岩浆地上发红的裂缝自己发光，天黑也不暗下去（一整片都照亮会成一片粉红，2026-11-18 实机）
+			float breathe = 0.8 + 0.2 * sin(t * 0.45 + noiseTex.sample(noiseSmp, world * 0.05).r * 6.283);
+			light += float3(1.0, 0.32, 0.08) * (weatherField.a * breathe * 0.4);
+			float crack = saturate((albedo.r - albedo.b) * 3.0 - 0.6) * smoothstep(0.3, 0.55, albedo.r) * (1.0 - cover);
+			glow = albedo * float3(1.0, 0.7, 0.5) * (crack * weatherField.a * breathe * 1.3);
+		}
+		// 亮色（雪、白墙）加光后很快冲白：按底色亮度收一些
+		color += albedo * light * lamps / (1.0 + 0.6 * lum * dot(light, float3(0.33)));
+		color += glow * lamps;
+		color += halo * (P.night.x * 0.45 * P.misc.y);
+	}
 
 
 	// 植被粒子（MapParticles）和覆盖层（迷雾、路径）在这一遍之后另外画上去，粒子才能夹在物件和迷雾之间
@@ -936,6 +1133,13 @@ struct MapUniforms
 	float terrain[4];
 	float atlas[4];
 	float cellMean[MapLayerCompositor::materialSets * MapLayerCompositor::materialsPerSet][4];
+	float night[4];
+	float weather[4];
+	float lightInfo[4];
+	float lightPos[MapLayerCompositor::maxLights][4];
+	float lightColor[MapLayerCompositor::maxLights][4];
+	float lightGrid[4];
+	uint32_t lightCells[MapLayerCompositor::lightGridSize * MapLayerCompositor::lightGridSize];
 };
 
 /// 与长投影预处理着色器的 Params 一一对应
@@ -1154,6 +1358,8 @@ bool MapLayerCompositor::ensureShaderResources(SDL_Renderer * renderer)
 	{
 		const std::vector<uint8_t> pixels = generateNoisePixels();
 		SDL_UpdateTexture(noise, nullptr, pixels.data(), noiseSize * 4);
+		// 粒子要在 CPU 上算阵雨落在哪，与着色器用同一张噪声
+		particles.setNoise(pixels, noiseSize);
 	}
 
 	if(!shader || !shadowShader || !sampler || !clampSampler || !noise || !gpuTextureOf(noise))
@@ -1297,20 +1503,59 @@ bool MapLayerCompositor::ensureReliefLevels(SDL_Renderer * renderer, SDL_Texture
 	return true;
 }
 
-MapLayerCompositor::Sun MapLayerCompositor::currentSun()
+void MapLayerCompositor::advanceDayClock()
+{
+	const uint64_t ticks = SDL_GetTicks();
+	const float elapsed = dayClockTicks == 0 ? 0.0f : std::clamp(static_cast<float>(ticks - dayClockTicks) / 1000.0f, 0.0f, 0.5f);
+	dayClockTicks = ticks;
+
+	const std::string clock = settings["video"]["mapSunClock"].String();
+	if(clock == "fixed")
+	{
+		dayPhase = std::fmod(std::clamp(static_cast<float>(settings["video"]["mapSunTime"].Float()), 0.0f, dayCycle), dayCycle);
+		return;
+	}
+	if(clock == "cycle")
+	{
+		// 开局在上午
+		const double seconds = std::max(1.0, settings["video"]["mapSunCycle"].Float());
+		dayPhase = static_cast<float>(std::fmod(0.2 + static_cast<double>(ticks) / 1000.0 / seconds * dayCycle, static_cast<double>(dayCycle)));
+		return;
+	}
+
+	// 跟着回合走：本方进度 0~1 对应刚日出（0.06）到太阳贴着地平线（0.96，最橙的时候）；不在本方回合是半夜
+	float target = 1.25f;
+	if(dayProgress)
+		target = 0.06f + 0.9f * std::clamp(dayProgressMax, 0.0f, 1.0f);
+
+	if(dayPhase < 0.0f)
+	{
+		// 刚进地图（开局、读档）：直接是此刻的天色，不从别的时段转过来
+		dayPhase = target;
+		return;
+	}
+
+	// 只往前走：差得多时走得快（入夜、天亮约一两秒），英雄每走一步太阳挪一点，平滑地追上
+	const float ahead = std::fmod(target - dayPhase + dayCycle, dayCycle);
+	if(ahead > dayCycle - 0.02f)
+		return; // 目标在身后一点点（取整误差），不必绕一整天
+	const float step = std::min(ahead, std::max(ahead * 2.0f, 0.06f) * elapsed);
+	dayPhase = std::fmod(dayPhase + step, dayCycle);
+}
+
+MapLayerCompositor::Sun MapLayerCompositor::sunAt(float phase)
 {
 	constexpr float pi = 3.14159265f;
 
-	// 时段 0 为清晨、0.5 为正午、1 为傍晚。开局从早上开始；到傍晚后影子淡出，再从清晨淡入
-	const double cycle = settings["video"]["mapSunCycle"].Float();
-	float time = static_cast<float>(settings["video"]["mapSunTime"].Float());
-	if(cycle > 0.0)
-		time = static_cast<float>(std::fmod(0.2 + static_cast<double>(SDL_GetTicks()) / 1000.0 / cycle, 1.0));
-	time = std::clamp(time, 0.0f, 1.0f);
-
+	// 白天的太阳只看 0~1 这一段：夜里太阳停在日落的位置，反正影子、打光都已淡出
+	const float time = std::clamp(phase, 0.0f, 1.0f);
 	const float day = std::sin(pi * time); // 清晨、傍晚为 0，正午为 1
 	const float warm = std::pow(1.0f - day, 1.5f);
 	const float fade = std::clamp(time / 0.04f, 0.0f, 1.0f) * std::clamp((1.0f - time) / 0.04f, 0.0f, 1.0f);
+	const bool evening = time > 0.5f;
+
+	// 太阳的高度（正为地平线上，负为地平线下）：天黑的程度、暮色都看它
+	const float elevationSign = phase <= 1.0f ? day : -std::sin(pi * (phase - 1.0f) / (dayCycle - 1.0f));
 
 	// 太阳从东走到西（地图上方是北）。方位角从正东量起、朝南为正：上午大半时间停在东边（影子朝左，落在物件旁边看得见，
 	// 与原版阴影同向），正午前后很快转过南边（这时影子短、朝上，大多藏在物件背后），下午停在西边。
@@ -1339,17 +1584,36 @@ MapLayerCompositor::Sun MapLayerCompositor::currentSun()
 			a[i] += (b[i] - a[i]) * k;
 		return a;
 	};
+	auto smooth = [](float edge0, float edge1, float value)
+	{
+		const float k = std::clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+		return k * k * (3.0f - 2.0f * k);
+	};
+
+	// 天黑的程度：太阳落到地平线下一点就开始暗，再往下是夜里
+	const float night = smooth(0.08f, -0.45f, elevationSign);
+	// 暮色：太阳在地平线附近那一小段（日落后、日出前），天光偏紫蓝
+	const float twilight = std::exp(-std::pow((elevationSign + 0.12f) / 0.13f, 2.0f));
 
 	Sun result;
 	result.direction = direction;
 	result.shadow = {-std::cos(azimuth) * shadowLength, -std::sin(azimuth) * shadowLength};
-	result.color = mixColor({1.0f, 0.98f, 0.95f}, {1.0f, 0.80f, 0.58f}, warm);
+	// 清晨的光淡金，黄昏的光橙红（2026-11-18：清晨偏暖、黄昏偏橙）
+	result.color = mixColor({1.0f, 0.98f, 0.95f}, evening ? std::array<float, 3>{1.0f, 0.74f, 0.48f} : std::array<float, 3>{1.0f, 0.85f, 0.66f}, warm);
 	result.shade = mixColor({0.80f, 0.86f, 1.0f}, {0.70f, 0.74f, 0.98f}, warm);
-	result.grade = mixColor({1.0f, 1.0f, 1.0f}, {1.04f, 0.96f, 0.88f}, warm * 0.55f);
+	std::array<float, 3> grade = mixColor({1.0f, 1.0f, 1.0f}, evening ? std::array<float, 3>{1.10f, 0.91f, 0.74f} : std::array<float, 3>{1.05f, 0.98f, 0.90f}, warm * (evening ? 0.75f : 0.55f));
+	grade = mixColor(grade, {0.80f, 0.74f, 0.94f}, twilight * 0.55f);
+	// 夜里：偏蓝、压暗，但地图上的东西还要看得清（等别家行动时也要看对手的英雄走到哪）
+	result.grade = mixColor(grade, {0.40f, 0.48f, 0.70f}, night);
 	result.relight = 0.85f * fade;
 	result.rim = 0.25f + 0.45f * warm;
 	result.strength = 0.8f * fade;
 	result.reach = reliefHeightRange;
+	result.night = night;
+	result.lamps = std::clamp(0.08f + 0.92f * night + 0.3f * warm * fade, 0.0f, 1.0f);
+	result.desaturate = 0.5f * night;
+	result.heat = std::pow(day, 1.2f) * (1.0f - night);
+	result.cloudShadow = fade * (0.45f + 0.55f * day);
 	return result;
 }
 
@@ -1396,7 +1660,8 @@ void MapLayerCompositor::prepare(SDL_Renderer * renderer, const Inputs & inputs)
 	if(!inputs.waterMask || !ensureShaderResources(renderer) || !ensureMaskLevels(renderer, inputs.waterMask))
 		return;
 
-	sun = currentSun();
+	advanceDayClock();
+	sun = sunAt(dayPhase);
 
 	// 每级把上一级缩小一半：线性过滤在 2×2 像素正中取样，正好是 2×2 的平均
 	SDL_Texture * previousTarget = SDL_GetRenderTarget(renderer);
@@ -1433,6 +1698,23 @@ void MapLayerCompositor::setTerrainField(const std::vector<uint8_t> & rgba, cons
 	terrainField.rgba = rgba;
 	terrainField.size = size;
 	terrainField.dirty = true;
+	particles.setTerrainField(rgba, size);
+}
+
+void MapLayerCompositor::setDayProgress(int day, std::optional<float> progress)
+{
+	// 新的一天从早上重新算；同一天里只往前走（英雄途中补了行动力，天也不会倒回早上）
+	if(day != dayNumber)
+		dayProgressMax = 0.0f;
+	dayNumber = day;
+	dayProgress = progress;
+	if(progress)
+		dayProgressMax = std::max(dayProgressMax, *progress);
+}
+
+void MapLayerCompositor::setLights(const std::vector<MapLight> & newLights)
+{
+	lights = newLights;
 }
 
 void MapLayerCompositor::setTerrainMaterials(const std::vector<uint8_t> & png)
@@ -1659,7 +1941,7 @@ void MapLayerCompositor::compose(SDL_Renderer * renderer, const Inputs & inputs,
 {
 	const bool shaderReady = ensureShaderResources(renderer) && maskLevels.back() && maskLevelsSourceSize.x > 0 && lightMap
 		&& ensureFieldTexture(renderer, depthField, {128, 0, 0, 255}, "sea depth")
-		&& ensureFieldTexture(renderer, terrainField, {255, 0, 0, 255}, "terrain")
+		&& ensureFieldTexture(renderer, terrainField, {255, 0, 0, 0}, "terrain")
 		&& ensureMaterialAtlas(renderer)
 		&& inputs.splat
 		&& ensureRenderState(renderer, inputs);
@@ -1699,9 +1981,12 @@ void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs
 		uniforms.shade[i] = sun.shade[i];
 		uniforms.grade[i] = sun.grade[i];
 	}
-	uniforms.sun[3] = sun.relight;
+	// 图块缩到 16 像素以下时地图缓存不再画起伏层（见 MapViewCache::drawPendingLayers），按法线打光、长投影都没有了：
+	// 在 22 到 16 像素之间先淡出，不在那一步突然消失
+	const float reliefFade = std::clamp((static_cast<float>(inputs.tileSize) - 16.0f) / 6.0f, 0.0f, 1.0f);
+	uniforms.sun[3] = sun.relight * reliefFade;
 	uniforms.sunColor[3] = sun.rim;
-	uniforms.shade[3] = sun.strength;
+	uniforms.shade[3] = sun.strength * reliefFade;
 	uniforms.shadowDir[0] = sun.shadow[0];
 	uniforms.shadowDir[1] = sun.shadow[1];
 
@@ -1742,6 +2027,76 @@ void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs
 		for(size_t c = 0; c < 4; ++c)
 			uniforms.cellMean[i][c] = materialMeans[i][c];
 
+	// 昼夜与天气（prepare() 里算好的太阳）
+	uniforms.night[0] = sun.night;
+	uniforms.night[1] = sun.lamps;
+	uniforms.night[2] = sun.desaturate;
+	uniforms.night[3] = sun.heat;
+	uniforms.weather[0] = sun.cloudShadow;
+	uniforms.weather[1] = 1.0f; // 阵雨
+
+	// 局部光：离屏幕中心近的优先，闪动在这里算好（每盏灯一个相位）
+	const float centerX = uniforms.camera[0];
+	const float centerY = uniforms.camera[1];
+	const size_t lightCount = std::min(lights.size(), maxLights);
+	std::partial_sort(lights.begin(), lights.begin() + lightCount, lights.end(), [&](const MapLight & a, const MapLight & b)
+	{
+		return std::hypot(a.x - centerX, a.y - centerY) < std::hypot(b.x - centerX, b.y - centerY);
+	});
+	for(size_t i = 0; i < lightCount; ++i)
+	{
+		const MapLight & light = lights[i];
+		float flicker = 1.0f;
+		switch(light.flicker)
+		{
+			case MapLight::Flicker::FIRE: // 火苗乱跳：几路快慢不同的正弦叠起来，听不出节拍
+				flicker = 0.82f + 0.09f * std::sin(now * 9.1f + light.seed * 3.0f) + 0.06f * std::sin(now * 14.7f + light.seed * 5.3f) + 0.04f * std::sin(now * 2.3f + light.seed);
+				break;
+			case MapLight::Flicker::MAGIC: // 法光缓慢明灭
+				flicker = 0.78f + 0.22f * std::sin(now * 1.4f + light.seed);
+				break;
+			case MapLight::Flicker::LAVA: // 熔岩慢慢呼吸
+				flicker = 0.85f + 0.15f * std::sin(now * 0.5f + light.seed);
+				break;
+			case MapLight::Flicker::STEADY:
+				flicker = 0.97f + 0.03f * std::sin(now * 3.1f + light.seed);
+				break;
+		}
+		uniforms.lightPos[i][0] = light.x;
+		uniforms.lightPos[i][1] = light.y;
+		uniforms.lightPos[i][2] = light.radius;
+		uniforms.lightPos[i][3] = light.height;
+		uniforms.lightColor[i][0] = light.r * flicker;
+		uniforms.lightColor[i][1] = light.g * flicker;
+		uniforms.lightColor[i][2] = light.b * flicker;
+		uniforms.lightColor[i][3] = light.halo * flicker;
+	}
+	uniforms.lightInfo[0] = static_cast<float>(lightCount);
+
+	// 分格：可见窗口均分成 lightGridSize × lightGridSize 格，每盏灯在它可能照到的格里记一位。
+	// 物件表面在它脚下的地面往上最多 reliefHeightRange 个图块处，所以往上多留这么多；辉光比照亮的范围小
+	const float cellWidth = static_cast<float>(std::max(1, inputs.slots.x)) / static_cast<float>(lightGridSize);
+	const float cellHeight = static_cast<float>(std::max(1, inputs.slots.y)) / static_cast<float>(lightGridSize);
+	uniforms.lightGrid[0] = static_cast<float>(inputs.worldOrigin.x);
+	uniforms.lightGrid[1] = static_cast<float>(inputs.worldOrigin.y);
+	uniforms.lightGrid[2] = cellWidth;
+	uniforms.lightGrid[3] = cellHeight;
+	auto cellOf = [&](float value, float origin, float size)
+	{
+		return std::clamp(static_cast<int>(std::floor((value - origin) / size)), 0, lightGridSize - 1);
+	};
+	for(size_t i = 0; i < lightCount; ++i)
+	{
+		const MapLight & light = lights[i];
+		const int left = cellOf(light.x - light.radius, uniforms.lightGrid[0], cellWidth);
+		const int right = cellOf(light.x + light.radius, uniforms.lightGrid[0], cellWidth);
+		const int top = cellOf(light.y - light.radius - reliefHeightRange, uniforms.lightGrid[1], cellHeight);
+		const int bottom = cellOf(light.y + light.radius, uniforms.lightGrid[1], cellHeight);
+		for(int y = top; y <= bottom; ++y)
+			for(int x = left; x <= right; ++x)
+				uniforms.lightCells[y * lightGridSize + x] |= 1u << i;
+	}
+
 	SDL_SetGPURenderStateFragmentUniforms(state, 0, &uniforms, sizeof(uniforms));
 	SDL_SetGPURenderState(renderer, state);
 
@@ -1768,11 +2123,21 @@ void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs
 	frame.slotOrigin = inputs.slotOrigin;
 	frame.cacheWidth = width;
 	frame.time = now;
+	frame.grade = sun.grade;
+	frame.night = sun.night;
+	for(size_t i = 0; i < lightCount; ++i)
+		if(lights[i].flicker == MapLight::Flicker::FIRE && lights[i].halo >= 0.5f)
+			frame.fires.push_back({lights[i].x, lights[i].y, lights[i].height, lights[i].seed});
 	if(!regions.empty() && regions.front().source.w > 0 && inputs.slots.x > 0)
 	{
 		const float tilePixels = static_cast<float>(regions.front().target.w) / static_cast<float>(regions.front().source.w) * width / static_cast<float>(inputs.slots.x);
 		const float fade = std::clamp((tilePixels - 12.0f) / 8.0f, 0.0f, 1.0f);
 		frame.strength = fade * fade * (3.0f - 2.0f * fade);
+		// 天气粒子按可见图块数淡出（开销正比于它，与屏幕像素密度无关）：默认缩放约八百块，一千六百块以内全有，
+		// 超过两千六百块（缩到全图）不算。缩到全图时每片雪不到一个像素，却要逐个图块算几千片（2026-11-18 用户反馈缩放掉帧）
+		const float tiles = static_cast<float>(inputs.slots.x * inputs.slots.y);
+		const float weatherFade = std::clamp((2600.0f - tiles) / 1000.0f, 0.0f, 1.0f);
+		frame.weatherStrength = weatherFade * weatherFade * (3.0f - 2.0f * weatherFade) * frame.strength;
 	}
 	particles.draw(renderer, frame, regions);
 

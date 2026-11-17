@@ -16,6 +16,8 @@
 
 #include "../Client.h"
 #include "../CPlayerInterface.h"
+#include "../adventureMap/AdventureMapInterface.h"
+#include "../adventureMap/AdventureState.h"
 #include "../CServerHandler.h"
 #include "../PlayerLocalState.h"
 #include "../GameInstance.h"
@@ -144,6 +146,46 @@ bool MapRendererBaseContext::isActiveHero(const CGObjectInstance * obj) const
 	}
 
 	return false;
+}
+
+std::pair<int, std::optional<float>> MapRendererBaseContext::dayProgress() const
+{
+	// 哪一天：AI 回合可能一眨眼就过去，合成器未必看得到中间的夜里，所以靠“换了一天”来重新从早上算
+	const int day = GAME->interface()->cb->getCalendar().getCurrentDay() * PlayerColor::PLAYER_LIMIT_I + GAME->interface()->playerID.getNum();
+
+	// 回合状态看冒险地图界面：makingTurn 在别家回合里也会为了弹对话框临时置真，用它会让夜里闪一下白天
+	if(!adventureInt)
+		return {day, 0.0f};
+
+	switch(adventureInt->getState())
+	{
+		case EAdventureState::AI_PLAYER_TURN:
+		case EAdventureState::HOTSEAT_WAIT:
+			return {day, std::nullopt};
+		case EAdventureState::NOT_INITIALIZED:
+			return {day, 0.0f};
+		default:
+			break;
+	}
+
+	// 一天过了多少 = 醒着的英雄已用掉的行动力占总行动力的比例。只看选中的英雄的话，切换英雄时天色会跳；
+	// 睡着的英雄不算，否则留在城里睡觉的英雄会让太阳永远落不下去
+	double remaining = 0.0;
+	double total = 0.0;
+	for(const CGHeroInstance * hero : GAME->interface()->localState->getWanderingHeroes())
+	{
+		if(GAME->interface()->localState->isHeroSleeping(hero))
+			continue;
+		const int limit = hero->movementPointsLimit();
+		if(limit <= 0)
+			continue;
+		total += limit;
+		remaining += std::clamp(hero->movementPointsRemaining(), 0, limit);
+	}
+
+	if(total <= 0.0)
+		return {day, 0.0f};
+	return {day, static_cast<float>(1.0 - remaining / total)};
 }
 
 int MapRendererBaseContext::attackedMonsterDirection(const CGObjectInstance * wanderingMonster) const

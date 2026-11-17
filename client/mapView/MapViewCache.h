@@ -13,6 +13,8 @@
 #include "../../lib/Rect.h"
 #include "../../lib/int3.h"
 
+#include "render/IScreenHandler.h"
+
 class ObjectInstanceID;
 
 class IImage;
@@ -85,7 +87,8 @@ class MapViewCache
 	/// GPU 上一次放 atlasTilesPerSide² 块，一批只切两次渲染目标；逐块画进单格再拷，缩小视野时会掉到 10 FPS。
 	/// 软件表面的缩放拷贝只能整张拷，所以那时图集只有一格。
 	std::unique_ptr<Canvas> atlas;
-	static constexpr int atlasTilesPerSide = 16;
+	/// 32 × 32 格：缩到全图时一层几千个图块，每批多装些，切换渲染目标（每次都要新开渲染通道）的次数就少（2026-11-18 由 16 加大）
+	static constexpr int atlasTilesPerSide = 32;
 	int atlasCapacity = 1;
 
 	/// 分层模式（2026-11-17，大地图水面特效、风场摇摆）。开启时 terrain 只存地面层，静止物件、摇摆物件、覆盖物、
@@ -136,11 +139,27 @@ class MapViewCache
 	std::unique_ptr<Canvas> windMaskLayer;
 	std::unique_ptr<Canvas> reliefLayer;
 	std::unique_ptr<Canvas> splatLayer;
+	/// 缩小图块时不画的四层（摇摆、风场遮罩、起伏、地形分布）是否已在这批画布上清过：画布新建后内容不定，清一次之后就一直是空的
+	bool liteLayersCleared = false;
 
 	/// 地表材质（2026-11-17）：分层时给屏幕处理器一张当前地图层的地形场（每个图块属于哪套地表材质），
 	/// 以及模组提供的材质图集（只给一次）。合成着色器据此按世界坐标铺地表材质
 	void sendTerrainField(const std::shared_ptr<IMapRendererContext> & context);
 	bool terrainMaterialsSent = false;
+
+	/// 昼夜（2026-11-18）：把本方这一天的进度（见 IMapRendererContext::dayProgress）交给屏幕处理器推动太阳。
+	/// 要查每个英雄的行动力上限，所以每 0.25 秒才算一次，太阳本身在合成器里平滑地走
+	void sendDayProgress(const std::shared_ptr<IMapRendererContext> & context);
+	std::chrono::steady_clock::time_point nextDayProgress;
+
+	/// 局部光（2026-11-18）：每帧从可见窗口外加一圈（光能照进来的距离）里看得见的物件收集城镇灯笼、营火、灯塔、
+	/// 传送门和神殿的法光、熔岩装饰、英雄的火把，交给屏幕处理器。走地图缓存每个图块的物件表，物件拿走、英雄走动都跟得上
+	void sendLights(const std::shared_ptr<IMapRendererContext> & context);
+	std::vector<MapLight> lights;
+	/// 去重：大物件占好几个图块，每个图块的物件表里都有它。litStamp[物件编号] 等于 litFrame 就是这一帧已经看过。
+	/// 缩到全图时一帧要看几千个图块，线性查找去重要两毫秒（2026-11-18 实测），所以用按编号的标记
+	std::vector<uint32_t> litStamp;
+	uint32_t litFrame = 0;
 
 	/// Canvas of the given logical size, drawing onto a GPU render target when this view
 	/// uses the GPU layer and onto a plain surface otherwise

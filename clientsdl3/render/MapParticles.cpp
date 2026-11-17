@@ -20,11 +20,18 @@ namespace
 /// 每个四边形是一个粒子。纹理坐标 x 是粒子局部坐标，y 是局部坐标加上 4 × 种类（种类见 ParticleKind），
 /// 局部坐标都在 ±2 之内，所以 floor((y + 2) / 4) 就是种类。顶点颜色是给这个粒子的参数（四个顶点相同）：
 ///   落叶、飞花：rg 是出发点在缓存纹理里的坐标，b 是明暗的一半，a 是淡入淡出；
-///   萤火虫：a 是这一刻的亮度；飞鸟：r 是扇翅的相位 0~1，a 是淡入淡出；鸟影：a 是浓淡。
-/// 输出预乘 alpha，按 SDL_BLENDMODE_BLEND_PREMULTIPLIED 叠；萤火虫输出 alpha 为 0，于是成了加色的光。
+///   萤火虫：a 是这一刻的亮度；飞鸟：r 是扇翅的相位 0~1，a 是淡入淡出；鸟影：a 是浓淡；
+///   雪花、瘴气、雨丝：a 是浓淡；余烬：a 是这一刻的亮度。
+/// 输出预乘 alpha，按 SDL_BLENDMODE_BLEND_PREMULTIPLIED 叠；萤火虫、余烬输出 alpha 为 0，于是成了加色的光。
+/// uniform 的 grade 是时段色调（rgb）与天黑的程度（w），粒子的颜色跟画面一起调。
 const char * const particleShaderSource = R"MSL(
 #include <metal_stdlib>
 using namespace metal;
+
+struct Params
+{
+	float4 grade; // rgb：时段色调；w：天黑的程度
+};
 
 struct main0_in
 {
@@ -45,7 +52,7 @@ static inline float segmentDistance(float2 p, float2 a, float2 b)
 	return length(pa - ba * h);
 }
 
-fragment main0_out main0(main0_in in [[stage_in]],
+fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(0)]],
 	texture2d<float> mainTex [[texture(0)]], sampler mainSmp [[sampler(0)]],
 	texture2d<float> windTex [[texture(1)]], sampler windSmp [[sampler(1)]],
 	texture2d<float> swayTex [[texture(2)]], sampler swaySmp [[sampler(2)]])
@@ -77,14 +84,14 @@ fragment main0_out main0(main0_in in [[stage_in]],
 			tint = kind < 1.5 ? float3(0.96, 0.80, 0.84) : (kind < 2.5 ? float3(0.98, 0.96, 0.92) : float3(0.97, 0.86, 0.48));
 
 		alpha *= p.a;
-		result = float4(tint * (p.b * 2.0) * alpha, alpha);
+		result = float4(tint * P.grade.rgb * (p.b * 2.0) * alpha, alpha);
 	}
 	else if(kind < 4.5)
 	{
-		// 萤火虫：一个亮点外面罩一圈柔光，加色。局部坐标 1 对应 0.18 个图块
+		// 萤火虫：一个亮点外面罩一圈柔光，加色。局部坐标 1 对应 0.18 个图块。天黑了更亮
 		float d2 = dot(local, local) * (0.18 * 0.18);
 		float glow = exp(-d2 / 0.0005) + 0.3 * exp(-d2 / 0.007);
-		result = float4(float3(0.88, 1.0, 0.55) * glow * p.a, 0.0);
+		result = float4(float3(0.88, 1.0, 0.55) * glow * p.a * (1.0 + 0.8 * P.grade.w), 0.0);
 	}
 	else if(kind < 5.5)
 	{
@@ -99,13 +106,40 @@ fragment main0_out main0(main0_in in [[stage_in]],
 		float thick = 0.085 + 0.1 * saturate(1.0 - length(local)); // 身子粗、翼尖细
 		float soft = max(fwidth(dist), 1e-4);
 		float alpha = (1.0 - smoothstep(thick - soft, thick + soft, dist)) * p.a;
-		result = float4(float3(0.10, 0.10, 0.12) * alpha, alpha);
+		result = float4(float3(0.10, 0.10, 0.12) * P.grade.rgb * alpha, alpha);
+	}
+	else if(kind < 6.5)
+	{
+		// 鸟影：一团柔和的影子；夜里没有日影
+		float alpha = p.a * exp(-dot(local, local)) * (1.0 - P.grade.w);
+		result = float4(0.0, 0.0, 0.0, alpha);
+	}
+	else if(kind < 7.5)
+	{
+		// 雪花：中间实、边上虚的白点，略带冷色
+		float alpha = p.a * (1.0 - smoothstep(0.35, 1.0, length(local)));
+		result = float4(float3(0.95, 0.97, 1.0) * P.grade.rgb * alpha, alpha);
+	}
+	else if(kind < 8.5)
+	{
+		// 余烬：橙红的火星，一个亮核加一圈小光晕，加色；夜里更显眼
+		float d2 = dot(local, local);
+		float glow = exp(-d2 * 6.0) + 0.25 * exp(-d2 * 1.2);
+		result = float4(float3(1.0, 0.52, 0.16) * glow * p.a * (0.8 + 0.7 * P.grade.w), 0.0);
+	}
+	else if(kind < 9.5)
+	{
+		// 瘴气：一团边缘很虚的黄绿浊气
+		float alpha = p.a * exp(-dot(local, local) * 2.0);
+		result = float4(float3(0.58, 0.68, 0.40) * P.grade.rgb * alpha, alpha);
 	}
 	else
 	{
-		// 鸟影：一团柔和的影子
-		float alpha = p.a * exp(-dot(local, local));
-		result = float4(0.0, 0.0, 0.0, alpha);
+		// 雨丝：细长的一道，沿下落方向两头渐细；局部 x 沿下落方向、y 横向
+		float across = 1.0 - smoothstep(0.4, 1.0, abs(local.y));
+		float along = smoothstep(-1.0, -0.2, local.x) * (1.0 - smoothstep(0.5, 1.0, local.x));
+		float alpha = p.a * across * along;
+		result = float4(float3(0.80, 0.86, 0.95) * P.grade.rgb * alpha, alpha);
 	}
 
 	main0_out out;
@@ -123,7 +157,17 @@ enum ParticleKind : int
 	KIND_PETAL_YELLOW = 3,
 	KIND_FIREFLY = 4,
 	KIND_BIRD = 5,
-	KIND_SHADOW = 6
+	KIND_SHADOW = 6,
+	KIND_SNOW = 7,
+	KIND_EMBER = 8,
+	KIND_MIASMA = 9,
+	KIND_RAIN = 10
+};
+
+/// 与粒子着色器的 Params 一一对应
+struct ParticleUniforms
+{
+	float grade[4];
 };
 
 /// 局部坐标的上限：种类靠 floor((y + 2) / 4) 解出，局部坐标必须在 ±2 之内
@@ -194,6 +238,69 @@ void MapParticles::setVegetationField(const std::vector<uint8_t> & rgba, const P
 		flock.birds = 0;
 }
 
+void MapParticles::setTerrainField(const std::vector<uint8_t> & rgba, const Point & size)
+{
+	terrain.resize(rgba.size() / 4);
+	for(size_t i = 0; i < terrain.size(); ++i)
+		terrain[i] = rgba[i * 4];
+	terrainSize = size;
+}
+
+void MapParticles::setNoise(const std::vector<uint8_t> & pixels, int size)
+{
+	noise = pixels;
+	noiseSize = size;
+}
+
+float MapParticles::sampleNoise(float u, float v, int channel) const
+{
+	if(noiseSize <= 0)
+		return 0.5f;
+
+	// 与 GPU 的线性过滤一样：像素中心在 (i + 0.5) / size，坐标环绕
+	const float x = u * static_cast<float>(noiseSize) - 0.5f;
+	const float y = v * static_cast<float>(noiseSize) - 0.5f;
+	const float x0 = std::floor(x);
+	const float y0 = std::floor(y);
+	const float fx = x - x0;
+	const float fy = y - y0;
+	auto at = [&](float ix, float iy)
+	{
+		const int px = ((static_cast<int>(ix) % noiseSize) + noiseSize) % noiseSize;
+		const int py = ((static_cast<int>(iy) % noiseSize) + noiseSize) % noiseSize;
+		return static_cast<float>(noise[(static_cast<size_t>(py) * noiseSize + px) * 4 + channel]) / 255.0f;
+	};
+	const float top = at(x0, y0) + (at(x0 + 1.0f, y0) - at(x0, y0)) * fx;
+	const float bottom = at(x0, y0 + 1.0f) + (at(x0 + 1.0f, y0 + 1.0f) - at(x0, y0 + 1.0f)) * fx;
+	return top + (bottom - top) * fy;
+}
+
+float MapParticles::cloudShape(float x, float y, float t) const
+{
+	// 与合成着色器的 bigCloudShape 逐项相同
+	const float px = x - 0.94f * t * 0.3f;
+	const float py = y - 0.34f * t * 0.3f;
+	const float warp = sampleNoise(px * 0.02f + 0.31f, py * 0.02f + 0.77f, 0);
+	return sampleNoise(px * 0.0085f + warp * 0.06f, py * 0.0085f + 0.13f, 1) * 0.75f
+		+ sampleNoise(px * 0.031f + 0.57f, py * 0.031f + 0.21f, 0) * 0.25f;
+}
+
+float MapParticles::showerAt(float x, float y, float t) const
+{
+	// 与合成着色器的 showerAt 逐项相同
+	const float px = x - 0.94f * t * 0.3f;
+	const float py = y - 0.34f * t * 0.3f;
+	const float rainy = sampleNoise(px * 0.0045f + 0.71f, py * 0.0045f + 0.37f, 0);
+	return smoothstep(0.56f, 0.66f, cloudShape(x, y, t)) * smoothstep(0.46f, 0.58f, rainy);
+}
+
+uint8_t MapParticles::terrainAt(int x, int y) const
+{
+	if(x < 0 || y < 0 || x >= terrainSize.x || y >= terrainSize.y || terrain.size() != static_cast<size_t>(terrainSize.x * terrainSize.y))
+		return 255;
+	return terrain[static_cast<size_t>(y) * terrainSize.x + x];
+}
+
 void MapParticles::startBirdFlock(float x, float y, float directionX, float directionY, float now)
 {
 	// 找空位或已经飞完的；都在飞就顶掉最早起飞的一群
@@ -262,6 +369,7 @@ bool MapParticles::ensureResources(SDL_Renderer * renderer, const Frame & frame)
 		shaderInfo.format = SDL_GPU_SHADERFORMAT_MSL;
 		shaderInfo.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
 		shaderInfo.num_samplers = 3; // SDL 的主纹理（白图）、风场遮罩、摇摆层
+		shaderInfo.num_uniform_buffers = 1;
 		shader = SDL_CreateGPUShader(device, &shaderInfo);
 
 		SDL_GPUSamplerCreateInfo samplerInfo;
@@ -519,13 +627,216 @@ void MapParticles::buildFireflies(const Placement & placement, const Frame & fra
 	}
 }
 
+/// 地形编号（与 TerrainId 一致）
+constexpr uint8_t terrainSnow = 3;
+constexpr uint8_t terrainSwamp = 4;
+constexpr uint8_t terrainLava = 7;
+constexpr uint8_t terrainWater = 8;
+
+void MapParticles::buildSnow(const Placement & placement, const Frame & frame)
+{
+	// 飘雪：雪地上每个图块四个槽位，各按自己的周期落一片，从 1.6~2.4 个图块高处飘下来，顺风斜着走、左右荡，
+	// 落地化掉。一阵大一阵小：一层慢慢飘移的大尺度噪声决定这片地方此刻雪下得多密。
+	// 雪花在空中，画在离地点上方，所以窗口下边外两三排图块的雪也要算
+	const float t = frame.time;
+	for(int y = 0; y < frame.slots.y + 3; ++y)
+	{
+		for(int x = 0; x < frame.slots.x; ++x)
+		{
+			const int tileX = frame.worldOrigin.x + x;
+			const int tileY = frame.worldOrigin.y + y;
+			if(terrainAt(tileX, tileY) != terrainSnow)
+				continue;
+
+			const float cellX = static_cast<float>(tileX);
+			const float cellY = static_cast<float>(tileY);
+			const float squall = 0.35f + 0.65f * smoothstep(0.3f, 0.7f, sampleNoise(cellX * 0.02f - t * 0.006f, cellY * 0.02f - t * 0.002f, 1));
+
+			for(int slot = 0; slot < 4; ++slot)
+			{
+				const Random4 r = hash44(cellX, cellY, 53.0f + static_cast<float>(slot) * 7.0f, 11.0f);
+				const float life = 5.0f + 2.0f * r.z;
+				const float clock = t + r.x * life;
+				const float cycle = std::floor(clock / life);
+				const float age = clock - cycle * life;
+
+				const Random4 q = hash44(cellX, cellY, cycle, 61.0f + static_cast<float>(slot) * 5.0f);
+				if(q.w > squall)
+					continue;
+
+				const float start = 1.6f + 0.8f * q.z;
+				const float height = start * (1.0f - age / life);
+				const float drift = 0.22f * age;
+				const float sway = 0.08f * std::sin(age * (1.4f + 0.6f * q.y) + q.z * pi2);
+				const float groundX = cellX + q.x + 0.94f * drift + sway;
+				const float groundY = cellY + q.y + 0.34f * drift;
+
+				const float size = 0.03f + 0.03f * q.z; // 半径（图块）：近大远小，大片也更白。太小在白雪地上看不出在下雪
+				const float fade = smoothstep(0.0f, 0.6f, age) * (1.0f - smoothstep(life - 0.5f, life, age)) * frame.weatherStrength * (0.6f + 0.4f * q.z);
+				const float margin = 1.0f + 1.5f / std::max(size * placement.tilePixels, 0.5f);
+				addQuad(snowVertices, placement, groundX, groundY - height, size, 0.0f, 0.0f, size, margin, margin, KIND_SNOW, {0.0f, 0.0f, 0.0f, fade});
+			}
+		}
+	}
+}
+
+void MapParticles::buildEmbers(const Placement & placement, const Frame & frame)
+{
+	// 余烬：岩浆地上零星飞起、营火和火柱上一串串往上窜的火星，越飞越高、顺风飘、一闪一闪，一两秒后熄灭
+	const float t = frame.time;
+	auto ember = [&](float originX, float originY, float originHeight, const Random4 & r, const Random4 & q, float age, float life)
+	{
+		const float rise = originHeight + 0.45f * age + 0.12f * age * age;
+		const float drift = 0.18f * age;
+		const float wiggle = 0.05f * std::sin(age * (5.0f + 3.0f * r.y) + q.z * pi2);
+		const float positionX = originX + 0.94f * drift + wiggle;
+		const float positionY = originY + 0.34f * drift - rise;
+		const float twinkle = 0.55f + 0.45f * std::sin(age * (11.0f + 6.0f * q.x) + r.w * 20.0f);
+		const float fade = smoothstep(0.0f, 0.2f, age) * (1.0f - smoothstep(life * 0.6f, life, age)) * twinkle * frame.weatherStrength;
+		addQuad(glowVertices, placement, positionX, positionY, 0.06f, 0.0f, 0.0f, 0.06f, 1.9f, 1.9f, KIND_EMBER, {0.0f, 0.0f, 0.0f, fade});
+	};
+
+	for(int y = 0; y < frame.slots.y + 2; ++y)
+	{
+		for(int x = 0; x < frame.slots.x; ++x)
+		{
+			const int tileX = frame.worldOrigin.x + x;
+			const int tileY = frame.worldOrigin.y + y;
+			if(terrainAt(tileX, tileY) != terrainLava)
+				continue;
+
+			const float cellX = static_cast<float>(tileX);
+			const float cellY = static_cast<float>(tileY);
+			for(int slot = 0; slot < 2; ++slot)
+			{
+				const Random4 r = hash44(cellX, cellY, 71.0f + static_cast<float>(slot) * 11.0f, 13.0f);
+				const float life = 1.4f + 1.2f * r.z;
+				const float period = life + 0.6f + 2.0f * r.w;
+				const float clock = t + r.x * period;
+				const float cycle = std::floor(clock / period);
+				const float age = clock - cycle * period;
+				if(age > life)
+					continue;
+				const Random4 q = hash44(cellX, cellY, cycle, 79.0f + static_cast<float>(slot) * 7.0f);
+				if(q.w > 0.7f)
+					continue;
+				ember(cellX + q.x, cellY + q.y, 0.0f, r, q, age, life);
+			}
+		}
+	}
+
+	for(const Frame::Fire & fire : frame.fires)
+	{
+		for(int slot = 0; slot < 6; ++slot)
+		{
+			const Random4 r = hash44(fire.seed, static_cast<float>(slot), 83.0f, 17.0f);
+			const float life = 1.0f + 0.9f * r.z;
+			const float period = life + 0.2f + 0.8f * r.w;
+			const float clock = t + r.x * period;
+			const float cycle = std::floor(clock / period);
+			const float age = clock - cycle * period;
+			if(age > life)
+				continue;
+			const Random4 q = hash44(fire.seed, static_cast<float>(slot), cycle, 89.0f);
+			ember(fire.x + (q.x - 0.5f) * 0.35f, fire.y + (q.y - 0.5f) * 0.2f, fire.height * 0.6f, r, q, age, life);
+		}
+	}
+}
+
+void MapParticles::buildMiasma(const Placement & placement, const Frame & frame)
+{
+	// 瘴气团：沼泽上零星冒起一团黄绿的浊气，慢慢升高、胀开、散掉，七八秒一团
+	const float t = frame.time;
+	for(int y = 0; y < frame.slots.y + 1; ++y)
+	{
+		for(int x = 0; x < frame.slots.x; ++x)
+		{
+			const int tileX = frame.worldOrigin.x + x;
+			const int tileY = frame.worldOrigin.y + y;
+			if(terrainAt(tileX, tileY) != terrainSwamp)
+				continue;
+
+			const float cellX = static_cast<float>(tileX);
+			const float cellY = static_cast<float>(tileY);
+			const Random4 r = hash44(cellX, cellY, 97.0f, 19.0f);
+			const float life = 6.0f + 3.0f * r.z;
+			const float period = life + 2.0f + 3.0f * r.w;
+			const float clock = t + r.x * period;
+			const float cycle = std::floor(clock / period);
+			const float age = clock - cycle * period;
+			if(age > life)
+				continue;
+			const Random4 q = hash44(cellX, cellY, cycle, 101.0f);
+			if(q.w > 0.35f)
+				continue;
+
+			const float progress = age / life;
+			const float radius = 0.18f + 0.3f * progress;
+			const float positionX = cellX + q.x + 0.94f * 0.05f * age;
+			const float positionY = cellY + q.y + 0.34f * 0.05f * age - 0.07f * age;
+			const float fade = std::sin(3.1415927f * progress) * 0.16f * frame.weatherStrength;
+			addQuad(miasmaVertices, placement, positionX, positionY, radius, 0.0f, 0.0f, radius * 0.7f, 1.9f, 1.9f, KIND_MIASMA, {0.0f, 0.0f, 0.0f, fade});
+		}
+	}
+}
+
+void MapParticles::buildRain(const Placement & placement, const Frame & frame)
+{
+	// 雨丝：阵雨的云下面、水面上，一道道细雨斜着落下（风从西边来，雨丝往右偏），落进水里打出涟漪（涟漪在合成着色器里画）
+	const float t = frame.time;
+	for(int y = 0; y < frame.slots.y + 2; ++y)
+	{
+		for(int x = 0; x < frame.slots.x; ++x)
+		{
+			const int tileX = frame.worldOrigin.x + x;
+			const int tileY = frame.worldOrigin.y + y;
+			if(terrainAt(tileX, tileY) != terrainWater)
+				continue;
+
+			const float cellX = static_cast<float>(tileX);
+			const float cellY = static_cast<float>(tileY);
+			const float shower = showerAt(cellX + 0.5f, cellY + 0.5f, t);
+			if(shower < 0.02f)
+				continue;
+
+			for(int slot = 0; slot < 3; ++slot)
+			{
+				const Random4 r = hash44(cellX, cellY, 107.0f + static_cast<float>(slot) * 3.0f, 23.0f);
+				const float life = 0.35f + 0.15f * r.z;
+				const float period = life + 0.1f + 0.4f * r.w;
+				const float clock = t + r.x * period;
+				const float cycle = std::floor(clock / period);
+				const float age = clock - cycle * period;
+				if(age > life)
+					continue;
+				const Random4 q = hash44(cellX, cellY, cycle, 113.0f + static_cast<float>(slot));
+				if(q.w > shower)
+					continue;
+
+				const float height = 1.4f * (1.0f - age / life);
+				const float landX = cellX + q.x;
+				const float landY = cellY + q.y;
+				const float positionX = landX - 0.22f * height;
+				const float positionY = landY - height;
+				// 雨丝沿下落方向：屏幕上往下、略往右
+				const float dirX = 0.22f / std::hypot(0.22f, 1.0f);
+				const float dirY = 1.0f / std::hypot(0.22f, 1.0f);
+				const float length = 0.16f;
+				const float width = std::max(0.012f, 1.2f / std::max(placement.tilePixels, 1.0f)); // 至少一个多像素宽，否则细得看不见
+				const float fade = 0.5f * smoothstep(0.0f, 0.08f, age) * frame.weatherStrength;
+				const float marginY = 1.0f + 1.5f / std::max(width * placement.tilePixels, 0.5f);
+				addQuad(rainVertices, placement, positionX, positionY, dirX * length, dirY * length, -dirY * width, dirX * width, 1.0f, std::min(marginY, maxExtent), KIND_RAIN, {0.0f, 0.0f, 0.0f, fade});
+			}
+		}
+	}
+}
+
 void MapParticles::draw(SDL_Renderer * renderer, const Frame & frame, const std::vector<PresentedRegion> & regions)
 {
 	if(frame.strength <= 0.001f || regions.empty() || frame.slots.x <= 0 || frame.slots.y <= 0 || frame.cacheWidth <= 0.0f)
 		return;
 
-	if(vegetation.size() != static_cast<size_t>(vegetationSize.x * vegetationSize.y) * 4)
-		return;
+	const bool hasVegetation = vegetation.size() == static_cast<size_t>(vegetationSize.x * vegetationSize.y) * 4 && !vegetation.empty();
 
 	if(!ensureResources(renderer, frame))
 		return;
@@ -544,17 +855,31 @@ void MapParticles::draw(SDL_Renderer * renderer, const Frame & frame, const std:
 	placement.tilePixels = static_cast<float>(first.target.w) / static_cast<float>(first.source.w) * frame.cacheWidth / static_cast<float>(frame.slots.x);
 
 	shadowVertices.clear();
+	miasmaVertices.clear();
 	bitVertices.clear();
 	glowVertices.clear();
 	birdVertices.clear();
+	rainVertices.clear();
+	snowVertices.clear();
 
 	buildBirds(placement, frame);
-	buildDriftingBits(placement, frame);
-	buildFireflies(placement, frame);
+	if(hasVegetation)
+	{
+		buildDriftingBits(placement, frame);
+		buildFireflies(placement, frame);
+	}
+	// 天气粒子按图块数逐个算，缩到全图时几千个图块、每片雪不到一个像素，不算
+	if(frame.weatherStrength > 0.01f)
+	{
+		buildSnow(placement, frame);
+		buildEmbers(placement, frame);
+		buildMiasma(placement, frame);
+		buildRain(placement, frame);
+	}
 
-	// 先画的在下面：鸟影、落叶飞花、萤火虫、飞鸟
+	// 先画的在下面：鸟影、瘴气、落叶飞花、萤火虫与余烬、飞鸟、雨丝、飘雪
 	vertices.clear();
-	for(const auto * part : {&shadowVertices, &bitVertices, &glowVertices, &birdVertices})
+	for(const auto * part : {&shadowVertices, &miasmaVertices, &bitVertices, &glowVertices, &birdVertices, &rainVertices, &snowVertices})
 		vertices.insert(vertices.end(), part->begin(), part->end());
 	if(vertices.empty())
 		return;
@@ -564,10 +889,16 @@ void MapParticles::draw(SDL_Renderer * renderer, const Frame & frame, const std:
 		for(int offset : {0, 1, 2, 0, 2, 3})
 			indices.push_back(base + offset);
 
-	// 只画在地图区域里：各区域外接矩形之外是界面
+	// 只画在地图区域里：各区域外接矩形之外是界面。可见窗口最左、最上一格常有一部分在屏幕外，外接矩形的左上角是负的；
+	// gpu 渲染器遇到伸出视口的裁剪矩形会把整批都裁掉（2026-11-18 查出：落叶、飞花、萤火虫因此一直没画出来），所以先与视口求交
 	Rect bounds = first.target;
 	for(const PresentedRegion & region : regions)
 		bounds = bounds.include(region.target);
+	SDL_Rect viewport;
+	SDL_GetRenderViewport(renderer, &viewport);
+	bounds = bounds.intersect(Rect(0, 0, viewport.w, viewport.h));
+	if(bounds.w <= 0 || bounds.h <= 0)
+		return;
 
 	SDL_Rect previousClip;
 	const bool hadClip = SDL_RenderClipEnabled(renderer);
@@ -576,6 +907,8 @@ void MapParticles::draw(SDL_Renderer * renderer, const Frame & frame, const std:
 
 	const SDL_Rect clip = {bounds.x, bounds.y, bounds.w, bounds.h};
 	SDL_SetRenderClipRect(renderer, &clip);
+	ParticleUniforms uniforms = {{frame.grade[0], frame.grade[1], frame.grade[2], frame.night}};
+	SDL_SetGPURenderStateFragmentUniforms(state, 0, &uniforms, sizeof(uniforms));
 	SDL_SetGPURenderState(renderer, state);
 
 	if(!SDL_RenderGeometry(renderer, white, vertices.data(), static_cast<int>(vertices.size()), indices.data(), static_cast<int>(indices.size())))

@@ -1480,6 +1480,13 @@ MapVegetation MapRenderer::vegetationAt(IMapRendererContext & context, const int
 	return rendererObjects.vegetationAt(context, coordinates);
 }
 
+bool MapRenderer::isFullyHidden(IMapRendererContext & context, const int3 & coordinates)
+{
+	if(!context.isInMap(coordinates) || context.isVisible(coordinates))
+		return false;
+	return NeighborTilesInfo(context, coordinates).areAllHidden();
+}
+
 void MapRenderer::renderTileLayer(IMapRendererContext & context, Canvas & target, const int3 & coordinates, MapTileLayer layer, bool withOverlays)
 {
 	if(layer == MapTileLayer::ALL)

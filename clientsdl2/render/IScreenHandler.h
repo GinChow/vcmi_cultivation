@@ -38,6 +38,30 @@ struct MapLayerSet
 	Point slots;
 	Point worldOrigin;
 	Point slotOrigin;
+	int tileSize = 32;
+};
+
+/// 大地图的局部光（含义见 SDL3 后端的同名结构）。本后端没有着色器，只因客户端代码两套后端共用而声明。
+struct MapLight
+{
+	enum class Flicker : uint8_t
+	{
+		STEADY,
+		FIRE,
+		MAGIC,
+		LAVA
+	};
+
+	float x = 0.0f;
+	float y = 0.0f;
+	float height = 0.5f;
+	float radius = 2.0f;
+	float r = 1.0f;
+	float g = 0.7f;
+	float b = 0.4f;
+	float halo = 0.0f;
+	Flicker flicker = Flicker::STEADY;
+	float seed = 0.0f;
 };
 
 /// GPU layers composited under the software screen. This backend has none, but client code
@@ -147,4 +171,6 @@ public:
 	void setMapAtmosphereField(const std::vector<uint8_t> &, const Point &) {}
 	void setMapTerrainField(const std::vector<uint8_t> &, const Point &) {}
 	void setMapTerrainMaterials(const std::vector<uint8_t> &) {}
+	void setMapDayProgress(int, std::optional<float>) {}
+	void setMapLights(const std::vector<MapLight> &) {}
 };

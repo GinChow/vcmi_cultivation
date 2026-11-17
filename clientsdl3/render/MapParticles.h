@@ -29,6 +29,11 @@ struct SDL_GPURenderState;
 /// （出发点在缓存里的位置随顶点颜色传过去，同一片叶子的所有像素取的是同一点，结论一致）。
 /// 惊鸟的鸟群由地图缓存登记（startBirdFlock），这里按起飞时间算每只鸟的位置。
 ///
+/// 天气粒子（2026-11-18）：雪地上飘雪（一阵大一阵小）、岩浆和营火上飞起的余烬、沼泽上一团团升起的瘴气、
+/// 阵雨落在水面上的雨丝。按地形场（每个图块的地形）放；阵雨落在哪由大块云影的形状决定，这里在 CPU 上
+/// 用与合成着色器同一张噪声、同一个公式算（cloudShape、showerAt），雨丝才会落在水面涟漪的那片云下。
+/// 粒子颜色跟着时段调色走（夜里偏蓝变暗），萤火虫、余烬入夜更亮。
+///
 /// 由 MapLayerCompositor 在合成完地面、物件之后，叠覆盖层（迷雾、路径）之前调用，所以粒子都在迷雾之下。
 /// 只有 MSL 版着色器（macOS），着色器不可用时什么都不画。
 class MapParticles
@@ -45,6 +50,19 @@ public:
 		float cacheWidth = 0.0f;           ///< 缓存纹理的像素宽度
 		float time = 0.0f;                 ///< 合成器的时钟（秒）
 		float strength = 0.0f;             ///< 粒子强度 0~1：图块在屏幕上太小时为 0，整批不画
+		float weatherStrength = 0.0f;      ///< 天气粒子（雪、余烬、瘴气、雨丝）的强度：要放大到图块够大才出现，缩到全图时不算
+		std::array<float, 3> grade = {1.0f, 1.0f, 1.0f}; ///< 整幅画面的时段色调，粒子颜色也乘上它
+		float night = 0.0f;                ///< 天黑的程度 0~1
+
+		/// 会飞出余烬的火（营火、火柱）：地面位置、离地高度、相位
+		struct Fire
+		{
+			float x;
+			float y;
+			float height;
+			float seed;
+		};
+		std::vector<Fire> fires;
 	};
 
 	MapParticles() = default;
@@ -56,6 +74,17 @@ public:
 	/// 植被场：rgba 按行存放 size.x × size.y 个地图图块（R 落叶、G 飞花、B 萤火虫、A 不用）。
 	/// 换了地图或地图层，同时清掉还在飞的鸟群。须在渲染线程上调用
 	void setVegetationField(const std::vector<uint8_t> & rgba, const Point & size);
+
+	/// 地形场（含义见 IScreenHandler::setMapTerrainField），只用 R（每个图块的地形）放飘雪、余烬、瘴气、雨丝。须在渲染线程上调用
+	void setTerrainField(const std::vector<uint8_t> & rgba, const Point & size);
+
+	/// 合成着色器的噪声纹理（RGBA，size × size）：阵雨在哪要与着色器算得一样
+	void setNoise(const std::vector<uint8_t> & pixels, int size);
+
+	/// 大块云影在地图坐标 (x, y)、时刻 t 的形状，与合成着色器的 bigCloudShape 同一公式
+	float cloudShape(float x, float y, float t) const;
+	/// 这里此刻下多大的雨 0~1，与合成着色器的 showerAt 同一公式
+	float showerAt(float x, float y, float t) const;
 
 	/// 惊起一群鸟：从地图坐标 (x, y) 起飞，朝 (directionX, directionY) 飞走；now 是合成器的时钟。
 	/// 同时最多 maxFlocks 群，再多就顶掉最早起飞的一群。须在渲染线程上调用
@@ -93,6 +122,17 @@ private:
 	std::vector<uint8_t> vegetation;
 	Point vegetationSize;
 
+	/// 每个图块的地形（TerrainId，255 为模组新增地形），按行存放
+	std::vector<uint8_t> terrain;
+	Point terrainSize;
+
+	std::vector<uint8_t> noise;
+	int noiseSize = 0;
+	/// 噪声纹理线性取样、环绕，与 GPU 的取样器一致；channel 0~3 为 RGBA
+	float sampleNoise(float u, float v, int channel) const;
+	/// 图块 (x, y) 的地形；地图外为 255
+	uint8_t terrainAt(int x, int y) const;
+
 	SDL_Renderer * owner = nullptr;
 	SDL_GPUShader * shader = nullptr;
 	SDL_GPUSampler * sampler = nullptr;
@@ -117,11 +157,14 @@ private:
 		float tilePixels = 0.0f; ///< 一个图块在屏幕上多少像素
 	};
 
-	/// 这一帧的四边形，按画的先后：鸟影、落叶飞花、萤火虫、飞鸟
+	/// 这一帧的四边形，按画的先后：鸟影、瘴气、落叶飞花、萤火虫与余烬、飞鸟、雨丝、飘雪
 	std::vector<SDL_Vertex> shadowVertices;
+	std::vector<SDL_Vertex> miasmaVertices;
 	std::vector<SDL_Vertex> bitVertices;
 	std::vector<SDL_Vertex> glowVertices;
 	std::vector<SDL_Vertex> birdVertices;
+	std::vector<SDL_Vertex> rainVertices;
+	std::vector<SDL_Vertex> snowVertices;
 	std::vector<SDL_Vertex> vertices;
 	std::vector<int> indices;
 
@@ -133,4 +176,8 @@ private:
 	void buildBirds(const Placement & placement, const Frame & frame);
 	void buildDriftingBits(const Placement & placement, const Frame & frame);
 	void buildFireflies(const Placement & placement, const Frame & frame);
+	void buildSnow(const Placement & placement, const Frame & frame);
+	void buildEmbers(const Placement & placement, const Frame & frame);
+	void buildMiasma(const Placement & placement, const Frame & frame);
+	void buildRain(const Placement & placement, const Frame & frame);
 };
