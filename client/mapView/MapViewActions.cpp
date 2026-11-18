@@ -147,6 +147,7 @@ void MapViewActions::handleHover(const Point & cursorPosition)
 
 	if(!context->isInMap(tile))
 	{
+		owner.onObjectHovered(nullptr, MapHighlight::Tone::NEUTRAL);
 		ENGINE->cursor().set(Cursor::Map::POINTER);
 		return;
 	}
@@ -158,6 +159,7 @@ void MapViewActions::hover(bool on)
 {
 	if(!on)
 	{
+		owner.onObjectHovered(nullptr, MapHighlight::Tone::NEUTRAL);
 		ENGINE->statusbar()->clear();
 		ENGINE->cursor().set(Cursor::Map::POINTER);
 	}

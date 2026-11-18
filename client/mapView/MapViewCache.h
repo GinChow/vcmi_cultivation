@@ -16,6 +16,7 @@
 #include "render/IScreenHandler.h"
 
 class ObjectInstanceID;
+class CGHeroInstance;
 
 class IImage;
 class CAnimation;
@@ -152,10 +153,51 @@ class MapViewCache
 	void sendDayProgress(const std::shared_ptr<IMapRendererContext> & context);
 	std::chrono::steady_clock::time_point nextDayProgress;
 
-	/// 局部光（2026-11-18）：每帧从可见窗口外加一圈（光能照进来的距离）里看得见的物件收集城镇灯笼、营火、灯塔、
-	/// 传送门和神殿的法光、熔岩装饰、英雄的火把，交给屏幕处理器。走地图缓存每个图块的物件表，物件拿走、英雄走动都跟得上
-	void sendLights(const std::shared_ptr<IMapRendererContext> & context);
-	std::vector<MapLight> lights;
+	/// 物件带出的逐帧效果（2026-11-18 由局部光扩充）：每帧从可见窗口外加一圈（光能照进来的距离）里看得见的物件收集
+	///   局部光：城镇灯笼、营火、灯塔、传送门和神殿的法光、熔岩装饰、英雄的火把；
+	///   宝物闪光：宝箱、神器、资源、潘多拉魔盒、卷轴、漂流物；炊烟：城镇屋顶；
+	///   英雄：走在沙地、雪地上留下蹄印（trackHero），走在沙、泥、雪、灰、草地上扬尘；
+	///   鼠标悬停的物件：单独画成一张小画布（updateHighlight）。
+	/// 都交给屏幕处理器（setMapObjectEffects）。走地图缓存每个图块的物件表，物件拿走、英雄走动都跟得上
+	void sendObjectEffects(const std::shared_ptr<IMapRendererContext> & context);
+	MapObjectEffects objectEffects;
+	/// 上一次收集的时刻（算英雄的速度用）
+	std::chrono::steady_clock::time_point lastEffectsTime;
+
+	/// 英雄走过的路：上一帧在哪、上一对蹄印踩在哪，按物件编号记
+	struct HeroTrail
+	{
+		float x = 0.0f;
+		float y = 0.0f;
+		float printX = 0.0f;
+		float printY = 0.0f;
+		std::chrono::steady_clock::time_point seen;
+	};
+	std::unordered_map<int, HeroTrail> heroTrails;
+	/// 踩下的蹄印：在哪一层、什么时候踩的（浓淡按时间算）
+	struct Footprint
+	{
+		MapFootprint print;
+		int level = 0;
+		std::chrono::steady_clock::time_point made;
+	};
+	std::deque<Footprint> footprints;
+	/// 英雄这一帧在 (x, y)（站的图块中心加上走路动画的偏移，地图坐标）：记下走过的路，踩蹄印、扬尘
+	void trackHero(const std::shared_ptr<IMapRendererContext> & context, const CGHeroInstance * hero, float x, float y, float dt, std::chrono::steady_clock::time_point now);
+	/// 去掉淡完的蹄印，把当前地图层看得见的交给 objectEffects
+	void collectFootprints(const Rect & tiles, std::chrono::steady_clock::time_point now);
+
+	/// 鼠标悬停的物件（2026-11-18）：编号（-1 为没有）与描边颜色，由冒险地图界面在 GUI 线程上设置
+	std::atomic<int> hoveredObject{-1};
+	std::atomic<uint8_t> hoveredTone{0};
+	/// 悬停物件单独画成的画布（透明底，四周留 highlightMargin 像素给光晕），上一次画的是哪件、什么时候画的、什么时候移上去的
+	std::unique_ptr<Canvas> highlightCanvas;
+	Point highlightCanvasSize;
+	int highlightDrawnObject = -1;
+	std::chrono::steady_clock::time_point highlightDrawnAt;
+	std::chrono::steady_clock::time_point highlightSince;
+	/// 把悬停的物件画进 highlightCanvas，填好 objectEffects.highlight
+	void updateHighlight(const std::shared_ptr<IMapRendererContext> & context, std::chrono::steady_clock::time_point now);
 	/// 去重：大物件占好几个图块，每个图块的物件表里都有它。litStamp[物件编号] 等于 litFrame 就是这一帧已经看过。
 	/// 缩到全图时一帧要看几千个图块，线性查找去重要两毫秒（2026-11-18 实测），所以用按编号的标记
 	std::vector<uint32_t> litStamp;
@@ -250,6 +292,9 @@ public:
 
 	/// 英雄走到了 tile（看得见的一步）：只记下，下一帧在渲染线程上决定要不要惊起附近树林里的鸟。可在任何线程调用
 	void noteHeroStep(const int3 & tile);
+
+	/// 鼠标悬停在哪件物件上（-1 为没有），描边用什么颜色（2026-11-18）。下一帧画描边
+	void setHoveredObject(int objectID, MapHighlight::Tone tone);
 
 	/// updates internal terrain cache according to provided time delta
 	/// True when update() already ran this frame and the view still shows the same tiles. A scroll

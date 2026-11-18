@@ -63,6 +63,7 @@ struct MapLayerSet
 	Point worldOrigin; ///< 可见窗口左上角图块的地图坐标
 	Point slotOrigin;  ///< 该图块在缓存中的槽位
 	int tileSize = 32; ///< 屏幕上一个图块的大小（界面像素，不含缩放倍数）。不到 16 时摇摆层、风场遮罩、起伏层、地形分布层是空的
+	Rect viewArea;     ///< 地图视图在屏幕上的矩形（屏幕像素）。各区域会伸出它半个图块（被界面盖住），暗角、边缘墨晕按它画
 };
 
 /// 大地图上的一盏局部光（2026-11-18，大地图光照）：城镇的灯笼、营火、灯塔、传送门和神殿的法光、熔岩、英雄手里的火把。
@@ -88,6 +89,96 @@ struct MapLight
 	float halo = 0.0f;   ///< 夜里光源周围空气里的一团辉光，0~1
 	Flicker flicker = Flicker::STEADY;
 	float seed = 0.0f;   ///< 闪动的相位，每盏灯不同
+};
+
+/// 会隔一会儿闪一道光的宝物、资源（2026-11-18，大地图交互反馈）：宝箱、神器、资源堆、潘多拉魔盒、卷轴、漂流物。
+/// 光点落在物件画面里随机的一点（粒子着色器查物件层，落在透明处的不画）
+struct MapSparkle
+{
+	float x = 0.0f;          ///< 物件画面中心（地图坐标，图块）
+	float y = 0.0f;
+	float halfWidth = 0.35f; ///< 光点可能落的范围（图块）
+	float halfHeight = 0.35f;
+	float seed = 0.0f;       ///< 相位与落点的随机种子，每件物件不同
+};
+
+/// 冒炊烟的地方（2026-11-18）：城镇屋顶。烟从 (x, y) 往上 height 个图块处冒出，顺风飘散
+struct MapChimney
+{
+	float x = 0.0f;
+	float y = 0.0f;
+	float height = 1.0f;
+	float seed = 0.0f;
+};
+
+/// 英雄在沙地、雪地上留下的一对蹄印（2026-11-18）。地图缓存记下英雄走过的位置，按时间算好浓淡
+struct MapFootprint
+{
+	/// 印在什么地上：颜色、深浅不同
+	enum class Ground : uint8_t
+	{
+		SAND,
+		SNOW
+	};
+
+	float x = 0.0f;      ///< 这一对蹄印的中点（地图坐标，图块）
+	float y = 0.0f;
+	float dirX = 1.0f;   ///< 走的方向（单位向量，地图坐标）
+	float dirY = 0.0f;
+	float alpha = 1.0f;  ///< 浓淡：刚踩下为 1，慢慢淡到 0
+	Ground ground = Ground::SAND;
+};
+
+/// 正在走的英雄脚下（2026-11-18）：扬起尘土、雪沫。速度为 0 时不起尘
+struct MapDustSource
+{
+	/// 扬起什么：沙尘、泥土、雪沫、火山灰、草屑
+	enum class Kind : uint8_t
+	{
+		SAND,
+		DIRT,
+		SNOW,
+		ASH,
+		GRASS
+	};
+
+	float x = 0.0f;  ///< 脚下的地面位置（地图坐标，图块）
+	float y = 0.0f;
+	float vx = 0.0f; ///< 这一帧的速度（图块/秒）
+	float vy = 0.0f;
+	Kind kind = Kind::SAND;
+	int id = 0;      ///< 英雄的物件编号：同一个英雄每帧的尘土接着上一帧算
+};
+
+/// 鼠标悬停的物件（2026-11-18）：地图缓存把它单独画进一张小画布（透明底），合成器按画布的 alpha 描一圈发光的边
+struct MapHighlight
+{
+	/// 描边的颜色：自己的（青）、中立的宝物与建筑（金）、敌人（朱砂）
+	enum class Tone : uint8_t
+	{
+		NEUTRAL,
+		OWN,
+		ENEMY
+	};
+
+	const Canvas * canvas = nullptr; ///< 物件单独画成的画布；为空表示没有悬停的物件
+	float x = 0.0f;                  ///< 画布左上角的地图坐标（图块）
+	float y = 0.0f;
+	float width = 0.0f;              ///< 画布在地图上的大小（图块）
+	float height = 0.0f;
+	Tone tone = Tone::NEUTRAL;
+	float strength = 1.0f;           ///< 刚移上去时淡入
+};
+
+/// 地图缓存每帧从看得见的物件收集、交给合成器的东西（2026-11-18）：局部光、宝物闪光、炊烟、脚印、扬尘、悬停描边
+struct MapObjectEffects
+{
+	std::vector<MapLight> lights;
+	std::vector<MapSparkle> sparkles;
+	std::vector<MapChimney> chimneys;
+	std::vector<MapFootprint> footprints;
+	std::vector<MapDustSource> dust;
+	MapHighlight highlight;
 };
 
 class IScreenHandler
@@ -231,8 +322,9 @@ public:
 	/// 设置 video.mapSunClock 为 turn 时由它推动太阳，地图缓存每 0.25 秒调用一次
 	virtual void setMapDayProgress(int day, std::optional<float> dayProgress) = 0;
 
-	/// 这一帧可见范围里的局部光（见 MapLight），地图缓存每帧调用；多于合成器能处理的盏数时只用离屏幕中心最近的
-	virtual void setMapLights(const std::vector<MapLight> & lights) = 0;
+	/// 这一帧可见范围里物件带出的效果（见 MapObjectEffects），地图缓存每帧调用。
+	/// 局部光多于合成器能处理的盏数时只用离屏幕中心最近的；悬停描边的画布要活到下一次调用
+	virtual void setMapObjectEffects(const MapObjectEffects & effects) = 0;
 
 	/// 地表材质图集（2026-11-17）：模组提供的 PNG 文件内容，8 行（材质组）× 4 列（子材质），RGB 颜色、A 高度。只给一次
 	virtual void setMapTerrainMaterials(const std::vector<uint8_t> & png) = 0;

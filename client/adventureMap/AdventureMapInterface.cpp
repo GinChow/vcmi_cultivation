@@ -711,6 +711,20 @@ void AdventureMapInterface::onTileHovered(const int3 &targetPosition)
 	bool isTargetPositionVisible = GAME->interface()->cb->isVisible(targetPosition);
 	const CGObjectInstance *objAtTile = isTargetPositionVisible ? getActiveObject(targetPosition) : nullptr;
 
+	// 悬停描边（2026-11-18）：鼠标下看得见的可交互物件描一圈光——自己和盟友的青、敌人和野怪的朱砂、其余（宝物、建筑）金。
+	// 树、山这些不能走上去的装饰物不描（getActiveObject 在没有可访问物件时会给出它们）
+	MapHighlight::Tone highlightTone = MapHighlight::Tone::NEUTRAL;
+	const CGObjectInstance * highlighted = objAtTile && objAtTile->isVisitable() ? objAtTile : nullptr;
+	if(highlighted)
+	{
+		if(highlighted->ID == Obj::MONSTER)
+			highlightTone = MapHighlight::Tone::ENEMY;
+		else if(highlighted->tempOwner.isValidPlayer())
+			highlightTone = GAME->interface()->cb->getPlayerRelations(GAME->interface()->playerID, highlighted->tempOwner) == PlayerRelations::ENEMIES
+				? MapHighlight::Tone::ENEMY : MapHighlight::Tone::OWN;
+	}
+	widget->getMapView()->onObjectHovered(highlighted, highlightTone);
+
 	if(spellBeingCasted)
 	{
 		const auto * hero = GAME->interface()->localState->getCurrentHero();

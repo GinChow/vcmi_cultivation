@@ -21,7 +21,8 @@ namespace
 /// 局部坐标都在 ±2 之内，所以 floor((y + 2) / 4) 就是种类。顶点颜色是给这个粒子的参数（四个顶点相同）：
 ///   落叶、飞花：rg 是出发点在缓存纹理里的坐标，b 是明暗的一半，a 是淡入淡出；
 ///   萤火虫：a 是这一刻的亮度；飞鸟：r 是扇翅的相位 0~1，a 是淡入淡出；鸟影：a 是浓淡；
-///   雪花、瘴气、雨丝：a 是浓淡；余烬：a 是这一刻的亮度。
+///   雪花、瘴气、雨丝：a 是浓淡；余烬：a 是这一刻的亮度；
+///   宝物闪光：rg 是落点在缓存纹理里的坐标（落点要在物件上），a 是这一刻的亮度；尘土、炊烟：rgb 是颜色，a 是浓淡。
 /// 输出预乘 alpha，按 SDL_BLENDMODE_BLEND_PREMULTIPLIED 叠；萤火虫、余烬输出 alpha 为 0，于是成了加色的光。
 /// uniform 的 grade 是时段色调（rgb）与天黑的程度（w），粒子的颜色跟画面一起调。
 const char * const particleShaderSource = R"MSL(
@@ -55,7 +56,8 @@ static inline float segmentDistance(float2 p, float2 a, float2 b)
 fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(0)]],
 	texture2d<float> mainTex [[texture(0)]], sampler mainSmp [[sampler(0)]],
 	texture2d<float> windTex [[texture(1)]], sampler windSmp [[sampler(1)]],
-	texture2d<float> swayTex [[texture(2)]], sampler swaySmp [[sampler(2)]])
+	texture2d<float> swayTex [[texture(2)]], sampler swaySmp [[sampler(2)]],
+	texture2d<float> objectTex [[texture(3)]], sampler objectSmp [[sampler(3)]])
 {
 	float kind = floor((in.uv.y + 2.0) * 0.25);
 	float2 local = float2(in.uv.x, in.uv.y - 4.0 * kind);
@@ -133,13 +135,38 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		float alpha = p.a * exp(-dot(local, local) * 2.0);
 		result = float4(float3(0.58, 0.68, 0.40) * P.grade.rgb * alpha, alpha);
 	}
-	else
+	else if(kind < 10.5)
 	{
 		// 雨丝：细长的一道，沿下落方向两头渐细；局部 x 沿下落方向、y 横向
 		float across = 1.0 - smoothstep(0.4, 1.0, abs(local.y));
 		float along = smoothstep(-1.0, -0.2, local.x) * (1.0 - smoothstep(0.5, 1.0, local.x));
 		float alpha = p.a * across * along;
 		result = float4(float3(0.80, 0.86, 0.95) * P.grade.rgb * alpha, alpha);
+	}
+	else if(kind < 11.5)
+	{
+		// 宝物闪光：落点要在物件本体上（透明处、半透明的阴影上不闪）。一道细长的十字星光，斜角再两道短的，中间一个亮核，加色。
+		// 夜里没有阳光，闪得弱些
+		if(objectTex.sample(objectSmp, p.rg).a < 0.6)
+			discard_fragment();
+		float r = length(local);
+		float2 d = float2(local.x + local.y, local.x - local.y) * 0.7071;
+		float rays = exp(-abs(local.x) * 22.0) * exp(-abs(local.y) * 2.6) + exp(-abs(local.y) * 22.0) * exp(-abs(local.x) * 2.6);
+		float diagonal = exp(-abs(d.x) * 26.0) * exp(-abs(d.y) * 5.5) + exp(-abs(d.y) * 26.0) * exp(-abs(d.x) * 5.5);
+		float core = exp(-r * r * 45.0);
+		float glow = (rays * 0.9 + diagonal * 0.35 + core * 1.2) * (1.0 - smoothstep(0.7, 1.0, r)) * p.a * (1.0 - 0.5 * P.grade.w);
+		result = float4(float3(1.0, 0.95, 0.80) * glow, 0.0);
+	}
+	else
+	{
+		// 尘土、炊烟：一团边缘很虚的烟，颜色由顶点给；边上按角度略起伏，不是正圆。
+		// 上面亮、下面暗一些，看得出是一团有体积的烟——与地面颜色相近时（浅色沙地上的沙尘）只靠颜色分不出来
+		float angle = atan2(local.y, local.x);
+		float wobble = 1.0 + 0.12 * sin(angle * 3.0 + p.r * 17.0) + 0.08 * sin(angle * 5.0 + p.g * 23.0);
+		float d2 = dot(local, local) / (wobble * wobble);
+		float alpha = p.a * exp(-d2 * 2.4);
+		float shade = 1.08 - 0.22 * smoothstep(-1.0, 1.0, local.y);
+		result = float4(p.rgb * shade * P.grade.rgb * alpha, alpha);
 	}
 
 	main0_out out;
@@ -161,7 +188,9 @@ enum ParticleKind : int
 	KIND_SNOW = 7,
 	KIND_EMBER = 8,
 	KIND_MIASMA = 9,
-	KIND_RAIN = 10
+	KIND_RAIN = 10,
+	KIND_SPARKLE = 11,
+	KIND_PUFF = 12
 };
 
 /// 与粒子着色器的 Params 一一对应
@@ -368,7 +397,7 @@ bool MapParticles::ensureResources(SDL_Renderer * renderer, const Frame & frame)
 		shaderInfo.entrypoint = "main0";
 		shaderInfo.format = SDL_GPU_SHADERFORMAT_MSL;
 		shaderInfo.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
-		shaderInfo.num_samplers = 3; // SDL 的主纹理（白图）、风场遮罩、摇摆层
+		shaderInfo.num_samplers = 4; // SDL 的主纹理（白图）、风场遮罩、摇摆层、物件层
 		shaderInfo.num_uniform_buffers = 1;
 		shader = SDL_CreateGPUShader(device, &shaderInfo);
 
@@ -400,7 +429,7 @@ bool MapParticles::ensureResources(SDL_Renderer * renderer, const Frame & frame)
 		}
 	}
 
-	const std::array<SDL_Texture *, 2> wanted = {frame.windMask, frame.sway};
+	const std::array<SDL_Texture *, 3> wanted = {frame.windMask, frame.sway, frame.objects};
 	const bool forgotten = inputsForgotten.exchange(false);
 	if(state && boundTextures == wanted && !forgotten)
 		return true;
@@ -410,7 +439,7 @@ bool MapParticles::ensureResources(SDL_Renderer * renderer, const Frame & frame)
 	state = nullptr;
 	boundTextures = {};
 
-	std::array<SDL_GPUTextureSamplerBinding, 2> bindings = {};
+	std::array<SDL_GPUTextureSamplerBinding, 3> bindings = {};
 	for(size_t i = 0; i < wanted.size(); ++i)
 	{
 		bindings[i].texture = wanted[i] ? static_cast<SDL_GPUTexture *>(SDL_GetPointerProperty(SDL_GetTextureProperties(wanted[i]), SDL_PROP_TEXTURE_GPU_TEXTURE_POINTER, nullptr)) : nullptr;
@@ -831,6 +860,178 @@ void MapParticles::buildRain(const Placement & placement, const Frame & frame)
 	}
 }
 
+namespace
+{
+
+/// 扬尘的颜色与多少：沙地扬沙最多，泥地次之，雪地扬起雪沫，岩浆地上是火山灰，草地只带起一点草屑
+struct DustLook
+{
+	float r;
+	float g;
+	float b;
+	float amount;
+};
+
+DustLook dustLook(MapDustSource::Kind kind)
+{
+	switch(kind)
+	{
+		// 尘土要比地面亮一些才看得出（与地面同色时扬起来像没有）
+		case MapDustSource::Kind::SAND:
+			return {0.93f, 0.87f, 0.72f, 1.0f};
+		case MapDustSource::Kind::DIRT:
+			return {0.80f, 0.72f, 0.60f, 0.8f};
+		case MapDustSource::Kind::SNOW:
+			return {0.95f, 0.97f, 1.0f, 0.9f};
+		case MapDustSource::Kind::ASH:
+			return {0.42f, 0.39f, 0.37f, 0.7f};
+		case MapDustSource::Kind::GRASS:
+			return {0.58f, 0.64f, 0.40f, 0.3f};
+	}
+	return {0.8f, 0.7f, 0.55f, 1.0f};
+}
+
+/// 每个走动的英雄每秒扬起几团尘土（乘上地面的 amount）；同时最多留多少团
+constexpr float dustPerSecond = 16.0f;
+constexpr size_t maxDustPuffs = 240;
+
+}
+
+void MapParticles::updateDust(const Frame & frame)
+{
+	const float now = frame.time;
+	// 合成器的时钟约 2.8 小时绕回一次，或者很久没画（打开了别的窗口）：从头算
+	if(dustClock < 0.0f || now < dustClock || now - dustClock > 1.0f)
+	{
+		dustClock = now;
+		dustCarry.clear();
+	}
+	const float dt = std::min(now - dustClock, 0.1f);
+	dustClock = now;
+
+	std::erase_if(dustPuffs, [&](const DustPuff & puff) { return now < puff.born || now - puff.born > puff.life; });
+
+	std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+	std::unordered_map<int, float> carry;
+	for(const MapDustSource & source : frame.dust)
+	{
+		const float speed = std::hypot(source.vx, source.vy);
+		if(speed < 0.3f)
+			continue;
+		const DustLook look = dustLook(source.kind);
+		float pending = (dustCarry.count(source.id) ? dustCarry[source.id] : 0.0f) + dustPerSecond * look.amount * dt;
+		const float backX = -source.vx / speed;
+		const float backY = -source.vy / speed;
+		while(pending >= 1.0f && dustPuffs.size() < maxDustPuffs)
+		{
+			pending -= 1.0f;
+			// 从马蹄后面扬起：在脚下偏后一点、左右散开，往后、往上飘，慢慢停下
+			const float lateral = (unit(dustRandom) - 0.5f) * 0.32f;
+			DustPuff puff;
+			puff.x = source.x + backX * (0.1f + 0.12f * unit(dustRandom)) - backY * lateral;
+			puff.y = source.y + backY * (0.1f + 0.12f * unit(dustRandom)) + backX * lateral + 0.08f;
+			const float kick = 0.25f + 0.35f * unit(dustRandom);
+			puff.vx = backX * kick + (unit(dustRandom) - 0.5f) * 0.25f;
+			puff.vy = backY * kick * 0.6f + (unit(dustRandom) - 0.5f) * 0.15f;
+			puff.born = now - unit(dustRandom) * dt; // 一帧里扬起的几团错开一点
+			puff.life = 0.7f + 0.6f * unit(dustRandom);
+			puff.size = 0.06f + 0.04f * unit(dustRandom);
+			puff.strength = look.amount;
+			puff.kind = source.kind;
+			dustPuffs.push_back(puff);
+		}
+		carry[source.id] = std::min(pending, 1.0f);
+	}
+	// 没在走的英雄不再攒
+	dustCarry.swap(carry);
+}
+
+void MapParticles::buildDust(const Placement & placement, const Frame & frame)
+{
+	for(const DustPuff & puff : dustPuffs)
+	{
+		const float age = frame.time - puff.born;
+		if(age < 0.0f || age > puff.life)
+			continue;
+		const float progress = age / puff.life;
+		// 先冲出去、很快慢下来；一边往上飘、一边胀开淡掉
+		const float travel = age * (1.0f - 0.5f * progress);
+		const float positionX = puff.x + puff.vx * travel + 0.94f * 0.05f * age;
+		const float positionY = puff.y + puff.vy * travel + 0.34f * 0.05f * age - 0.16f * age;
+		const float radius = puff.size + 0.2f * progress;
+		const float fade = smoothstep(0.0f, 0.08f, age) * (1.0f - progress) * (1.0f - progress) * 0.5f * puff.strength * frame.strength;
+		if(fade < 0.004f)
+			continue;
+		const DustLook look = dustLook(puff.kind);
+		addQuad(puffVertices, placement, positionX, positionY, radius, 0.0f, 0.0f, radius * 0.8f, 1.9f, 1.9f, KIND_PUFF, {look.r, look.g, look.b, fade});
+	}
+}
+
+void MapParticles::buildSmoke(const Placement & placement, const Frame & frame)
+{
+	// 炊烟：每个屋顶十团烟轮流冒出，六七秒里升高两个多图块、顺风斜斜飘开、越来越大越淡，连成一缕。
+	// 淡墨色：刚冒出来浓一些，散开后成一抹淡灰；夜里淡下去。太小太淡在缩放后的画面里看不出（2026-11-18 实机）
+	const float t = frame.time;
+	constexpr int puffs = 10;
+	for(const MapChimney & chimney : frame.chimneys)
+	{
+		for(int slot = 0; slot < puffs; ++slot)
+		{
+			const Random4 r = hash44(chimney.seed, static_cast<float>(slot), 131.0f, 29.0f);
+			const float life = 6.0f + 1.5f * r.z;
+			const float clock = t + (static_cast<float>(slot) / puffs + r.x * 0.08f) * life + chimney.seed * 3.1f;
+			const float cycle = std::floor(clock / life);
+			const float age = clock - cycle * life;
+			const Random4 q = hash44(chimney.seed, static_cast<float>(slot), cycle, 137.0f);
+			const float progress = age / life;
+
+			const float rise = 0.48f * age - 0.018f * age * age;
+			const float drift = 0.04f * age + 0.02f * age * age;
+			const float wobble = 0.08f * std::sin(age * (0.9f + 0.4f * q.y) + q.x * pi2) * progress;
+			const float positionX = chimney.x + (q.x - 0.5f) * 0.08f + 0.94f * drift + wobble;
+			const float positionY = chimney.y - chimney.height + 0.34f * drift - rise;
+			const float radius = 0.13f + 0.32f * progress + 0.04f * q.z;
+			const float fade = smoothstep(0.0f, 0.1f, progress) * (1.0f - smoothstep(0.3f, 1.0f, progress)) * 0.5f * (1.0f - 0.45f * frame.night) * frame.strength;
+			if(fade < 0.004f)
+				continue;
+			const float shade = 0.80f - 0.10f * progress;
+			addQuad(puffVertices, placement, positionX, positionY, radius, 0.0f, 0.0f, radius * 0.85f, 1.9f, 1.9f, KIND_PUFF,
+				{shade * 1.02f, shade, shade * 0.98f, fade});
+		}
+	}
+}
+
+void MapParticles::buildSparkles(const Placement & placement, const Frame & frame)
+{
+	// 宝物闪光：每件宝物各按自己的周期（4~8 秒）闪一下，每次落在物件画面里随机的一点，0.5 秒里亮起又灭，星光略转一点
+	const float t = frame.time;
+	for(const MapSparkle & sparkle : frame.sparkles)
+	{
+		const Random4 r = hash44(sparkle.seed, 151.0f, 31.0f, 7.0f);
+		const float period = 4.0f + 4.0f * r.z;
+		const float clock = t + r.x * period;
+		const float cycle = std::floor(clock / period);
+		const float age = clock - cycle * period;
+		constexpr float flash = 0.6f;
+		if(age > flash)
+			continue;
+		const Random4 q = hash44(sparkle.seed, cycle, 157.0f, 11.0f);
+		const float positionX = sparkle.x + (q.x * 2.0f - 1.0f) * sparkle.halfWidth;
+		const float positionY = sparkle.y + (q.y * 2.0f - 1.0f) * sparkle.halfHeight;
+		const float brightness = std::sin(3.1415927f * age / flash);
+		const float glow = brightness * brightness * frame.strength;
+
+		// 落点在缓存纹理里的坐标（缓存按图块环形存放），片元着色器据此查物件层
+		const float spotU = fract((positionX - static_cast<float>(frame.worldOrigin.x) + static_cast<float>(frame.slotOrigin.x)) / static_cast<float>(frame.slots.x));
+		const float spotV = fract((positionY - static_cast<float>(frame.worldOrigin.y) + static_cast<float>(frame.slotOrigin.y)) / static_cast<float>(frame.slots.y));
+
+		const float angle = 0.25f * (q.z - 0.5f) + 0.5f * age;
+		const float size = (0.24f + 0.10f * q.w) * (0.7f + 0.3f * brightness);
+		addQuad(glowVertices, placement, positionX, positionY, std::cos(angle) * size, std::sin(angle) * size, -std::sin(angle) * size, std::cos(angle) * size,
+			1.0f, 1.0f, KIND_SPARKLE, {spotU, spotV, 0.0f, glow});
+	}
+}
+
 void MapParticles::draw(SDL_Renderer * renderer, const Frame & frame, const std::vector<PresentedRegion> & regions)
 {
 	if(frame.strength <= 0.001f || regions.empty() || frame.slots.x <= 0 || frame.slots.y <= 0 || frame.cacheWidth <= 0.0f)
@@ -854,8 +1055,11 @@ void MapParticles::draw(SDL_Renderer * renderer, const Frame & frame, const std:
 	placement.worldY = static_cast<float>(frame.worldOrigin.y);
 	placement.tilePixels = static_cast<float>(first.target.w) / static_cast<float>(first.source.w) * frame.cacheWidth / static_cast<float>(frame.slots.x);
 
+	updateDust(frame);
+
 	shadowVertices.clear();
 	miasmaVertices.clear();
+	puffVertices.clear();
 	bitVertices.clear();
 	glowVertices.clear();
 	birdVertices.clear();
@@ -876,10 +1080,14 @@ void MapParticles::draw(SDL_Renderer * renderer, const Frame & frame, const std:
 		buildMiasma(placement, frame);
 		buildRain(placement, frame);
 	}
+	// 尘土、炊烟、宝物闪光与物件个数有关（不按图块逐个算），缩小时照画，只随粒子强度淡出
+	buildDust(placement, frame);
+	buildSmoke(placement, frame);
+	buildSparkles(placement, frame);
 
-	// 先画的在下面：鸟影、瘴气、落叶飞花、萤火虫与余烬、飞鸟、雨丝、飘雪
+	// 先画的在下面：鸟影、瘴气、尘土与炊烟、落叶飞花、萤火虫与余烬与宝物闪光、飞鸟、雨丝、飘雪
 	vertices.clear();
-	for(const auto * part : {&shadowVertices, &miasmaVertices, &bitVertices, &glowVertices, &birdVertices, &rainVertices, &snowVertices})
+	for(const auto * part : {&shadowVertices, &miasmaVertices, &puffVertices, &bitVertices, &glowVertices, &birdVertices, &rainVertices, &snowVertices})
 		vertices.insert(vertices.end(), part->begin(), part->end());
 	if(vertices.empty())
 		return;
@@ -910,6 +1118,7 @@ void MapParticles::draw(SDL_Renderer * renderer, const Frame & frame, const std:
 	ParticleUniforms uniforms = {{frame.grade[0], frame.grade[1], frame.grade[2], frame.night}};
 	SDL_SetGPURenderStateFragmentUniforms(state, 0, &uniforms, sizeof(uniforms));
 	SDL_SetGPURenderState(renderer, state);
+	SDL_SetTextureBlendMode(white, frame.blendMode);
 
 	if(!SDL_RenderGeometry(renderer, white, vertices.data(), static_cast<int>(vertices.size()), indices.data(), static_cast<int>(indices.size())))
 		logGlobal->error("Failed to draw map particles: %s", SDL_GetError());
@@ -934,6 +1143,10 @@ void MapParticles::release()
 
 	if(white)
 		SDL_DestroyTexture(white);
+
+	dustPuffs.clear();
+	dustCarry.clear();
+	dustClock = -1.0f;
 
 	state = nullptr;
 	shader = nullptr;

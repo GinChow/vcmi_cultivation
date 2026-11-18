@@ -304,6 +304,9 @@ public:
 	/// 着色器据此算长投影、给物件重新打光，并让雾贴着山脚、峰顶伸出云海
 	void renderRelief(IMapRendererContext & context, Canvas & target, const int3 & coordinates);
 
+	/// 只画一件物件落在图块 coordinates 上的那一块（本体、玩家颜色、旗子，不画阴影）：鼠标悬停时单独画成一张画布描边（2026-11-18）
+	void renderSingleObject(IMapRendererContext & context, Canvas & target, const int3 & coordinates, const CGObjectInstance * object);
+
 	/// 把图块画进风场遮罩（target 须先清成全透明）：按与物件层完全相同的前后顺序，摇摆物件画风场参数图，
 	/// 其余物件画遮挡剪影，阴影不画。着色器据此知道树冠各处能摆多远，以及树从别的物件背后摆出来时谁在前面。
 	/// 图块上没有摇摆物件时什么都不画
@@ -434,6 +437,9 @@ public:
 
 	/// 开关分层特效，见 MapRendererObjects::setLayeredEffects
 	void setLayeredEffects(bool enabled);
+
+	/// 只画一件物件落在图块上的那一块，见 MapRendererObjects::renderSingleObject
+	void renderSingleObject(IMapRendererContext & context, Canvas & target, const int3 & coordinates, const CGObjectInstance * object);
 
 	/// 图块上的雾、云参数，见 MapRendererObjects::atmosphereAt；地图外为 0
 	MapAtmosphere atmosphereAt(IMapRendererContext & context, const int3 & coordinates);

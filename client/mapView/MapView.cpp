@@ -280,6 +280,11 @@ void MapView::onViewMapActivated()
 		controller->setTileSize(Point(32, 32));
 }
 
+void MapView::onObjectHovered(const CGObjectInstance * object, MapHighlight::Tone tone)
+{
+	tilesCache->setHoveredObject(object ? object->id.getNum() : -1, tone);
+}
+
 void MapView::exportScreenshot()
 {
 	const boost::filesystem::path outPath = VCMIDirs::get().userExtractedPath() / "screenshots";

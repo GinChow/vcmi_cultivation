@@ -11,6 +11,7 @@
 #include "MapLayerCompositor.h"
 
 #include "SDL_Extensions.h"
+#include "Canvas.h"
 
 #include "lib/CConfigHandler.h"
 
@@ -55,11 +56,13 @@ struct Params
 	float4 cellMean[32]; // 材质图集每格的平均颜色（rgb）与平均高度（a），按 组 × 4 + 子材质 排
 	float4 night;     // x：天黑的程度；y：局部光显出来多少；z：夜里颜色褪掉多少；w：沙地热浪的强度
 	float4 weather;   // x：大块云影的浓度；y：阵雨开关（0 或 1）
-	float4 lightInfo; // x：这一帧有几盏局部光
+	float4 lightInfo; // x：这一帧有几盏局部光；y：有几对蹄印
 	float4 lightPos[32];   // 局部光：xy 地面位置（地图坐标），z 照多远（图块），w 离地多高（图块）
 	float4 lightColor[32]; // rgb 颜色乘强度（已含闪动），w 夜里空气中辉光的多少
 	float4 lightGrid;      // 局部光分格：xy 第一格左上角的地图坐标，zw 一格多大（图块）
 	uint4 lightCells[64];  // 16 × 16 格，每格一个 32 位掩码：第 i 位为 1 表示第 i 盏灯照得到这一格
+	float4 printBox;       // 蹄印的外接矩形（地图坐标，已留出蹄印的大小）：左、上、右、下
+	float4 prints[64];     // 蹄印：xy 一对蹄印的中点（地图坐标），z 走的方向（弧度），w 浓淡 + 2 × 地面（0 沙地、1 雪地）
 };
 
 struct main0_in
@@ -456,6 +459,73 @@ static inline float rainRipples(float2 world, float t, float rain, float pixel)
 	return result;
 }
 
+// ---- 蹄印（2026-11-18）：英雄在沙地、雪地上走过，留下一对对蹄印，几十秒里慢慢淡去 ----
+// 每对蹄印左右各一个，前后错开半步。蹄印是浅浅的凹坑：朝着太阳的那面坑壁背光、暗，对面的坑壁迎光、略亮，坑沿有一圈被踩出来的土（雪）；
+// 整对蹄印底下还有一片淡淡压暗的“踩乱的地”，一路连成一条看得出来的路（单靠几像素大的蹄印，在有纹理的地面上看不出来，2026-11-18 实机）。
+// 沙地上是偏暖的深色，雪地上是偏蓝的影子。只在蹄印外接矩形里的像素才找，每对蹄印先按距离跳过
+static inline float3 footprints(float3 color, float2 world, constant Params & P)
+{
+	if(any(world < P.printBox.xy) || any(world > P.printBox.zw))
+		return color;
+
+	// 太阳在地面上的方向（地图坐标 y 朝南，屏幕 y 朝上）
+	float2 toSun = float2(P.sun.x, -P.sun.y);
+	toSun = length(toSun) > 1e-3 ? normalize(toSun) : float2(0.0, -1.0);
+
+	float sandDent = 0.0;
+	float snowDent = 0.0;
+	float sandChurn = 0.0;
+	float snowChurn = 0.0;
+	float rim = 0.0;
+	float lit = 0.0;
+	int count = int(P.lightInfo.y);
+	for(int i = 0; i < count; ++i)
+	{
+		float4 fp = P.prints[i];
+		float2 d = world - fp.xy;
+		if(abs(d.x) > 0.32 || abs(d.y) > 0.32)
+			continue;
+		float ground = floor(fp.w * 0.5);
+		float alpha = fp.w - 2.0 * ground;
+		float2 dir = float2(cos(fp.z), sin(fp.z));
+		float2 side = float2(-dir.y, dir.x);
+
+		// 踩乱的地：顺着走向拉长的一片，相邻几对连起来
+		float churn = (1.0 - smoothstep(0.35, 1.0, length(float2(dot(d, dir) / 0.30, dot(d, side) / 0.22)))) * alpha;
+		if(ground < 0.5)
+			sandChurn = max(sandChurn, churn);
+		else
+			snowChurn = max(snowChurn, churn);
+
+		for(int k = 0; k < 2; ++k)
+		{
+			float s = k == 0 ? -1.0 : 1.0;
+			float2 c = d - dir * (0.08 * s) - side * (0.12 * s);
+			// 局部坐标：沿走向半长 0.09、横向半宽 0.065 个图块（比真实的马蹄夸张，原版一个图块才 32 像素）
+			float2 q = float2(dot(c, dir) / 0.09, dot(c, side) / 0.065);
+			float e = length(q);
+			if(e > 1.4)
+				continue;
+			float dent = (1.0 - smoothstep(0.7, 1.0, e)) * alpha;
+			float2 wall = e > 1e-3 ? -(dir * q.x + side * q.y) / e : float2(0.0);
+			// 坑壁朝着太阳的程度：坑里离太阳近的一侧坑壁背光
+			float facing = dot(wall, toSun) * smoothstep(0.3, 0.9, e);
+			if(ground < 0.5)
+				sandDent = max(sandDent, dent * (0.8 - 0.2 * facing));
+			else
+				snowDent = max(snowDent, dent * (0.8 - 0.2 * facing));
+			lit = max(lit, dent * saturate(facing) * 0.5);
+			rim = max(rim, smoothstep(0.9, 1.05, e) * (1.0 - smoothstep(1.05, 1.35, e)) * alpha);
+		}
+	}
+	color *= 1.0 - 0.10 * sandChurn;
+	color = mix(color, color * float3(0.86, 0.90, 0.98), snowChurn * 0.6);
+	color = mix(color, color * float3(0.56, 0.48, 0.40), sandDent * 0.85);
+	color = mix(color, color * float3(0.62, 0.72, 0.92), snowDent * 0.85);
+	color += (rim * 0.06 + lit * 0.05) * float3(1.0, 0.98, 0.94);
+	return color;
+}
+
 // ---- 局部光（2026-11-18）：城镇灯笼、营火、法光、熔岩、英雄火把 ----
 // ground：这一点在地面上的位置（物件表面已按离地高度挪回它脚下），h：离地高度，N：屏幕坐标里的法线。
 // 光按三维距离衰减，按朝向加一点包裹光：朝着光的一面亮，背面也不至于全黑。halo 累加光源周围空气里的辉光。
@@ -534,6 +604,9 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		rain = showerAt(world, t, shape, noiseTex, noiseSmp) * P.weather.y * P.misc.y;
 	}
 	float sunlit = 1.0 - 0.7 * cloudShade;
+
+	// 自发光（2026-11-18）：熔岩裂缝、水面波光、灯火的辉光有多亮，写进输出的 alpha，后处理据此做辉光（见 bloomShaderSource）
+	float emission = 0.0;
 
 	// 热浪（2026-11-18）：沙地正午、岩浆上不论早晚，地面像隔着一层晃动的热空气。只扭地面层（地表、水），
 	// 物件不扭：站在沙漠里的英雄、建筑跟着晃会像画面坏了。地面这一段用扭过的坐标，算完再换回来
@@ -676,6 +749,10 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		varied = mix(varied, color, materialShare);
 		varied = groundVariation(varied, world, t, fieldHere.a * (1.0 - 0.5 * materialShare), noiseTex, noiseSmp);
 		color = mix(color, varied, land);
+
+		// 蹄印：画在地面上，后面叠的物件（英雄自己、树）会盖住它
+		if(P.lightInfo.y > 0.5)
+			color = mix(color, footprints(color, world, P), land);
 	}
 
 	if(wet > 0.003)
@@ -840,6 +917,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		float g = nC.b * 0.6 + nB.a * 0.4;
 		float glint = smoothstep(0.66, 0.82, g) * max(deep, riverShare * 0.8) * (1.0 - 0.8 * cloudShade) * (1.0 - 0.75 * P.night.x);
 		fx += glint * 0.38 * float3(1.0, 0.98, 0.92);
+		emission += glint * 0.9 * saturate(wet);
 
 		// 6. 阵雨（2026-11-18）：雨点打出一圈圈涟漪；下雨处水面略灰暗
 		if(rain > 0.01)
@@ -997,9 +1075,20 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	// 按上面算好的颜色（调色之前）乘光，天越暗越显眼；物件表面按它的离地高度挪回脚下再算距离，朝着光的一面更亮
 	// 正午局部光显出来不到一成、几乎看不出，整段跳过（平滑地淡出，不会一下子灭掉）
 	float lamps = P.night.y * smoothstep(0.08, 0.2, P.night.y) * P.misc.y;
+	float cover = saturate(objects.a);
+
+	// 岩浆地上发红的裂缝：白天也算自发光（辉光不论早晚都有），夜里还照亮自己（见下）
+	float crack = 0.0;
+	float breathe = 1.0;
+	if(weatherField.a > 0.003)
+	{
+		breathe = 0.8 + 0.2 * sin(t * 0.45 + noiseTex.sample(noiseSmp, world * 0.05).r * 6.283);
+		crack = saturate((albedo.r - albedo.b) * 3.0 - 0.6) * smoothstep(0.3, 0.55, albedo.r) * (1.0 - cover) * weatherField.a * P.misc.y;
+		emission += crack * breathe * (0.45 + 0.55 * P.night.x);
+	}
+
 	if(lamps > 0.001)
 	{
-		float cover = saturate(objects.a);
 		float h = surface.height * cover;
 		float3 N = normalize(mix(groundN, surface.normal, cover));
 		float3 halo = float3(0.0);
@@ -1008,22 +1097,24 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		if(weatherField.a > 0.003)
 		{
 			// 熔岩：暗红的光漫到旁边的地面和物件上；岩浆地上发红的裂缝自己发光，天黑也不暗下去（一整片都照亮会成一片粉红，2026-11-18 实机）
-			float breathe = 0.8 + 0.2 * sin(t * 0.45 + noiseTex.sample(noiseSmp, world * 0.05).r * 6.283);
 			light += float3(1.0, 0.32, 0.08) * (weatherField.a * breathe * 0.4);
-			float crack = saturate((albedo.r - albedo.b) * 3.0 - 0.6) * smoothstep(0.3, 0.55, albedo.r) * (1.0 - cover);
-			glow = albedo * float3(1.0, 0.7, 0.5) * (crack * weatherField.a * breathe * 1.3);
+			glow = albedo * float3(1.0, 0.7, 0.5) * (crack * breathe * 1.3);
 		}
 		// 亮色（雪、白墙）加光后很快冲白：按底色亮度收一些
 		color += albedo * light * lamps / (1.0 + 0.6 * lum * dot(light, float3(0.33)));
 		color += glow * lamps;
-		color += halo * (P.night.x * 0.45 * P.misc.y);
+		float3 haloLight = halo * (P.night.x * 0.45 * P.misc.y);
+		color += haloLight;
+		// 灯火的辉光：光源近处才亮，后处理再把它晕开
+		emission += saturate(dot(haloLight, float3(0.4)) * 1.6);
 	}
 
 
-	// 植被粒子（MapParticles）和覆盖层（迷雾、路径）在这一遍之后另外画上去，粒子才能夹在物件和迷雾之间
+	// 植被粒子（MapParticles）和覆盖层（迷雾、路径）在这一遍之后另外画上去，粒子才能夹在物件和迷雾之间。
+	// alpha 是自发光的程度：这一遍直接覆盖（不混合），画进离屏图后由后处理取出来做辉光；直接画到窗口上时 alpha 用不到
 
 	main0_out out;
-	out.color = float4(color, 1.0) * in.color;
+	out.color = float4(color, saturate(emission)) * in.color;
 	return out;
 }
 )MSL";
@@ -1364,6 +1455,217 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 }
 )FOGMSL";
 
+/// 辉光（2026-11-18）：第四个片元着色器，两种用法（Params.texel.z）。
+///   0：从地图离屏图里取自发光缩成 1/4。主着色器把熔岩裂缝、水面波光、灯火辉光的自发光程度写在 alpha 里，粒子、云雾画进离屏图时
+///      只会把它压低（云遮住熔岩就不再发光），所以这里取 颜色 × alpha。四个双线性取样各平均 2 × 2，合起来是 4 × 4 的平均。
+///   1：把 1/4 图模糊缩成 1/16：4 × 4 个双线性取样、间隔 2 个像素、按 1:3:3:1 加权，约是 8 × 8 像素的高斯模糊。
+/// 输出不透明，按覆盖画进辉光图。
+const char * const bloomShaderSource = R"BLOOMMSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct Params
+{
+	float4 texel; // xy：源纹理一个像素在纹理坐标里多大；z：0 取自发光、1 模糊
+};
+
+struct main0_in
+{
+	float4 color [[user(locn0)]];
+	float2 uv [[user(locn1)]];
+};
+
+struct main0_out
+{
+	float4 color [[color(0)]];
+};
+
+fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(0)]],
+	texture2d<float> mainTex [[texture(0)]], sampler mainSmp [[sampler(0)]])
+{
+	float2 px = P.texel.xy;
+	float3 sum = float3(0.0);
+	if(P.texel.z < 0.5)
+	{
+		for(int k = 0; k < 4; ++k)
+		{
+			float2 o = float2((k & 1) != 0 ? 1.0 : -1.0, (k & 2) != 0 ? 1.0 : -1.0);
+			float4 c = mainTex.sample(mainSmp, in.uv + o * px);
+			sum += c.rgb * c.a;
+		}
+		sum *= 0.25;
+	}
+	else
+	{
+		const float weight[4] = {1.0, 3.0, 3.0, 1.0};
+		for(int j = 0; j < 4; ++j)
+			for(int i = 0; i < 4; ++i)
+				sum += mainTex.sample(mainSmp, in.uv + float2(float(i) * 2.0 - 3.0, float(j) * 2.0 - 3.0) * px).rgb * (weight[i] * weight[j]);
+		sum *= 1.0 / 64.0;
+	}
+	main0_out out;
+	out.color = float4(sum, 1.0);
+	return out;
+}
+)BLOOMMSL";
+
+/// 后处理（2026-11-18）：第五个片元着色器，把地图离屏图画到窗口上，只画地图所在的矩形。
+///   1. 辉光：1/4 图（四点帐篷，紧贴光源）加 1/16 图（晕得很开），亮处加得少，免得冲成一片白。
+///   2. 统一色调：往水墨的设色拉——越艳的颜色收得越多（原版像素风的宝箱、资源金黄大红最艳，只能缓解），暗处偏墨青、亮处偏纸暖，
+///      黑位抬成墨色、高光收成纸白（墨不会黑到发死，纸也不是纯白）。
+///   3. 宣纸：纸浆厚薄不匀的云状斑、斜着的细长纤维，跟着地图走（与云雾的纸纹同一套地图坐标，滚动时纸不滑），亮处看得出纸、浓墨处盖住；
+///      缩得很小时纤维小于一个像素，淡出免得闪。
+///   4. 暗角：四角轻轻压暗、偏一点墨褐。
+///   5. 边缘墨晕：地图边上一圈淡墨，像画到纸边时墨洇开——宽窄不匀（固定在屏幕上），里侧有一道墨聚起来的水渍边。
+/// 取样：离屏图 1 次、辉光图 8 次（小纹理）、噪声 6 次。
+const char * const postShaderSource = R"POSTMSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct Params
+{
+	float4 frame;  // xy：离屏图尺寸（像素）；zw：1/4 辉光图尺寸
+	float4 bounds; // 地图视图露出来的矩形（离屏图像素）：左、上、宽、高
+	float4 map;    // xy：可见窗口左上角图块的左上角在离屏图上的位置（像素）；z：一个图块多少像素；w：1/16 辉光图宽
+	float4 world;  // xy：该图块的地图坐标；z：1/16 辉光图高；w：天黑的程度
+	float4 tune;   // x：辉光强度；y：调色强度；z：宣纸纹理强度；w：暗角与墨晕强度
+};
+
+struct main0_in
+{
+	float4 color [[user(locn0)]];
+	float2 uv [[user(locn1)]];
+};
+
+struct main0_out
+{
+	float4 color [[color(0)]];
+};
+
+static inline float3 tent(texture2d<float> tex, sampler smp, float2 uv, float2 step)
+{
+	return 0.25 * (tex.sample(smp, uv + step * float2(-1.0, -1.0)).rgb
+		+ tex.sample(smp, uv + step * float2(1.0, -1.0)).rgb
+		+ tex.sample(smp, uv + step * float2(-1.0, 1.0)).rgb
+		+ tex.sample(smp, uv + step * float2(1.0, 1.0)).rgb);
+}
+
+fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(0)]],
+	texture2d<float> frameTex [[texture(0)]], sampler frameSmp [[sampler(0)]],
+	texture2d<float> nearTex [[texture(1)]], sampler nearSmp [[sampler(1)]],
+	texture2d<float> farTex [[texture(2)]], sampler farSmp [[sampler(2)]],
+	texture2d<float> noiseTex [[texture(3)]], sampler noiseSmp [[sampler(3)]])
+{
+	float2 uv = in.uv;
+	float2 pixel = uv * P.frame.xy;
+	float3 color = frameTex.sample(frameSmp, uv).rgb;
+	float night = P.world.w;
+
+	// 1. 辉光
+	float3 nearGlow = tent(nearTex, nearSmp, uv, 1.0 / P.frame.zw);
+	float3 farGlow = tent(farTex, farSmp, uv, 0.75 / float2(P.map.w, P.world.z));
+	float3 bloom = (nearGlow * 0.8 + farGlow * 1.4) * P.tune.x;
+	color += bloom * (1.0 - 0.5 * saturate(color));
+
+	// 2. 统一色调
+	float g = P.tune.y;
+	float lum = dot(color, float3(0.299, 0.587, 0.114));
+	float hi = max(color.r, max(color.g, color.b));
+	float lo = min(color.r, min(color.g, color.b));
+	float sat = (hi - lo) / max(hi, 1e-3);
+	color = mix(float3(lum), color, 1.0 - g * (0.08 + 0.30 * smoothstep(0.35, 0.9, sat)));
+	float3 tint = mix(float3(0.95, 0.975, 1.02), float3(1.025, 1.0, 0.95), smoothstep(0.12, 0.7, lum));
+	color *= mix(float3(1.0), tint, g);
+	float3 inkFloor = float3(0.05, 0.05, 0.06) * (1.0 - 0.6 * night);
+	const float3 paperTop = float3(0.97, 0.95, 0.905);
+	color = mix(color, inkFloor + color * (paperTop - inkFloor), g);
+
+	// 3. 宣纸（噪声的 R、G 通道一团约 1/12 纹理宽，B、A 约 1/36）
+	float2 world = P.world.xy + (pixel - P.map.xy) / max(P.map.z, 1e-3);
+	float detail = smoothstep(12.0, 26.0, P.map.z);
+	float pulp = noiseTex.sample(noiseSmp, world * 0.13 + float2(0.31, 0.77)).r * 0.65
+		+ noiseTex.sample(noiseSmp, world * 0.37 + float2(0.63, 0.12)).g * 0.35;
+	float2 r1 = float2(dot(world, float2(0.94, 0.34)), dot(world, float2(-0.34, 0.94)));
+	float2 r2 = float2(dot(world, float2(0.50, -0.87)), dot(world, float2(0.87, 0.50)));
+	float f1 = noiseTex.sample(noiseSmp, r1 * float2(0.024, 0.42) + float2(0.17, 0.41)).b;
+	float f2 = noiseTex.sample(noiseSmp, r2 * float2(0.030, 0.50) + float2(0.52, 0.86)).a;
+	float fibers = (smoothstep(0.64, 0.80, f1) * 0.6 + smoothstep(0.66, 0.82, f2) * 0.4) * detail;
+	float paperShow = mix(0.35, 1.0, smoothstep(0.15, 0.7, lum)) * P.tune.z;
+	color *= 1.0 + (pulp - 0.5) * 0.08 * paperShow;
+	color = mix(color, color * 0.94 + float3(0.04, 0.038, 0.034) * (1.0 - 0.7 * night), fibers * 0.7 * paperShow);
+
+	// 4. 暗角
+	float2 q = (pixel - P.bounds.xy) / max(P.bounds.zw, float2(1.0));
+	float vignette = smoothstep(0.7, 1.5, length((q - 0.5) * float2(2.0, 1.85))) * P.tune.w;
+	color = mix(color, color * float3(0.78, 0.74, 0.70), vignette * 0.55);
+
+	// 5. 边缘墨晕：宽度按地图区域大小缩放（800 像素高时约 28 像素），起伏固定在屏幕上
+	float edge = min(min(pixel.x - P.bounds.x, P.bounds.x + P.bounds.z - pixel.x), min(pixel.y - P.bounds.y, P.bounds.y + P.bounds.w - pixel.y));
+	float scale = max(min(P.bounds.z, P.bounds.w) / 800.0, 0.25);
+	float2 sp = pixel / scale;
+	float ragged = (noiseTex.sample(noiseSmp, sp * (1.0 / 1400.0)).r - 0.5) * 26.0
+		+ (noiseTex.sample(noiseSmp, sp * (1.0 / 420.0) + float2(0.37, 0.61)).b - 0.5) * 9.0;
+	float reach = max((28.0 + ragged) * scale, 2.0);
+	float wash = 1.0 - smoothstep(0.0, reach, edge);
+	float ring = (edge - reach) / (2.0 * scale);
+	float pool = exp(-ring * ring) * 0.6;
+	float bleed = saturate((wash * wash * 0.55 + pool * 0.16) * P.tune.w);
+	color = mix(color, float3(0.17, 0.16, 0.15) * (1.0 - 0.5 * night) + color * 0.25, bleed);
+
+	main0_out out;
+	out.color = float4(saturate(color), 1.0);
+	return out;
+}
+)POSTMSL";
+
+/// 悬停描边（2026-11-18）：第六个片元着色器。主纹理是地图缓存单独画出的悬停物件（透明底），四边形比物件大出一圈。
+/// 在两个半径上各取一圈 12 个点：内圈取最大值，减去本点的覆盖度就是一道贴着轮廓的细边；外圈取平均，成一层往外淡开的光晕。
+/// 输出预乘颜色，alpha 只给一部分，光晕就带点加色的亮。
+const char * const highlightShaderSource = R"HIGHLIGHTMSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct Params
+{
+	float4 texel; // xy：画布一个像素在纹理坐标里多大；z：细边的半径（像素）；w：光晕的半径（像素）
+	float4 tone;  // rgb：描边颜色；a：强度（含淡入和一明一暗）
+};
+
+struct main0_in
+{
+	float4 color [[user(locn0)]];
+	float2 uv [[user(locn1)]];
+};
+
+struct main0_out
+{
+	float4 color [[color(0)]];
+};
+
+fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(0)]],
+	texture2d<float> mainTex [[texture(0)]], sampler mainSmp [[sampler(0)]])
+{
+	float a0 = mainTex.sample(mainSmp, in.uv).a;
+	float inner = 0.0;
+	float outer = 0.0;
+	for(int k = 0; k < 12; ++k)
+	{
+		float angle = float(k) * (6.2831853 / 12.0);
+		float2 dir = float2(cos(angle), sin(angle)) * P.texel.xy;
+		inner = max(inner, mainTex.sample(mainSmp, in.uv + dir * P.texel.z).a);
+		outer += mainTex.sample(mainSmp, in.uv + dir * P.texel.w).a;
+	}
+	outer *= 1.0 / 12.0;
+	float line = saturate((inner - a0) * 1.4);
+	float glow = saturate(outer * 1.6 - a0) * (1.0 - line);
+	float alpha = saturate(line * 0.9 + glow * 0.35) * P.tone.a;
+
+	main0_out out;
+	out.color = float4(P.tone.rgb * alpha, alpha * 0.65);
+	return out;
+}
+)HIGHLIGHTMSL";
+
 /// 与着色器里 Params 一一对应，每项 16 字节对齐
 struct MapUniforms
 {
@@ -1387,6 +1689,8 @@ struct MapUniforms
 	float lightColor[MapLayerCompositor::maxLights][4];
 	float lightGrid[4];
 	uint32_t lightCells[MapLayerCompositor::lightGridSize * MapLayerCompositor::lightGridSize];
+	float printBox[4];
+	float prints[MapLayerCompositor::maxFootprints][4];
 };
 
 /// 与长投影预处理着色器的 Params 一一对应
@@ -1409,6 +1713,42 @@ struct FogUniforms
 
 /// 云雾着色器：主纹理（覆盖层）加云雾场、噪声
 constexpr Uint32 fogSamplerCount = 3;
+
+/// 与辉光着色器的 Params 一一对应
+struct BloomUniforms
+{
+	float texel[4];
+};
+
+/// 与后处理着色器的 Params 一一对应
+struct PostUniforms
+{
+	float frame[4];
+	float bounds[4];
+	float map[4];
+	float world[4];
+	float tune[4];
+};
+
+/// 与悬停描边着色器的 Params 一一对应
+struct HighlightUniforms
+{
+	float texel[4];
+	float tone[4];
+};
+
+/// 后处理着色器：主纹理（离屏图）加两级辉光图、噪声
+constexpr Uint32 postSamplerCount = 4;
+
+/// 后处理的强度（2026-11-18 初版，实机调）：辉光、统一色调、宣纸纹理、暗角与边缘墨晕
+constexpr float bloomStrength = 1.0f;
+constexpr float gradeStrength = 0.85f;
+constexpr float paperStrength = 1.0f;
+constexpr float frameStrength = 1.0f;
+
+/// 悬停描边在画布上的半径（原版像素）：细边、光晕。地图缓存给画布四周留的边要比光晕宽
+constexpr float highlightLineRadius = 1.5f;
+constexpr float highlightGlowRadius = 4.0f;
 
 /// 着色器声明的取样器数：SDL 的主纹理加本类绑定的十四张（含离岸距离图、摇摆层、风场遮罩、起伏层、光照图、
 /// 地形分布层、材质图集、地形场）。Metal 每个阶段最多 16 个取样器，离岸距离图因此兼存雾云场，没有另占一个
@@ -1592,6 +1932,20 @@ bool MapLayerCompositor::ensureShaderResources(SDL_Renderer * renderer)
 		fogField.texture = nullptr;
 		fogField.dirty = true;
 		fogBoundTextures = {};
+		frameTexture = nullptr;
+		frameSize = Point();
+		frameLogicalSize = Point();
+		bloomLevels = {};
+		bloomShader = nullptr;
+		postShader = nullptr;
+		highlightShader = nullptr;
+		extractState = nullptr;
+		blurState = nullptr;
+		postState = nullptr;
+		highlightState = nullptr;
+		postBoundTextures = {};
+		framePrepared = false;
+		postUnavailable = false;
 		shaderUnavailable = false;
 		owner = renderer;
 	}
@@ -1951,8 +2305,9 @@ void MapLayerCompositor::renderLightMap(SDL_Renderer * renderer, const Inputs & 
 	SDL_SetGPURenderState(renderer, nullptr);
 }
 
-void MapLayerCompositor::prepare(SDL_Renderer * renderer, const Inputs & inputs)
+void MapLayerCompositor::prepare(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions)
 {
+	framePrepared = false;
 	if(!inputs.waterMask || !ensureShaderResources(renderer) || !ensureMaskLevels(renderer, inputs.waterMask))
 		return;
 
@@ -1974,8 +2329,328 @@ void MapLayerCompositor::prepare(SDL_Renderer * renderer, const Inputs & inputs)
 
 	renderLightMap(renderer, inputs);
 
+	// 离屏图的像素数与窗口上逻辑画面实际占的像素相同，坐标仍用窗口的逻辑坐标（离屏图设同样的逻辑分辨率）。
+	// 不能按逻辑尺寸建：逻辑尺寸含界面放大倍数（如 xbrz3 时 3081 × 1803），比窗口实际的像素多好几倍，
+	// 合成着色器跟着多算好几倍，帧率从 119 掉到 64（2026-11-18 实测，M1 Pro）。要在切走渲染目标之前问
+	SDL_SetRenderTarget(renderer, previousTarget);
+	int logicalWidth = 0;
+	int logicalHeight = 0;
+	SDL_RendererLogicalPresentation presentation = SDL_LOGICAL_PRESENTATION_DISABLED;
+	SDL_GetRenderLogicalPresentation(renderer, &logicalWidth, &logicalHeight, &presentation);
+	SDL_FRect presented = {0.0f, 0.0f, 0.0f, 0.0f};
+	SDL_GetRenderLogicalPresentationRect(renderer, &presented);
+	if(logicalWidth <= 0 || logicalHeight <= 0)
+	{
+		SDL_GetCurrentRenderOutputSize(renderer, &logicalWidth, &logicalHeight);
+		presented.w = static_cast<float>(logicalWidth);
+		presented.h = static_cast<float>(logicalHeight);
+	}
+	const Point pixels(std::max(1, static_cast<int>(std::lround(presented.w))), std::max(1, static_cast<int>(std::lround(presented.h))));
+
+	if(!regions.empty() && ensurePostResources(renderer, pixels, Point(logicalWidth, logicalHeight)))
+		renderFrame(renderer, inputs, regions);
 
 	SDL_SetRenderTarget(renderer, previousTarget);
+}
+
+bool MapLayerCompositor::shaderReady(SDL_Renderer * renderer, const Inputs & inputs)
+{
+	return ensureShaderResources(renderer) && maskLevels.back() && maskLevelsSourceSize.x > 0 && lightMap
+		&& ensureFieldTexture(renderer, depthField, {128, 0, 0, 255}, "sea depth")
+		&& ensureFieldTexture(renderer, terrainField, {255, 0, 0, 0}, "terrain")
+		&& ensureMaterialAtlas(renderer)
+		&& inputs.splat
+		&& ensureRenderState(renderer, inputs);
+}
+
+void MapLayerCompositor::destroyPostTargets()
+{
+	if(frameTexture)
+		SDL_DestroyTexture(frameTexture);
+	frameTexture = nullptr;
+	for(SDL_Texture *& level : bloomLevels)
+	{
+		if(level)
+			SDL_DestroyTexture(level);
+		level = nullptr;
+	}
+	frameSize = Point();
+	frameLogicalSize = Point();
+	framePrepared = false;
+}
+
+bool MapLayerCompositor::ensurePostResources(SDL_Renderer * renderer, const Point & size, const Point & logicalSize)
+{
+	if(postUnavailable || shaderUnavailable || size.x <= 0 || size.y <= 0 || logicalSize.x <= 0 || logicalSize.y <= 0)
+		return false;
+
+	if(!bloomShader || !postShader || !highlightShader || !extractState || !blurState || !highlightState)
+	{
+		SDL_GPUDevice * device = deviceOf(renderer);
+
+		SDL_GPUShaderCreateInfo shaderInfo;
+		SDL_zero(shaderInfo);
+		shaderInfo.entrypoint = "main0";
+		shaderInfo.format = SDL_GPU_SHADERFORMAT_MSL;
+		shaderInfo.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+		shaderInfo.num_uniform_buffers = 1;
+
+		shaderInfo.code = reinterpret_cast<const Uint8 *>(bloomShaderSource);
+		shaderInfo.code_size = std::strlen(bloomShaderSource);
+		shaderInfo.num_samplers = 1;
+		bloomShader = SDL_CreateGPUShader(device, &shaderInfo);
+
+		shaderInfo.code = reinterpret_cast<const Uint8 *>(postShaderSource);
+		shaderInfo.code_size = std::strlen(postShaderSource);
+		shaderInfo.num_samplers = postSamplerCount;
+		postShader = SDL_CreateGPUShader(device, &shaderInfo);
+
+		shaderInfo.code = reinterpret_cast<const Uint8 *>(highlightShaderSource);
+		shaderInfo.code_size = std::strlen(highlightShaderSource);
+		shaderInfo.num_samplers = 1;
+		highlightShader = SDL_CreateGPUShader(device, &shaderInfo);
+
+		// 取自发光、模糊、描边只用 SDL 自己绑的主纹理，渲染状态建一次就够
+		SDL_GPURenderStateCreateInfo stateInfo;
+		SDL_zero(stateInfo);
+		if(bloomShader)
+		{
+			stateInfo.fragment_shader = bloomShader;
+			extractState = SDL_CreateGPURenderState(renderer, &stateInfo);
+			blurState = SDL_CreateGPURenderState(renderer, &stateInfo);
+		}
+		if(highlightShader)
+		{
+			stateInfo.fragment_shader = highlightShader;
+			highlightState = SDL_CreateGPURenderState(renderer, &stateInfo);
+		}
+
+		// 颜色照常按预乘 alpha 叠；alpha（自发光）只乘上 1 − 源 alpha：被粒子、云遮住多少就暗多少，不会因此发光
+		emissionKeepingBlend = SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD,
+			SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD);
+
+		if(!bloomShader || !postShader || !highlightShader || !extractState || !blurState || !highlightState)
+		{
+			logGlobal->error("Failed to set up the map post-processing shaders: %s - drawing the map without bloom and paper", SDL_GetError());
+			postUnavailable = true;
+			return false;
+		}
+	}
+
+	if(!frameTexture || frameSize != size || frameLogicalSize != logicalSize)
+	{
+		destroyPostTargets();
+		const Point nearSize((size.x + 3) / 4, (size.y + 3) / 4);
+		const Point farSize((nearSize.x + 3) / 4, (nearSize.y + 3) / 4);
+		frameTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, size.x, size.y);
+		bloomLevels[0] = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, nearSize.x, nearSize.y);
+		bloomLevels[1] = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, farSize.x, farSize.y);
+		if(!frameTexture || !bloomLevels[0] || !bloomLevels[1])
+		{
+			logGlobal->error("Failed to create the %dx%d map frame for post-processing: %s - drawing the map without it", size.x, size.y, SDL_GetError());
+			destroyPostTargets();
+			postUnavailable = true;
+			return false;
+		}
+		for(SDL_Texture * texture : {frameTexture, bloomLevels[0], bloomLevels[1]})
+		{
+			SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_LINEAR);
+			SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE);
+		}
+		frameSize = size;
+		frameLogicalSize = logicalSize;
+		logGlobal->info("Map post-processing frame ready (%dx%d pixels for %dx%d logical)", size.x, size.y, logicalSize.x, logicalSize.y);
+	}
+
+	const std::array<SDL_Texture *, 3> wanted = {bloomLevels[0], bloomLevels[1], noise};
+	if(postState && postBoundTextures == wanted)
+		return true;
+
+	if(postState)
+		SDL_DestroyGPURenderState(postState);
+	postState = nullptr;
+	postBoundTextures = {};
+
+	// 顺序与后处理着色器的 texture(1)~texture(3) 对应：两级辉光图不环绕，噪声可平铺
+	std::array<SDL_GPUTextureSamplerBinding, postSamplerCount - 1> bindings = {};
+	for(size_t i = 0; i < wanted.size(); ++i)
+	{
+		bindings[i].texture = gpuTextureOf(wanted[i]);
+		bindings[i].sampler = wanted[i] == noise ? sampler : clampSampler;
+		if(!bindings[i].texture || !bindings[i].sampler)
+			return false;
+	}
+
+	SDL_GPURenderStateCreateInfo stateInfo;
+	SDL_zero(stateInfo);
+	stateInfo.fragment_shader = postShader;
+	stateInfo.num_sampler_bindings = static_cast<Sint32>(bindings.size());
+	stateInfo.sampler_bindings = bindings.data();
+	postState = SDL_CreateGPURenderState(renderer, &stateInfo);
+	if(!postState)
+	{
+		logGlobal->error("Failed to create the map post-processing render state: %s - drawing the map without it", SDL_GetError());
+		postUnavailable = true;
+		return false;
+	}
+	postBoundTextures = wanted;
+	return true;
+}
+
+void MapLayerCompositor::renderFrame(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions)
+{
+	if(!shaderReady(renderer, inputs))
+		return;
+
+	Rect bounds = regions.front().target;
+	for(const PresentedRegion & region : regions)
+		bounds = bounds.include(region.target);
+	bounds = bounds.intersect(Rect(Point(0, 0), frameLogicalSize));
+	if(bounds.w <= 0 || bounds.h <= 0)
+		return;
+	frameBounds = bounds;
+	frameView = inputs.viewArea.w > 0 && inputs.viewArea.h > 0 ? inputs.viewArea.intersect(bounds) : bounds;
+	if(frameView.w <= 0 || frameView.h <= 0)
+		frameView = bounds;
+
+	// 1. 整幅地图画进离屏图：地面与物件（alpha 是自发光）、粒子、悬停描边、云雾与覆盖层
+	SDL_SetRenderTarget(renderer, frameTexture);
+	// 每个渲染目标有自己的逻辑分辨率：与窗口相同，地图照旧按窗口的逻辑坐标画（含粒子的裁剪、视口）
+	SDL_SetRenderLogicalPresentation(renderer, frameLogicalSize.x, frameLogicalSize.y, SDL_LOGICAL_PRESENTATION_STRETCH);
+	SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+	SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
+	SDL_RenderClear(renderer);
+
+	composeWithShader(renderer, inputs, regions, emissionKeepingBlend);
+	drawHighlight(renderer, inputs, regions);
+	drawOverlay(renderer, inputs, regions, emissionKeepingBlend);
+
+	// 2. 取自发光缩成 1/4，再模糊缩成 1/16。虽然整张都会被覆盖，仍要先清：清过的目标 SDL 可以换一块新纹理来画；
+	//    不清就只能接着上一帧那块画，得等上一帧画到窗口时读完它才能开画，每帧都和显示同步卡一下，帧率减半（2026-11-18 实测 120 → 64）
+	float nearWidth = 0;
+	float nearHeight = 0;
+	SDL_GetTextureSize(bloomLevels[0], &nearWidth, &nearHeight);
+
+	SDL_SetTextureBlendMode(frameTexture, SDL_BLENDMODE_NONE);
+	const BloomUniforms extract = {{1.0f / static_cast<float>(frameSize.x), 1.0f / static_cast<float>(frameSize.y), 0.0f, 0.0f}};
+	SDL_SetRenderTarget(renderer, bloomLevels[0]);
+	SDL_RenderClear(renderer);
+	SDL_SetGPURenderStateFragmentUniforms(extractState, 0, &extract, sizeof(extract));
+	SDL_SetGPURenderState(renderer, extractState);
+	SDL_RenderTexture(renderer, frameTexture, nullptr, nullptr);
+	SDL_SetGPURenderState(renderer, nullptr);
+
+	const BloomUniforms blur = {{1.0f / nearWidth, 1.0f / nearHeight, 1.0f, 0.0f}};
+	SDL_SetRenderTarget(renderer, bloomLevels[1]);
+	SDL_RenderClear(renderer);
+	SDL_SetGPURenderStateFragmentUniforms(blurState, 0, &blur, sizeof(blur));
+	SDL_SetGPURenderState(renderer, blurState);
+	SDL_RenderTexture(renderer, bloomLevels[0], nullptr, nullptr);
+	SDL_SetGPURenderState(renderer, nullptr);
+
+	framePrepared = true;
+}
+
+void MapLayerCompositor::drawPost(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions)
+{
+	float cacheWidth = 0;
+	float cacheHeight = 0;
+	SDL_GetTextureSize(inputs.ground, &cacheWidth, &cacheHeight);
+	float nearWidth = 0;
+	float nearHeight = 0;
+	SDL_GetTextureSize(bloomLevels[0], &nearWidth, &nearHeight);
+	float farWidth = 0;
+	float farHeight = 0;
+	SDL_GetTextureSize(bloomLevels[1], &farWidth, &farHeight);
+
+	PostUniforms uniforms = {};
+	uniforms.frame[0] = static_cast<float>(frameSize.x);
+	uniforms.frame[1] = static_cast<float>(frameSize.y);
+	uniforms.frame[2] = nearWidth;
+	uniforms.frame[3] = nearHeight;
+	// 区域、视图矩形都在窗口的逻辑坐标里，着色器按离屏图的像素算
+	const float scaleX = static_cast<float>(frameSize.x) / static_cast<float>(frameLogicalSize.x);
+	const float scaleY = static_cast<float>(frameSize.y) / static_cast<float>(frameLogicalSize.y);
+	uniforms.bounds[0] = static_cast<float>(frameView.x) * scaleX;
+	uniforms.bounds[1] = static_cast<float>(frameView.y) * scaleY;
+	uniforms.bounds[2] = static_cast<float>(frameView.w) * scaleX;
+	uniforms.bounds[3] = static_cast<float>(frameView.h) * scaleY;
+	// 地图坐标到离屏图：第一块区域就是可见窗口左上角图块起的那一片（与 MapParticles 的换算相同）
+	uniforms.map[0] = static_cast<float>(regions.front().target.x) * scaleX;
+	uniforms.map[1] = static_cast<float>(regions.front().target.y) * scaleY;
+	uniforms.map[2] = tilePixelsOnScreen(inputs, regions, cacheWidth) * scaleX;
+	uniforms.map[3] = farWidth;
+	uniforms.world[0] = static_cast<float>(inputs.worldOrigin.x);
+	uniforms.world[1] = static_cast<float>(inputs.worldOrigin.y);
+	uniforms.world[2] = farHeight;
+	uniforms.world[3] = sun.night;
+	uniforms.tune[0] = bloomStrength;
+	uniforms.tune[1] = gradeStrength;
+	uniforms.tune[2] = paperStrength;
+	uniforms.tune[3] = frameStrength;
+
+	SDL_SetTextureBlendMode(frameTexture, SDL_BLENDMODE_NONE);
+	SDL_SetGPURenderStateFragmentUniforms(postState, 0, &uniforms, sizeof(uniforms));
+	SDL_SetGPURenderState(renderer, postState);
+	const SDL_FRect to = CSDL_Ext::toSDLFloat(frameBounds);
+	const SDL_FRect from = {to.x * scaleX, to.y * scaleY, to.w * scaleX, to.h * scaleY};
+	if(!SDL_RenderTexture(renderer, frameTexture, &from, &to))
+		logGlobal->error("Failed to draw the post-processed map: %s", SDL_GetError());
+	SDL_SetGPURenderState(renderer, nullptr);
+}
+
+void MapLayerCompositor::drawHighlight(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions)
+{
+	const MapHighlight & highlight = effects.highlight;
+	if(!highlight.canvas || highlight.strength <= 0.001f || highlight.width <= 0.0f || highlight.height <= 0.0f || regions.empty())
+		return;
+	SDL_Texture * texture = highlight.canvas->getRenderTargetTexture();
+	if(!texture)
+		return;
+
+	float cacheWidth = 0;
+	float cacheHeight = 0;
+	SDL_GetTextureSize(inputs.ground, &cacheWidth, &cacheHeight);
+	const float tilePixels = tilePixelsOnScreen(inputs, regions, cacheWidth);
+	const PresentedRegion & first = regions.front();
+
+	SDL_FRect to;
+	to.x = static_cast<float>(first.target.x) + (highlight.x - static_cast<float>(inputs.worldOrigin.x)) * tilePixels;
+	to.y = static_cast<float>(first.target.y) + (highlight.y - static_cast<float>(inputs.worldOrigin.y)) * tilePixels;
+	to.w = highlight.width * tilePixels;
+	to.h = highlight.height * tilePixels;
+
+	float textureWidth = 0;
+	float textureHeight = 0;
+	SDL_GetTextureSize(texture, &textureWidth, &textureHeight);
+	// 画布按原版像素画（一个图块 32 像素），纹理可能按界面缩放倍数放大过
+	const float texelsPerPixel = textureWidth / (highlight.width * 32.0f);
+
+	// 自己的偏青（玉色）、中立的宝物建筑偏金、敌人朱砂，慢慢一明一暗
+	std::array<float, 3> tone = {1.0f, 0.84f, 0.50f};
+	if(highlight.tone == MapHighlight::Tone::OWN)
+		tone = {0.56f, 0.92f, 0.80f};
+	else if(highlight.tone == MapHighlight::Tone::ENEMY)
+		tone = {0.96f, 0.38f, 0.26f};
+	const float pulse = 0.82f + 0.18f * std::sin(shaderTime() * 3.2f);
+
+	HighlightUniforms uniforms = {};
+	uniforms.texel[0] = 1.0f / textureWidth;
+	uniforms.texel[1] = 1.0f / textureHeight;
+	uniforms.texel[2] = highlightLineRadius * texelsPerPixel;
+	uniforms.texel[3] = highlightGlowRadius * texelsPerPixel;
+	uniforms.tone[0] = tone[0];
+	uniforms.tone[1] = tone[1];
+	uniforms.tone[2] = tone[2];
+	uniforms.tone[3] = std::clamp(highlight.strength, 0.0f, 1.0f) * pulse;
+
+	SDL_SetTextureBlendMode(texture, emissionKeepingBlend);
+	SDL_SetTextureScaleMode(texture, SDL_SCALEMODE_LINEAR);
+	SDL_SetGPURenderStateFragmentUniforms(highlightState, 0, &uniforms, sizeof(uniforms));
+	SDL_SetGPURenderState(renderer, highlightState);
+	if(!SDL_RenderTexture(renderer, texture, nullptr, &to))
+		logGlobal->error("Failed to draw the map highlight: %s", SDL_GetError());
+	SDL_SetGPURenderState(renderer, nullptr);
 }
 
 void MapLayerCompositor::setDepthField(const std::vector<uint8_t> & distances, const Point & size)
@@ -2008,9 +2683,9 @@ void MapLayerCompositor::setDayProgress(int day, std::optional<float> progress)
 		dayProgressMax = std::max(dayProgressMax, *progress);
 }
 
-void MapLayerCompositor::setLights(const std::vector<MapLight> & newLights)
+void MapLayerCompositor::setObjectEffects(const MapObjectEffects & newEffects)
 {
-	lights = newLights;
+	effects = newEffects;
 }
 
 void MapLayerCompositor::setTerrainMaterials(const std::vector<uint8_t> & png)
@@ -2244,20 +2919,22 @@ bool MapLayerCompositor::ensureRenderState(SDL_Renderer * renderer, const Inputs
 
 void MapLayerCompositor::compose(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions, int scaleMode)
 {
-	const bool shaderReady = ensureShaderResources(renderer) && maskLevels.back() && maskLevelsSourceSize.x > 0 && lightMap
-		&& ensureFieldTexture(renderer, depthField, {128, 0, 0, 255}, "sea depth")
-		&& ensureFieldTexture(renderer, terrainField, {255, 0, 0, 0}, "terrain")
-		&& ensureMaterialAtlas(renderer)
-		&& inputs.splat
-		&& ensureRenderState(renderer, inputs);
+	// prepare() 已把整幅地图画进离屏图：经后处理画到窗口上
+	if(framePrepared && frameTexture && postState && !regions.empty())
+	{
+		drawPost(renderer, inputs, regions);
+		framePrepared = false;
+		return;
+	}
+	framePrepared = false;
 
-	if(shaderReady)
-		composeWithShader(renderer, inputs, regions);
+	if(shaderReady(renderer, inputs))
+		composeWithShader(renderer, inputs, regions, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
 	else
 		composeLayerByLayer(renderer, inputs, regions, scaleMode);
 
 	// 覆盖层最后叠上，盖住粒子；云雾着色器只要着色器资源在就能画，合成着色器暂时没就绪（遮罩小图还没建好之类）时也画云
-	drawOverlay(renderer, inputs, regions);
+	drawOverlay(renderer, inputs, regions, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
 }
 
 bool MapLayerCompositor::ensureFogState(SDL_Renderer * renderer)
@@ -2301,13 +2978,13 @@ bool MapLayerCompositor::ensureFogState(SDL_Renderer * renderer)
 	return true;
 }
 
-void MapLayerCompositor::drawOverlay(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions)
+void MapLayerCompositor::drawOverlay(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions, SDL_BlendMode blendMode)
 {
 	const bool fogReady = !shaderUnavailable && fogShader && noise && clampSampler && sampler
 		&& ensureFieldTexture(renderer, fogField, {0, 0, 0, 255}, "fog")
 		&& ensureFogState(renderer);
 
-	SDL_SetTextureBlendMode(inputs.overlay, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
+	SDL_SetTextureBlendMode(inputs.overlay, blendMode);
 	SDL_SetTextureScaleMode(inputs.overlay, SDL_SCALEMODE_LINEAR);
 
 	if(fogReady)
@@ -2354,8 +3031,9 @@ void MapLayerCompositor::drawOverlay(SDL_Renderer * renderer, const Inputs & inp
 		SDL_SetGPURenderState(renderer, nullptr);
 }
 
-void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions)
+void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions, SDL_BlendMode overlayBlend)
 {
+	std::vector<MapLight> & lights = effects.lights;
 	float width = 0;
 	float height = 0;
 	SDL_GetTextureSize(inputs.ground, &width, &height);
@@ -2491,6 +3169,33 @@ void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs
 				uniforms.lightCells[y * lightGridSize + x] |= 1u << i;
 	}
 
+	// 蹄印：取最新的 maxFootprints 对（地图缓存按先后给），外接矩形外的像素着色器整段跳过
+	const auto & prints = effects.footprints;
+	const size_t printCount = std::min(prints.size(), maxFootprints);
+	const size_t printStart = prints.size() - printCount;
+	float printLeft = std::numeric_limits<float>::max();
+	float printTop = std::numeric_limits<float>::max();
+	float printRight = std::numeric_limits<float>::lowest();
+	float printBottom = std::numeric_limits<float>::lowest();
+	for(size_t i = 0; i < printCount; ++i)
+	{
+		const MapFootprint & print = prints[printStart + i];
+		uniforms.prints[i][0] = print.x;
+		uniforms.prints[i][1] = print.y;
+		uniforms.prints[i][2] = std::atan2(print.dirY, print.dirX);
+		uniforms.prints[i][3] = std::clamp(print.alpha, 0.0f, 1.0f) + (print.ground == MapFootprint::Ground::SNOW ? 2.0f : 0.0f);
+		printLeft = std::min(printLeft, print.x);
+		printTop = std::min(printTop, print.y);
+		printRight = std::max(printRight, print.x);
+		printBottom = std::max(printBottom, print.y);
+	}
+	constexpr float printReach = 0.36f; // 一对蹄印连同踩乱的地离中点最远约 0.3 个图块，再留一点
+	uniforms.lightInfo[1] = static_cast<float>(printCount);
+	uniforms.printBox[0] = printCount ? printLeft - printReach : 1.0f;
+	uniforms.printBox[1] = printCount ? printTop - printReach : 1.0f;
+	uniforms.printBox[2] = printCount ? printRight + printReach : 0.0f;
+	uniforms.printBox[3] = printCount ? printBottom + printReach : 0.0f;
+
 	SDL_SetGPURenderStateFragmentUniforms(state, 0, &uniforms, sizeof(uniforms));
 	SDL_SetGPURenderState(renderer, state);
 
@@ -2519,6 +3224,11 @@ void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs
 	frame.time = now;
 	frame.grade = sun.grade;
 	frame.night = sun.night;
+	frame.objects = inputs.objects;
+	frame.blendMode = overlayBlend;
+	frame.sparkles = effects.sparkles;
+	frame.chimneys = effects.chimneys;
+	frame.dust = effects.dust;
 	for(size_t i = 0; i < lightCount; ++i)
 		if(lights[i].flicker == MapLight::Flicker::FIRE && lights[i].halo >= 0.5f)
 			frame.fires.push_back({lights[i].x, lights[i].y, lights[i].height, lights[i].seed});
@@ -2589,6 +3299,28 @@ void MapLayerCompositor::release()
 			SDL_ReleaseGPUShader(device, shadowShader);
 	}
 	shadowShader = nullptr;
+
+	for(SDL_GPURenderState * postRenderState : {extractState, blurState, postState, highlightState})
+		if(postRenderState)
+			SDL_DestroyGPURenderState(postRenderState);
+	extractState = nullptr;
+	blurState = nullptr;
+	postState = nullptr;
+	highlightState = nullptr;
+	postBoundTextures = {};
+	destroyPostTargets();
+	if(owner)
+	{
+		SDL_GPUDevice * device = deviceOf(owner);
+		for(SDL_GPUShader * postShaderObject : {bloomShader, postShader, highlightShader})
+			if(device && postShaderObject)
+				SDL_ReleaseGPUShader(device, postShaderObject);
+	}
+	bloomShader = nullptr;
+	postShader = nullptr;
+	highlightShader = nullptr;
+	postUnavailable = false;
+	effects.highlight = MapHighlight{};
 
 	if(fogState)
 		SDL_DestroyGPURenderState(fogState);

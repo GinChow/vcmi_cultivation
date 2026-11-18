@@ -13,6 +13,8 @@
 
 #include <SDL3/SDL_render.h>
 
+#include <span>
+
 struct SDL_GPUShader;
 struct SDL_GPUSampler;
 struct SDL_GPURenderState;
@@ -33,6 +35,10 @@ struct SDL_GPURenderState;
 /// 阵雨落在水面上的雨丝。按地形场（每个图块的地形）放；阵雨落在哪由大块云影的形状决定，这里在 CPU 上
 /// 用与合成着色器同一张噪声、同一个公式算（cloudShape、showerAt），雨丝才会落在水面涟漪的那片云下。
 /// 粒子颜色跟着时段调色走（夜里偏蓝变暗），萤火虫、余烬入夜更亮。
+///
+/// 交互反馈（2026-11-18）：英雄走在沙地、泥地、雪地上时脚下扬起尘土雪沫（这一种要记状态：每帧按英雄的速度新扬起几团，
+/// 各自减速、升高、胀开、散掉）；宝物、资源隔几秒在物件画面上随机一点闪一道十字星光（落点查物件层，透明处不画）；
+/// 城镇屋顶冒出淡墨色的炊烟，顺风斜斜飘散。
 ///
 /// 由 MapLayerCompositor 在合成完地面、物件之后，叠覆盖层（迷雾、路径）之前调用，所以粒子都在迷雾之下。
 /// 只有 MSL 版着色器（macOS），着色器不可用时什么都不画。
@@ -63,6 +69,13 @@ public:
 			float seed;
 		};
 		std::vector<Fire> fires;
+
+		SDL_Texture * objects = nullptr;   ///< 物件层：宝物闪光的落点要在物件上
+		/// 粒子叠上去的方式：直接画到窗口上时按预乘 alpha；画进合成器的离屏图时不能抬高 alpha（那里是自发光）
+		SDL_BlendMode blendMode = SDL_BLENDMODE_BLEND_PREMULTIPLIED;
+		std::span<const MapSparkle> sparkles; ///< 会闪光的宝物、资源
+		std::span<const MapChimney> chimneys; ///< 冒炊烟的屋顶
+		std::span<const MapDustSource> dust;  ///< 正在走的英雄脚下
 	};
 
 	MapParticles() = default;
@@ -139,8 +152,8 @@ private:
 	SDL_GPURenderState * state = nullptr;
 	/// 1×1 白图：画四边形时传给 SDL，使它用带纹理坐标的顶点着色器；片元着色器不取它
 	SDL_Texture * white = nullptr;
-	/// state 绑定的风场遮罩、摇摆层；换了就重建 state
-	std::array<SDL_Texture *, 2> boundTextures = {};
+	/// state 绑定的风场遮罩、摇摆层、物件层；换了就重建 state
+	std::array<SDL_Texture *, 3> boundTextures = {};
 	std::atomic<bool> inputsForgotten{false};
 	/// 着色器路径已确认不可用，本渲染器上不再重试
 	bool unavailable = false;
@@ -157,9 +170,31 @@ private:
 		float tilePixels = 0.0f; ///< 一个图块在屏幕上多少像素
 	};
 
-	/// 这一帧的四边形，按画的先后：鸟影、瘴气、落叶飞花、萤火虫与余烬、飞鸟、雨丝、飘雪
+	/// 扬起的一团尘土（雪沫）：在地图坐标里，按合成器的时钟算年龄
+	struct DustPuff
+	{
+		float x = 0.0f;
+		float y = 0.0f;
+		float vx = 0.0f;
+		float vy = 0.0f;
+		float born = 0.0f;
+		float life = 1.0f;
+		float size = 0.05f;
+		float strength = 1.0f;
+		MapDustSource::Kind kind = MapDustSource::Kind::SAND;
+	};
+	std::vector<DustPuff> dustPuffs;
+	/// 每个英雄攒着的“还差多少团没扬起”（物件编号 → 小数），扬尘的多少因此与帧率无关
+	std::unordered_map<int, float> dustCarry;
+	float dustClock = -1.0f; ///< 上一次更新扬尘的时刻；小于 0 表示还没更新过
+	std::mt19937 dustRandom{20261118};
+	/// 按这一帧的英雄扬起新的尘土、去掉散完的
+	void updateDust(const Frame & frame);
+
+	/// 这一帧的四边形，按画的先后：鸟影、瘴气、尘土与炊烟、落叶飞花、萤火虫与余烬与宝物闪光、飞鸟、雨丝、飘雪
 	std::vector<SDL_Vertex> shadowVertices;
 	std::vector<SDL_Vertex> miasmaVertices;
+	std::vector<SDL_Vertex> puffVertices;
 	std::vector<SDL_Vertex> bitVertices;
 	std::vector<SDL_Vertex> glowVertices;
 	std::vector<SDL_Vertex> birdVertices;
@@ -180,4 +215,7 @@ private:
 	void buildEmbers(const Placement & placement, const Frame & frame);
 	void buildMiasma(const Placement & placement, const Frame & frame);
 	void buildRain(const Placement & placement, const Frame & frame);
+	void buildDust(const Placement & placement, const Frame & frame);
+	void buildSmoke(const Placement & placement, const Frame & frame);
+	void buildSparkles(const Placement & placement, const Frame & frame);
 };

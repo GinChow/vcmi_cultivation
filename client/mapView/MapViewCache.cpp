@@ -39,6 +39,8 @@ MapViewCache::~MapViewCache()
 {
 	// the canvases go with this object, so nothing may be left pointing at them
 	ENGINE->screenHandler().clearPresentedCanvas(GpuRenderLayer::MAP);
+	// 悬停描边的画布也随之销毁
+	ENGINE->screenHandler().setMapObjectEffects(MapObjectEffects{});
 }
 
 MapViewCache::MapViewCache(const std::shared_ptr<MapViewModel> & model, bool useGpuLayer)
@@ -1076,14 +1078,52 @@ static std::optional<LightProfile> lightProfile(const CGObjectInstance * object)
 	}
 }
 
-void MapViewCache::sendLights(const std::shared_ptr<IMapRendererContext> & context)
+/// 会隔一会儿闪一道光的宝物、资源
+static bool isSparkling(const CGObjectInstance * object)
+{
+	switch(object->ID.getNum())
+	{
+		case Obj::RESOURCE:
+		case Obj::ARTIFACT:
+		case Obj::TREASURE_CHEST:
+		case Obj::PANDORAS_BOX:
+		case Obj::SPELL_SCROLL:
+		case Obj::SEA_CHEST:
+		case Obj::FLOTSAM:
+		case Obj::OCEAN_BOTTLE:
+			return true;
+		default:
+			return false;
+	}
+}
+
+/// 蹄印多久淡完（秒）：风把沙地上的吹平得快，雪地上的留得久；从 fadeStart 起开始淡
+static constexpr float footprintFadeStart = 20.0f;
+static constexpr float sandFootprintLife = 40.0f;
+static constexpr float snowFootprintLife = 60.0f;
+/// 英雄每走这么远（图块）踩一对蹄印；最多记这么多对（所有地图层合计），再多就去掉最早的
+static constexpr float footprintSpacing = 0.42f;
+static constexpr size_t maxStoredFootprints = 160;
+/// 马蹄在英雄站的图块中心往下这么多（图块）
+static constexpr float hoofOffset = 0.25f;
+
+void MapViewCache::sendObjectEffects(const std::shared_ptr<IMapRendererContext> & context)
 {
 	// 光最远照 5 个图块：可见窗口外这一圈里的光也能照进来
 	constexpr int reach = 5;
 	const int level = model->getLevel();
 	const Rect tiles = model->getTilesTotalRect();
 
-	lights.clear();
+	const auto now = std::chrono::steady_clock::now();
+	float dt = 0.0f;
+	if(lastEffectsTime != std::chrono::steady_clock::time_point{})
+		dt = std::clamp(std::chrono::duration<float>(now - lastEffectsTime).count(), 0.0f, 0.25f);
+	lastEffectsTime = now;
+
+	objectEffects.lights.clear();
+	objectEffects.sparkles.clear();
+	objectEffects.chimneys.clear();
+	objectEffects.dust.clear();
 	++litFrame;
 	for(int y = tiles.top() - reach; y < tiles.bottom() + reach; ++y)
 	{
@@ -1108,16 +1148,20 @@ void MapViewCache::sendLights(const std::shared_ptr<IMapRendererContext> & conte
 				if(!object)
 					continue;
 				const std::optional<LightProfile> profile = lightProfile(object);
-				if(!profile)
+				const bool sparkling = isSparkling(object);
+				const bool town = object->ID == Obj::TOWN;
+				if(!profile && !sparkling && !town)
 					continue;
 
 				// 光源放在物件占地的中央；英雄放在他站的格子上，走路时跟着动画平滑移动
 				float centerX = 0.0f;
 				float centerY = 0.0f;
 				int3 lookout = object->visitablePos();
+				const CGHeroInstance * hero = nullptr;
+				std::set<int3> blocked;
 				if(object->ID == Obj::HERO)
 				{
-					const auto * hero = dynamic_cast<const CGHeroInstance *>(object);
+					hero = dynamic_cast<const CGHeroInstance *>(object);
 					if(!hero || hero->isGarrisoned())
 						continue;
 					const int3 anchor = object->anchorPos();
@@ -1128,7 +1172,7 @@ void MapViewCache::sendLights(const std::shared_ptr<IMapRendererContext> & conte
 				}
 				else
 				{
-					const std::set<int3> blocked = object->getBlockedPos();
+					blocked = object->getBlockedPos();
 					if(blocked.empty())
 					{
 						centerX = static_cast<float>(lookout.x) + 0.5f;
@@ -1148,27 +1192,264 @@ void MapViewCache::sendLights(const std::shared_ptr<IMapRendererContext> & conte
 						lookout = int3(static_cast<int>(centerX), static_cast<int>(centerY), level);
 				}
 
-				// 迷雾里的光不画：光照到看得见的地方会暴露藏着的城镇、营火
+				// 迷雾里的不画：光照到看得见的地方会暴露藏着的城镇、营火，炊烟、闪光、蹄印也一样
 				if(!context->isInMap(lookout) || !context->isVisible(lookout))
 					continue;
 
-				MapLight light;
-				light.x = centerX;
-				light.y = centerY;
-				light.height = profile->height;
-				light.radius = profile->radius;
-				light.r = profile->r;
-				light.g = profile->g;
-				light.b = profile->b;
-				light.halo = profile->halo;
-				light.flicker = profile->flicker;
-				light.seed = static_cast<float>(objectID.getNum() % 97) * 0.61f;
-				lights.push_back(light);
+				if(profile)
+				{
+					MapLight light;
+					light.x = centerX;
+					light.y = centerY;
+					light.height = profile->height;
+					light.radius = profile->radius;
+					light.r = profile->r;
+					light.g = profile->g;
+					light.b = profile->b;
+					light.halo = profile->halo;
+					light.flicker = profile->flicker;
+					light.seed = static_cast<float>(objectID.getNum() % 97) * 0.61f;
+					objectEffects.lights.push_back(light);
+				}
+
+				if(hero)
+					trackHero(context, hero, centerX, centerY, dt, now);
+
+				if(sparkling)
+				{
+					// 宝物、资源的画面就在它站的那一格里，略偏上
+					MapSparkle sparkle;
+					sparkle.x = static_cast<float>(lookout.x) + 0.5f;
+					sparkle.y = static_cast<float>(lookout.y) + 0.4f;
+					sparkle.halfWidth = 0.36f;
+					sparkle.halfHeight = 0.36f;
+					sparkle.seed = static_cast<float>(objectID.getNum() % 211) * 0.37f;
+					objectEffects.sparkles.push_back(sparkle);
+				}
+
+				if(town && !blocked.empty())
+				{
+					// 炊烟从城里最上一排房子的屋顶冒出：两三处，在占地范围里左右错开
+					int left = std::numeric_limits<int>::max();
+					int right = std::numeric_limits<int>::min();
+					int top = std::numeric_limits<int>::max();
+					for(const int3 & position : blocked)
+					{
+						left = std::min(left, position.x);
+						right = std::max(right, position.x);
+						top = std::min(top, position.y);
+					}
+					const float width = static_cast<float>(right - left + 1);
+					const int count = width >= 4.0f ? 3 : 2;
+					for(int i = 0; i < count; ++i)
+					{
+						// 只在占地中间六成里：两边的占地常是城墙外的空地、树林
+						const float share = 0.2f + 0.6f * (static_cast<float>(i) + 0.5f) / static_cast<float>(count);
+						const float jitter = static_cast<float>((objectID.getNum() * 7 + i * 13) % 10) / 10.0f - 0.5f;
+						MapChimney chimney;
+						chimney.x = static_cast<float>(left) + width * share + jitter * 0.4f;
+						chimney.y = static_cast<float>(top) + 0.5f;
+						chimney.height = 0.9f + 0.3f * static_cast<float>((objectID.getNum() + i * 5) % 4) / 3.0f;
+						chimney.seed = static_cast<float>(objectID.getNum() % 89) * 1.3f + static_cast<float>(i) * 7.1f;
+						objectEffects.chimneys.push_back(chimney);
+					}
+				}
 			}
 		}
 	}
 
-	ENGINE->screenHandler().setMapLights(lights);
+	// 走出视野、或者没了的英雄，过一会儿就不再记他走到哪了
+	std::erase_if(heroTrails, [&](const auto & entry) { return now - entry.second.seen > std::chrono::seconds(2); });
+
+	collectFootprints(tiles, now);
+	updateHighlight(context, now);
+
+	ENGINE->screenHandler().setMapObjectEffects(objectEffects);
+}
+
+void MapViewCache::trackHero(const std::shared_ptr<IMapRendererContext> & context, const CGHeroInstance * hero, float x, float y, float dt, std::chrono::steady_clock::time_point now)
+{
+	const int id = hero->id.getNum();
+	const auto known = heroTrails.find(id);
+	// 第一次看见、或者一下子挪了一个多图块（传送、换了地图层、重新载入）：从这里重新开始记，不画中间
+	if(known == heroTrails.end() || std::hypot(x - known->second.x, y - known->second.y) > 1.5f)
+	{
+		heroTrails[id] = HeroTrail{x, y, x, y, now};
+		return;
+	}
+
+	HeroTrail & trail = known->second;
+	const float vx = dt > 0.0f ? (x - trail.x) / dt : 0.0f;
+	const float vy = dt > 0.0f ? (y - trail.y) / dt : 0.0f;
+	trail.x = x;
+	trail.y = y;
+	trail.seen = now;
+
+	if(hero->inBoat())
+	{
+		trail.printX = x;
+		trail.printY = y;
+		return;
+	}
+
+	const int3 tile(static_cast<int>(std::floor(x)), static_cast<int>(std::floor(y + hoofOffset)), hero->visitablePos().z);
+	if(!context->isInMap(tile))
+		return;
+	const TerrainTile & ground = context->getMapTile(tile);
+	const TerrainId terrain = ground.getTerrainID();
+	const bool road = ground.hasRoad();
+
+	// 扬尘：走路时才有；路上是夯实的土路，扬的是一点泥土
+	if(std::hypot(vx, vy) > 0.3f)
+	{
+		std::optional<MapDustSource::Kind> kind;
+		if(road)
+			kind = MapDustSource::Kind::DIRT;
+		else if(terrain == TerrainId::SAND)
+			kind = MapDustSource::Kind::SAND;
+		else if(terrain == TerrainId::DIRT || terrain == TerrainId::ROUGH || terrain == TerrainId::SUBTERRANEAN)
+			kind = MapDustSource::Kind::DIRT;
+		else if(terrain == TerrainId::SNOW)
+			kind = MapDustSource::Kind::SNOW;
+		else if(terrain == TerrainId::LAVA)
+			kind = MapDustSource::Kind::ASH;
+		else if(terrain == TerrainId::GRASS)
+			kind = MapDustSource::Kind::GRASS;
+
+		if(kind)
+		{
+			MapDustSource source;
+			source.x = x;
+			source.y = y + hoofOffset;
+			source.vx = vx;
+			source.vy = vy;
+			source.kind = *kind;
+			source.id = id;
+			objectEffects.dust.push_back(source);
+		}
+	}
+
+	// 蹄印：每走 footprintSpacing 踩一对，朝着走的方向；只在沙地、雪地上，路上不留
+	const float stepX = x - trail.printX;
+	const float stepY = y - trail.printY;
+	const float step = std::hypot(stepX, stepY);
+	if(step < footprintSpacing)
+		return;
+	trail.printX = x;
+	trail.printY = y;
+	if(road || (terrain != TerrainId::SAND && terrain != TerrainId::SNOW))
+		return;
+
+	Footprint footprint;
+	footprint.print.x = x;
+	footprint.print.y = y + hoofOffset;
+	footprint.print.dirX = stepX / step;
+	footprint.print.dirY = stepY / step;
+	footprint.print.ground = terrain == TerrainId::SNOW ? MapFootprint::Ground::SNOW : MapFootprint::Ground::SAND;
+	footprint.level = tile.z;
+	footprint.made = now;
+	footprints.push_back(footprint);
+	while(footprints.size() > maxStoredFootprints)
+		footprints.pop_front();
+}
+
+void MapViewCache::collectFootprints(const Rect & tiles, std::chrono::steady_clock::time_point now)
+{
+	auto lifeOf = [](const Footprint & footprint)
+	{
+		return footprint.print.ground == MapFootprint::Ground::SNOW ? snowFootprintLife : sandFootprintLife;
+	};
+	std::erase_if(footprints, [&](const Footprint & footprint)
+	{
+		return std::chrono::duration<float>(now - footprint.made).count() > lifeOf(footprint);
+	});
+
+	objectEffects.footprints.clear();
+	const int level = model->getLevel();
+	for(const Footprint & footprint : footprints)
+	{
+		if(footprint.level != level)
+			continue;
+		// 只要可见窗口附近的（合成器最多画 maxFootprints 对，取最新的）
+		if(footprint.print.x < static_cast<float>(tiles.left() - 1) || footprint.print.x > static_cast<float>(tiles.right() + 1)
+			|| footprint.print.y < static_cast<float>(tiles.top() - 1) || footprint.print.y > static_cast<float>(tiles.bottom() + 1))
+			continue;
+		const float age = std::chrono::duration<float>(now - footprint.made).count();
+		const float life = lifeOf(footprint);
+		const float fade = std::clamp((age - footprintFadeStart) / (life - footprintFadeStart), 0.0f, 1.0f);
+		MapFootprint print = footprint.print;
+		print.alpha = (1.0f - fade) * (1.0f - fade);
+		objectEffects.footprints.push_back(print);
+	}
+}
+
+void MapViewCache::setHoveredObject(int objectID, MapHighlight::Tone tone)
+{
+	hoveredObject = objectID;
+	hoveredTone = static_cast<uint8_t>(tone);
+}
+
+/// 悬停描边画布四周留的边（原版像素），要比合成器描边的光晕半径宽
+static constexpr int highlightMargin = 8;
+
+void MapViewCache::updateHighlight(const std::shared_ptr<IMapRendererContext> & context, std::chrono::steady_clock::time_point now)
+{
+	MapHighlight & highlight = objectEffects.highlight;
+	const int id = hoveredObject;
+	const CGObjectInstance * object = id >= 0 && canvasesOnGpu ? context->getObject(ObjectInstanceID(id)) : nullptr;
+	if(object && (object->anchorPos().z != model->getLevel() || !context->isInMap(object->visitablePos()) || !context->isVisible(object->visitablePos())))
+		object = nullptr;
+
+	if(!object)
+	{
+		highlight = MapHighlight{};
+		highlightDrawnObject = -1;
+		return;
+	}
+
+	const int3 anchor = object->anchorPos();
+	const int width = std::max(1, object->getWidth());
+	const int height = std::max(1, object->getHeight());
+	const Point size(width * 32 + highlightMargin * 2, height * 32 + highlightMargin * 2);
+
+	if(!highlightCanvas || highlightCanvasSize != size)
+	{
+		highlightCanvas = createCanvas(size);
+		highlightCanvasSize = size;
+		highlightDrawnObject = -1;
+	}
+
+	if(id != highlightDrawnObject)
+		highlightSince = now;
+
+	// 换了物件就重画；同一件每 0.1 秒重画一次跟上旗子、物件动画，英雄每帧重画（走路时画面在动）
+	if(id != highlightDrawnObject || object->ID == Obj::HERO || now - highlightDrawnAt > std::chrono::milliseconds(100))
+	{
+		highlightCanvas->drawColor(Rect(Point(0, 0), size), ColorRGBA(0, 0, 0, 0));
+		for(int ty = 0; ty < height; ++ty)
+		{
+			for(int tx = 0; tx < width; ++tx)
+			{
+				const int3 tile(anchor.x - (width - 1) + tx, anchor.y - (height - 1) + ty, anchor.z);
+				if(!context->isInMap(tile))
+					continue;
+				Canvas part(*highlightCanvas, Rect(highlightMargin + tx * 32, highlightMargin + ty * 32, 32, 32));
+				mapRenderer->renderSingleObject(*context, part, tile, object);
+			}
+		}
+		highlightDrawnObject = id;
+		highlightDrawnAt = now;
+	}
+
+	const float margin = static_cast<float>(highlightMargin) / 32.0f;
+	highlight.canvas = highlightCanvas.get();
+	highlight.x = static_cast<float>(anchor.x - (width - 1)) - margin;
+	highlight.y = static_cast<float>(anchor.y - (height - 1)) - margin;
+	highlight.width = static_cast<float>(width) + 2.0f * margin;
+	highlight.height = static_cast<float>(height) + 2.0f * margin;
+	highlight.tone = static_cast<MapHighlight::Tone>(hoveredTone.load());
+	// 移上去 0.15 秒内淡入
+	highlight.strength = std::clamp(std::chrono::duration<float>(now - highlightSince).count() / 0.15f, 0.0f, 1.0f);
 }
 
 void MapViewCache::noteHeroStep(const int3 & tile)
@@ -1338,7 +1619,7 @@ void MapViewCache::update(const std::shared_ptr<IMapRendererContext> & context)
 	{
 		updateBirds(context);
 		sendDayProgress(context);
-		sendLights(context);
+		sendObjectEffects(context);
 	}
 
 	Rect dimensions = model->getTilesTotalRect();
@@ -1498,6 +1779,7 @@ void MapViewCache::present(const Rect & targetArea)
 		layers.worldOrigin = tilesRect.topLeft();
 		layers.slotOrigin = Point(((tilesRect.x % slots.x) + slots.x) % slots.x, ((tilesRect.y % slots.y) + slots.y) % slots.y);
 		layers.tileSize = model->getSingleTileSize().x;
+		layers.viewArea = targetArea;
 
 		ENGINE->screenHandler().presentMapLayers(*terrain, layers, regions);
 	}

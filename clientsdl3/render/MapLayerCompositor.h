@@ -41,6 +41,12 @@ struct SDL_GPURenderState;
 /// 粒子画完后，第三个着色器按它画流动的云（宣纸留白、淡墨勾边，边缘不规则地慢慢淡开），再把覆盖层（路径、图标）叠在云上。
 /// 探索时地图缓存让揭开处的云按离已探索处的远近依次散去，着色器让它们翻卷着往迷雾深处推开。
 ///
+/// 交互反馈与全屏效果（2026-11-18）：整幅地图（地面与物件、粒子、悬停描边、云雾与覆盖层）先画进一张离屏图，主着色器把
+/// 每个像素自发光的程度（熔岩裂缝、水面波光、灯火的辉光）写在 alpha 里；从它缩出 1/4、1/16 两级辉光图，最后由后处理着色器
+/// 画到屏幕上：叠辉光、统一成水墨的色调（收掉过艳的颜色、暗处偏墨青、亮处偏纸暖、黑位抬成墨色），盖一层跟着地图走的宣纸纤维，
+/// 四角轻微压暗，地图边缘一圈洇开的淡墨。英雄在沙地、雪地上留下的蹄印画在地面上（物件之下）；扬尘、宝物闪光、城镇炊烟由
+/// MapParticles 画；鼠标悬停的物件由地图缓存单独画成一张小画布，这里按它的 alpha 描一圈发光的边。
+///
 /// 性能：着色器对每个屏幕像素运行，满屏是水时取样次数决定帧率。离岸远近、向上找岸线这类要看一大片
 /// 遮罩的计算，都改在每帧逐级缩小出的 1/8、1/16 遮罩小图上做，全分辨率纹理每个水面像素只取约十次。
 /// 海面的近海、深海按每个图块离最近陆地的距离上色，这张距离图按地图坐标取样，与屏幕边缘、缩放无关。
@@ -65,6 +71,7 @@ public:
 		Point worldOrigin;
 		Point slotOrigin;
 		int tileSize = 32; ///< 屏幕上一个图块的大小（界面像素），不到 16 时起伏层等效果层是空的（见 MapLayerSet）
+		Rect viewArea;     ///< 地图视图在屏幕上的矩形（见 MapLayerSet）
 	};
 
 	MapLayerCompositor() = default;
@@ -76,12 +83,12 @@ public:
 	/// 该渲染器能否挂本类的着色器：渲染驱动为 gpu，且其 GPU 设备接受 MSL
 	static bool isShaderPathAvailable(SDL_Renderer * renderer);
 
-	/// 每帧在画到窗口之前调用：把水面遮罩逐级缩小成着色器要用的小图。会切换渲染目标，
-	/// 所以必须在本帧往窗口上画任何东西之前完成。
-	void prepare(SDL_Renderer * renderer, const Inputs & inputs);
+	/// 每帧在画到窗口之前调用：把水面遮罩逐级缩小成着色器要用的小图，算长投影，再把整幅地图画进离屏图、缩出辉光图。
+	/// 会切换渲染目标，所以必须在本帧往窗口上画任何东西之前完成。regions 与 compose() 的相同
+	void prepare(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions);
 
-	/// 把各层合成到渲染器当前的渲染目标上。regions 的 source 在缓存纹理内、target 在屏幕上，
-	/// 四张纹理共用同一组 source。scaleMode 是这次绘制本该用的缩放过滤方式（退回路径使用）。
+	/// 把地图画到渲染器当前的渲染目标（窗口）上：prepare() 画好了离屏图时用后处理着色器画，否则退回直接合成。
+	/// regions 的 source 在缓存纹理内、target 在屏幕上，各张缓存纹理共用同一组 source。scaleMode 是这次绘制本该用的缩放过滤方式（退回路径使用）。
 	void compose(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions, int scaleMode);
 
 	/// 设置离岸距离图：distances 按行存放 size.x × size.y 个图块，0 为陆地，255 为离岸 8 个图块及以上。
@@ -103,11 +110,13 @@ public:
 	/// 本方这一天的进度（含义见 IScreenHandler::setMapDayProgress），设置 video.mapSunClock 为 turn 时推动太阳。须在渲染线程上调用
 	void setDayProgress(int day, std::optional<float> dayProgress);
 
-	/// 这一帧可见范围里的局部光（见 MapLight）。须在渲染线程上调用
-	void setLights(const std::vector<MapLight> & lights);
+	/// 这一帧物件带出的效果（局部光、宝物闪光、炊烟、脚印、扬尘、悬停描边，见 MapObjectEffects）。须在渲染线程上调用
+	void setObjectEffects(const MapObjectEffects & effects);
 
 	/// 合成着色器一帧最多照几盏局部光：多出来的取离屏幕中心最近的。着色器按 32 位掩码记每格有哪些灯，所以不能超过 32
 	static constexpr size_t maxLights = 32;
+	/// 合成着色器一帧最多画几对蹄印：多出来的取最新的（地图缓存按先后给）
+	static constexpr size_t maxFootprints = 64;
 	/// 局部光分格：可见窗口均分成这么多 × 这么多格，与着色器的 lightGridSize 一致
 	static constexpr int lightGridSize = 16;
 
@@ -200,8 +209,8 @@ private:
 	float dayProgressMax = 0.0f;         ///< 本方这一天走到过的最远进度：英雄途中补了行动力，天也不会倒回早上
 	uint64_t dayClockTicks = 0;          ///< 上次推进时段的时间（毫秒）
 
-	/// 这一帧的局部光，由地图缓存给
-	std::vector<MapLight> lights;
+	/// 这一帧物件带出的效果，由地图缓存给
+	MapObjectEffects effects;
 
 	/// 每个地图图块一个像素的场（离岸距离图兼雾云场）：RGBA 数据由地图缓存给，纹理在渲染线程上按需建。
 	/// 着色器按地图坐标线性取样，地图外夹到边缘的值
@@ -227,8 +236,49 @@ private:
 	/// 与 inputsForgotten 同时置位：纹理可能换过（新纹理可能分到旧地址），云雾的渲染状态也要重建
 	std::atomic<bool> fogInputsForgotten{false};
 	bool ensureFogState(SDL_Renderer * renderer);
-	/// 画覆盖层：云雾着色器可用时先画云、再把覆盖层叠在云上；不可用时直接叠覆盖层
-	void drawOverlay(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions);
+	/// 画覆盖层：云雾着色器可用时先画云、再把覆盖层叠在云上；不可用时直接叠覆盖层。blendMode 是覆盖层叠上去的方式
+	void drawOverlay(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions, SDL_BlendMode blendMode);
+
+	/// ---- 离屏图、辉光与后处理（2026-11-18） ----
+	/// 离屏图：像素数与窗口上逻辑画面实际占的像素相同，逻辑分辨率与窗口相同，地图按与窗口上相同的坐标画进去；
+	/// alpha 是自发光的程度（见 composeWithShader）
+	SDL_Texture * frameTexture = nullptr;
+	Point frameSize;        ///< 像素
+	Point frameLogicalSize; ///< 逻辑尺寸（窗口的逻辑分辨率）
+	/// 辉光：离屏图取自发光缩成 1/4（bloomLevels[0]），再模糊缩成 1/16（bloomLevels[1]）
+	std::array<SDL_Texture *, 2> bloomLevels = {};
+	SDL_GPUShader * bloomShader = nullptr;
+	SDL_GPUShader * postShader = nullptr;
+	SDL_GPUShader * highlightShader = nullptr;
+	/// 取自发光、模糊各用一个渲染状态（同一个着色器，uniform 不同）；后处理绑两级辉光图和噪声
+	SDL_GPURenderState * extractState = nullptr;
+	SDL_GPURenderState * blurState = nullptr;
+	SDL_GPURenderState * postState = nullptr;
+	SDL_GPURenderState * highlightState = nullptr;
+	std::array<SDL_Texture *, 3> postBoundTextures = {};
+	/// 这一帧 prepare() 已把地图画进离屏图，compose() 只需画后处理
+	bool framePrepared = false;
+	/// 后处理在这个渲染器上建不起来：照旧把地图直接合成到窗口上（没有辉光、宣纸、暗角，其余特效照常）
+	bool postUnavailable = false;
+	/// 离屏图里要画的矩形（各区域外接矩形与离屏图求交，逻辑坐标）
+	Rect frameBounds;
+	/// 地图视图露在外面的矩形（视图矩形与 frameBounds 求交），暗角、边缘墨晕按它画
+	Rect frameView;
+
+	/// 粒子、悬停描边、云雾画进离屏图时用的混合方式：颜色照常按预乘 alpha 叠，alpha（自发光）被盖住多少就减多少，不会增加
+	SDL_BlendMode emissionKeepingBlend = SDL_BLENDMODE_INVALID;
+
+	/// 合成着色器能用（着色器资源、各张场纹理、材质图集、渲染状态都就绪）
+	bool shaderReady(SDL_Renderer * renderer, const Inputs & inputs);
+	/// 建好或按窗口尺寸重建离屏图（size 像素、logicalSize 逻辑尺寸）、辉光图，以及后处理用的着色器和渲染状态
+	bool ensurePostResources(SDL_Renderer * renderer, const Point & size, const Point & logicalSize);
+	void destroyPostTargets();
+	/// 把地图画进离屏图并缩出辉光图（prepare() 调用），成功时 framePrepared 为真
+	void renderFrame(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions);
+	/// 把离屏图经后处理着色器画到当前渲染目标上
+	void drawPost(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions);
+	/// 悬停物件的发光描边，画在粒子之后、云雾之前
+	void drawHighlight(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions);
 
 	/// 植被与天气粒子：落叶、飞花、萤火虫、惊鸟、飘雪、余烬、瘴气团、雨丝，在合成之后、覆盖层之前画
 	MapParticles particles;
@@ -250,7 +300,8 @@ private:
 	void destroyReliefLevels();
 	/// 把起伏层缩成 1/4，再用预处理着色器算出这一帧的长投影光照图
 	void renderLightMap(SDL_Renderer * renderer, const Inputs & inputs);
-	void composeWithShader(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions);
+	/// overlayBlend：粒子叠上去的方式（画进离屏图时不能抬高 alpha 里的自发光）
+	void composeWithShader(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions, SDL_BlendMode overlayBlend);
 	/// 退回路径：逐层叠地面、物件、摇摆物件（覆盖层由 drawOverlay() 画）
 	void composeLayerByLayer(SDL_Renderer * renderer, const Inputs & inputs, const std::vector<PresentedRegion> & regions, int scaleMode) const;
 };

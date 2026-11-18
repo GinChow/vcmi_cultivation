@@ -10,6 +10,7 @@
 #pragma once
 
 #include "../gui/CIntObject.h"
+#include "render/IScreenHandler.h"
 
 struct ObjectPosInfo;
 class CGObjectInstance;
@@ -100,6 +101,9 @@ public:
 
 	/// Saves every level of the whole map, fog included but without the hero path and debug overlays, and reports the files in chat
 	void exportScreenshot();
+
+	/// 鼠标悬停在哪件物件上（空为没有），描边用什么颜色（2026-11-18，大地图交互反馈）
+	void onObjectHovered(const CGObjectInstance * object, MapHighlight::Tone tone);
 };
 
 /// Main class that represents map view for puzzle map

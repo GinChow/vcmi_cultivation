@@ -700,6 +700,11 @@ void MapRendererObjects::renderObject(IMapRendererContext & context, Canvas & ta
 		renderImage(context, target, coordinates, instance, images[layer], transparencyFactor, true, mask);
 }
 
+void MapRendererObjects::renderSingleObject(IMapRendererContext & context, Canvas & target, const int3 & coordinates, const CGObjectInstance * object)
+{
+	renderObject(context, target, coordinates, object);
+}
+
 void MapRendererObjects::renderGround(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
 {
 	for(const auto & objectID : context.getObjects(coordinates))
@@ -1503,6 +1508,11 @@ bool MapRenderer::hasWaterSurface(IMapRendererContext & context, const int3 & co
 void MapRenderer::setLayeredEffects(bool enabled)
 {
 	rendererObjects.setLayeredEffects(enabled);
+}
+
+void MapRenderer::renderSingleObject(IMapRendererContext & context, Canvas & target, const int3 & coordinates, const CGObjectInstance * object)
+{
+	rendererObjects.renderSingleObject(context, target, coordinates, object);
 }
 
 MapAtmosphere MapRenderer::atmosphereAt(IMapRendererContext & context, const int3 & coordinates)

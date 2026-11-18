@@ -1059,9 +1059,9 @@ void ScreenHandler::setMapDayProgress(int day, std::optional<float> dayProgress)
 	mapCompositor->setDayProgress(day, dayProgress);
 }
 
-void ScreenHandler::setMapLights(const std::vector<MapLight> & lights)
+void ScreenHandler::setMapObjectEffects(const MapObjectEffects & effects)
 {
-	mapCompositor->setLights(lights);
+	mapCompositor->setObjectEffects(effects);
 }
 
 void ScreenHandler::setMapFogField(const std::vector<uint8_t> & rgba, const Point & size)
@@ -1086,6 +1086,7 @@ static MapLayerCompositor::Inputs mapCompositorInputs(const Presented & presente
 	inputs.worldOrigin = presented.worldOrigin;
 	inputs.slotOrigin = presented.slotOrigin;
 	inputs.tileSize = presented.tileSize;
+	inputs.viewArea = presented.viewArea;
 	return inputs;
 }
 
@@ -1114,6 +1115,7 @@ void ScreenHandler::presentMapLayers(const Canvas & ground, const MapLayerSet & 
 	presented.worldOrigin = layers.worldOrigin;
 	presented.slotOrigin = layers.slotOrigin;
 	presented.tileSize = layers.tileSize;
+	presented.viewArea = layers.viewArea;
 
 	// 缺任何一层都没法分层合成，只能不画，免得只显示地面、物件全丢
 	if(!presented.objects || !presented.sway || !presented.overlay || !presented.waterMask || !presented.windMask || !presented.relief || !presented.splat)
@@ -1143,10 +1145,11 @@ void ScreenHandler::composeFrame() const
 {
 	SDL_Renderer * renderer = GpuResources::get().renderer();
 
-	// 大地图分层合成要先把水面遮罩缩小成几级小图，这一步会切换渲染目标，所以放在往窗口上画任何东西之前
+	// 大地图分层合成要先把水面遮罩缩小成几级小图、把整幅地图画进离屏图再做辉光（见 MapLayerCompositor::prepare），
+	// 这些都要切换渲染目标，所以放在往窗口上画任何东西之前
 	const PresentedCanvas & map = presentedCanvases[static_cast<size_t>(GpuRenderLayer::MAP)];
 	if(map.objects && !map.regions.empty())
-		mapCompositor->prepare(renderer, mapCompositorInputs(map));
+		mapCompositor->prepare(renderer, mapCompositorInputs(map), map.regions);
 
 	// the draw color is left over from whatever was rendered last, and this clear also
 	// covers the letterbox bars around the reserved area
