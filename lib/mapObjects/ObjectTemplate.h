@@ -134,6 +134,10 @@ public:
 
 	void readTxt(CLegacyConfigParser & parser);
 	void readMsk();
+	/// 模组可以用比原版画布更大的贴图替换物件（修仙重绘的建筑往左、往上伸出原画布），并附带更大的 MSK。
+	/// 按 MSK 把模板的格子范围只扩不缩，新增的格只“可见”（参与绘制与遮挡排序），不挡路、不可访问，玩法不变。
+	/// 读档与读 JSON 模板时调用，旧存档、vmap 地图里的模板也跟着变大；没有 MSK 时什么也不做。
+	void growToMask();
 	void readMap(CBinaryReader & reader);
 	void readJson(const JsonNode & node, bool withTerrain = true);
 	void writeJson(JsonNode & node, bool withTerrain = true) const;
@@ -180,6 +184,7 @@ public:
 
 		if (!h.saving)
 		{
+			growToMask();
 			recalculate();
 		}
 	}

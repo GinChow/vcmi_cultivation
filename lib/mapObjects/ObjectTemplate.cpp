@@ -143,6 +143,41 @@ void ObjectTemplate::readMsk()
 	}
 }
 
+void ObjectTemplate::growToMask()
+{
+	ResourcePath resID("Sprites/" + animationFile.getName(), EResType::MASK);
+
+	if(!CResourceHandler::get()->existsResource(resID))
+		return;
+
+	auto msk = CResourceHandler::get()->load(resID)->readAll();
+	if(msk.second < 2)
+		return;
+
+	// H3 物件最大 8×6 格（与 readMsk 的缺省值一致）
+	const size_t maskWidth = std::min<size_t>(msk.first.get()[0], 8);
+	const size_t maskHeight = std::min<size_t>(msk.first.get()[1], 6);
+
+	const size_t oldHeight = usedTiles.size();
+	size_t oldWidth = 0;
+	for(const auto & row : usedTiles)
+		oldWidth = std::max(oldWidth, row.size());
+
+	if(maskWidth <= oldWidth && maskHeight <= oldHeight)
+		return;
+
+	const size_t newWidth = std::max(oldWidth, maskWidth);
+	const size_t newHeight = std::max(oldHeight, maskHeight);
+	usedTiles.resize(newHeight);
+	for(size_t y = 0; y < newHeight; ++y)
+	{
+		const size_t rowWidth = y < oldHeight ? usedTiles[y].size() : 0;
+		usedTiles[y].resize(newWidth, 0);
+		for(size_t x = rowWidth; x < newWidth; ++x)
+			usedTiles[y][x] = VISIBLE;
+	}
+}
+
 void ObjectTemplate::readMap(CBinaryReader & reader)
 {
 	animationFile = AnimationPath::builtin(reader.readBaseString());
@@ -268,6 +303,7 @@ void ObjectTemplate::readJson(const JsonNode &node, const bool withTerrain)
 
 	printPriority = static_cast<si32>(node["zIndex"].Float());
 
+	growToMask();
 	afterLoadFixup();
 	recalculate();
 }
