@@ -79,7 +79,7 @@ class Canvas
 
 	/// GPU counterpart of the canvas-to-canvas blits. blendMode is an SDL_BlendMode,
 	/// kept untyped so that this header does not have to pull in SDL
-	void copyFromCanvas(const Canvas & image, const Rect & targetArea, uint32_t blendMode, uint8_t alpha);
+	void copyFromCanvas(const Canvas & image, const Rect & targetArea, uint32_t blendMode, uint8_t alpha, bool linear = false);
 
 	/// Fallback for content that has no texture of its own: renders it into a scratch
 	/// surface through the software path, then uploads that onto this canvas' target
@@ -145,7 +145,8 @@ public:
 	void drawTransparent(const Canvas & image, const Point & pos, double transparency);
 
 	/// renders another canvas onto this canvas with scaling
-	void drawScaled(const Canvas &image, const Point & pos, const Point & targetSize);
+	/// smooth：放大时线性插值（小地图水墨样式用，格子边晕开），默认最近邻
+	void drawScaled(const Canvas &image, const Point & pos, const Point & targetSize, bool smooth = false);
 
 	/// 把一张画在透明底上的图层（颜色已是预乘 alpha，例如大地图分层缓存的物件层）缩放叠到本画布上
 	void drawLayerPremultiplied(const Canvas & image, const Point & pos, const Point & targetSize);

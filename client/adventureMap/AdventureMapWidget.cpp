@@ -295,7 +295,7 @@ std::shared_ptr<CIntObject> AdventureMapWidget::buildMapTownList(const JsonNode 
 std::shared_ptr<CIntObject> AdventureMapWidget::buildMinimap(const JsonNode & input)
 {
 	Rect area = readTargetArea(input["area"]);
-	minimap = std::make_shared<CMinimap>(area);
+	minimap = std::make_shared<CMinimap>(area, MinimapStyle::fromJson(input["style"]));
 	return minimap;
 }
 

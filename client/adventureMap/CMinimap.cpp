@@ -26,20 +26,107 @@
 #include "../widgets/Images.h"
 #include "../windows/InfoWindows.h"
 
+#include "render/IImage.h"
+
 #include "../../lib/CConfigHandler.h"
+#include "../../lib/GameLibrary.h"
 #include "../../lib/TerrainHandler.h"
+#include "../../lib/filesystem/ResourcePath.h"
+#include "../../lib/json/JsonNode.h"
 #include "../../lib/callback/CCallback.h"
 #include "../../lib/mapObjects/CGHeroInstance.h"
 #include "../../lib/mapping/TerrainTile.h"
 #include "../../lib/texts/CGeneralTextHandler.h"
 
+namespace
+{
+/// 四邻（迷雾边勾墨、揭雾后重算四邻都用）
+const std::array<int3, 4> neighbourOffsets = {int3(1, 0, 0), int3(-1, 0, 0), int3(0, 1, 0), int3(0, -1, 0)};
+
+std::optional<ColorRGBA> readStyleColor(const JsonNode & node)
+{
+	if(!node.isString())
+		return std::nullopt;
+	return Colors::parseColor(node.String());
+}
+
+ColorRGBA mixColor(const ColorRGBA & a, const ColorRGBA & b, float t)
+{
+	auto lerp = [t](ui8 x, ui8 y) { return static_cast<ui8>(std::lround(x + (y - x) * t)); };
+	return ColorRGBA(lerp(a.r, b.r), lerp(a.g, b.g), lerp(a.b, b.b), a.a);
+}
+
+bool isInMap(const int3 & pos, const int3 & mapSizes)
+{
+	return pos.x >= 0 && pos.y >= 0 && pos.x < mapSizes.x && pos.y < mapSizes.y;
+}
+}
+
+std::shared_ptr<const MinimapStyle> MinimapStyle::fromJson(const JsonNode & config)
+{
+	auto result = std::make_shared<MinimapStyle>();
+
+	if(config.isNull())
+		return result;
+
+	result->fogColor = readStyleColor(config["fogColor"]);
+	result->backgroundColor = readStyleColor(config["backgroundColor"]);
+	result->radarColor = readStyleColor(config["radarColor"]);
+	result->fogEdgeColor = readStyleColor(config["fogEdgeColor"]);
+	result->fogEdgeStrength = result->fogEdgeColor ? std::clamp(static_cast<float>(config["fogEdgeStrength"].Float()), 0.0f, 1.0f) : 0.0f;
+	result->smooth = config["smooth"].Bool();
+
+	if(config["overlay"].isString())
+		result->overlay = ENGINE->renderHandler().loadImage(ImagePath::fromJson(config["overlay"]), EImageBlitMode::COLORKEY);
+
+	// 键名可写 "grass"，也可写带模组前缀的 "core:grass"；值是 [未遮挡色, 遮挡色]
+	const JsonNode & terrains = config["terrains"];
+	for(const auto & terrain : LIBRARY->terrainTypeHandler->objects)
+	{
+		if(!terrain)
+			continue;
+
+		const std::string key = terrain->getJsonKey();
+		const JsonNode * entry = &terrains[key];
+		if(entry->isNull())
+			entry = &terrains[key.substr(key.find(':') + 1)];
+		if(!entry->isVector() || entry->Vector().size() < 2)
+			continue;
+
+		const auto unblocked = readStyleColor(entry->Vector()[0]);
+		const auto blocked = readStyleColor(entry->Vector()[1]);
+		if(!unblocked || !blocked)
+			continue;
+
+		const size_t index = terrain->getIndex();
+		if(result->terrainColors.size() <= index)
+			result->terrainColors.resize(index + 1);
+		result->terrainColors[index] = std::make_pair(*unblocked, *blocked);
+	}
+
+	return result;
+}
+
+bool CMinimapInstance::touchesFog(const int3 & pos) const
+{
+	const int3 mapSizes = GAME->interface()->cb->getMapSize();
+
+	for(const auto & offset : neighbourOffsets)
+	{
+		const int3 neighbour = pos + offset;
+		if(isInMap(neighbour, mapSizes) && !GAME->interface()->cb->getTile(neighbour, false))
+			return true;
+	}
+	return false;
+}
+
 ColorRGBA CMinimapInstance::getTileColor(const int3 & pos, bool minimapShowHeroes) const
 {
 	const TerrainTile * tile = GAME->interface()->cb->getTile(pos, false);
 
-	// if tile is not visible it will be black on minimap
+	// if tile is not visible it will be black on minimap (or the style's fog color, e.g. blank paper)
 	if(!tile)
-		return Colors::BLACK;
+		return style->fogColor.value_or(Colors::BLACK);
 
 	// if object at tile is owned - it will be colored as its owner
 	for (const ObjectInstanceID objectID : tile->blockingObjects)
@@ -60,10 +147,18 @@ ColorRGBA CMinimapInstance::getTileColor(const int3 & pos, bool minimapShowHeroe
 		}
 	}
 
-	if (tile->blocked() && !tile->visitable())
-		return tile->getTerrain()->minimapBlocked;
-	else
-		return tile->getTerrain()->minimapUnblocked;
+	const auto * terrain = tile->getTerrain();
+	const bool blocked = tile->blocked() && !tile->visitable();
+	ColorRGBA color = blocked ? terrain->minimapBlocked : terrain->minimapUnblocked;
+
+	const size_t index = terrain->getIndex();
+	if(index < style->terrainColors.size() && style->terrainColors[index])
+		color = blocked ? style->terrainColors[index]->second : style->terrainColors[index]->first;
+
+	if(style->fogEdgeStrength > 0 && touchesFog(pos))
+		color = mixColor(color, *style->fogEdgeColor, style->fogEdgeStrength);
+
+	return color;
 }
 
 void CMinimapInstance::refreshTile(const int3 &tile, bool minimapShowHeroes)
@@ -82,8 +177,9 @@ void CMinimapInstance::redrawMinimap()
 			minimap->drawPoint(Point(x, y), getTileColor(int3(x, y, level), minimapShowHeroes));
 }
 
-CMinimapInstance::CMinimapInstance(const Point & position, const Point & dimensions, int Level):
+CMinimapInstance::CMinimapInstance(const Point & position, const Point & dimensions, int Level, std::shared_ptr<const MinimapStyle> style):
 	minimap(new Canvas(Point(GAME->interface()->cb->getMapSize().x, GAME->interface()->cb->getMapSize().y), CanvasScalingPolicy::IGNORE)),
+	style(style ? std::move(style) : MinimapStyle::fromJson(JsonNode())),
 	level(Level)
 {
 	pos += position;
@@ -96,12 +192,13 @@ CMinimapInstance::~CMinimapInstance() = default;
 
 void CMinimapInstance::showAll(Canvas & to)
 {
-	to.drawScaled(*minimap, pos.topLeft(), pos.dimensions());
+	to.drawScaled(*minimap, pos.topLeft(), pos.dimensions(), style->smooth);
 }
 
-CMinimap::CMinimap(const Rect & position)
+CMinimap::CMinimap(const Rect & position, std::shared_ptr<const MinimapStyle> style)
 	: CIntObject(LCLICK | SHOW_POPUP | DRAG | MOVE | GESTURE, position.topLeft())
 	, heroIcon(ENGINE->renderHandler().loadImage(ImagePath::builtin("minimapIcons/hero"), EImageBlitMode::WITH_SHADOW_AND_FLAG_COLOR))
+	, style(style ? std::move(style) : MinimapStyle::fromJson(JsonNode()))
 	, level(0)
 {
 	OBJECT_CONSTRUCTION;
@@ -197,9 +294,13 @@ void CMinimap::showAll(Canvas & to)
 	// to be repainted first. Locally, since the parent would redraw the whole adventure map.
 	// Cheaper than working out the bands, and the minimap is drawn over it right afterwards.
 	if(minimap)
-		to.drawColor(aiShield->pos, Colors::BLACK);
+		to.drawColor(aiShield->pos, style->backgroundColor.value_or(Colors::BLACK));
 
 	CIntObject::showAll(to);
+
+	// 纸纹叠在小地图上、英雄图标与视野框之下；每次都随小地图整块重画，半透明不会累加
+	if(minimap && style->overlay)
+		to.draw(style->overlay, aiShield->pos.topLeft());
 
 	if(minimap)
 	{
@@ -231,7 +332,7 @@ void CMinimap::showAll(Canvas & to)
 				screenArea.w * pos.w / mapSizes.x - 1,
 				screenArea.h * pos.h / mapSizes.y - 1
 			};
-		clippedTarget.drawBorderDashed(radar, Colors::PURPLE);
+		clippedTarget.drawBorderDashed(radar, style->radarColor.value_or(Colors::PURPLE));
 	}
 }
 
@@ -241,7 +342,7 @@ void CMinimap::update()
 		return;
 
 	OBJECT_CONSTRUCTION;
-	minimap = std::make_shared<CMinimapInstance>(Point(0,0), pos.dimensions(), level);
+	minimap = std::make_shared<CMinimapInstance>(Point(0,0), pos.dimensions(), level, style);
 	redraw();
 }
 
@@ -298,8 +399,24 @@ void CMinimap::updateTiles(const FowTilesType & positions)
 	{
 		const bool minimapShowHeroes = settings["adventure"]["minimapShowHeroes"].Bool();
 
-		for (auto const & tile : positions)
-			minimap->refreshTile(tile, minimapShowHeroes);
+		if(style->fogEdgeStrength > 0)
+		{
+			// 揭开迷雾会改变四邻是否贴着迷雾（勾边），四邻一起重算
+			const int3 mapSizes = GAME->interface()->cb->getMapSize();
+			FowTilesType withNeighbours = positions;
+			for(const auto & tile : positions)
+				for(const auto & offset : neighbourOffsets)
+					if(isInMap(tile + offset, mapSizes))
+						withNeighbours.insert(tile + offset);
+
+			for(const auto & tile : withNeighbours)
+				minimap->refreshTile(tile, minimapShowHeroes);
+		}
+		else
+		{
+			for (auto const & tile : positions)
+				minimap->refreshTile(tile, minimapShowHeroes);
+		}
 	}
 
 	redraw();

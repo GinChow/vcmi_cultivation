@@ -105,7 +105,8 @@ public:
 	void drawTransparent(const Canvas & image, const Point & pos, double transparency);
 
 	/// renders another canvas onto this canvas with scaling
-	void drawScaled(const Canvas &image, const Point & pos, const Point & targetSize);
+	/// smooth 只在 SDL3 后端生效（线性插值），本后端始终最近邻
+	void drawScaled(const Canvas &image, const Point & pos, const Point & targetSize, bool smooth = false);
 
 	/// 叠加大地图分层缓存的图层。本后端不做分层（见 IScreenHandler::isMapLayeringSupported），按普通 alpha 混合缩放绘制
 	void drawLayerPremultiplied(const Canvas & image, const Point & pos, const Point & targetSize);

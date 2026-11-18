@@ -163,8 +163,9 @@ void Canvas::bindRenderTarget() const
 			logGpuIssueOnce(std::string("SDL_SetRenderTarget failed: ") + SDL_GetError());
 }
 
-void Canvas::copyFromCanvas(const Canvas & image, const Rect & targetArea, uint32_t blendMode, uint8_t alpha)
+void Canvas::copyFromCanvas(const Canvas & image, const Rect & targetArea, uint32_t blendMode, uint8_t alpha, bool linear)
 {
+	const SDL_ScaleMode scaleMode = linear ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
 	SDL_Renderer * renderer = GpuResources::get().renderer();
 
 	bindRenderTarget();
@@ -193,7 +194,7 @@ void Canvas::copyFromCanvas(const Canvas & image, const Rect & targetArea, uint3
 
 		SDL_SetTextureBlendMode(uploaded, static_cast<SDL_BlendMode>(blendMode));
 		SDL_SetTextureAlphaMod(uploaded, alpha);
-		SDL_SetTextureScaleMode(uploaded, SDL_SCALEMODE_NEAREST);
+		SDL_SetTextureScaleMode(uploaded, scaleMode);
 
 		if(!SDL_RenderTexture(renderer, uploaded, &source, &target))
 			logGpuIssueOnce(std::string("SDL_RenderTexture failed for uploaded surface: ") + SDL_GetError());
@@ -207,7 +208,7 @@ void Canvas::copyFromCanvas(const Canvas & image, const Rect & targetArea, uint3
 	SDL_SetTextureBlendMode(image.renderTarget, static_cast<SDL_BlendMode>(blendMode));
 	SDL_SetTextureAlphaMod(image.renderTarget, alpha);
 	// matches SDL_BlitSurfaceScaled on the surface path; see the note in SDLImageShared
-	SDL_SetTextureScaleMode(image.renderTarget, SDL_SCALEMODE_NEAREST);
+	SDL_SetTextureScaleMode(image.renderTarget, scaleMode);
 
 	if(!SDL_RenderTexture(renderer, image.renderTarget, &source, &target))
 		logGpuIssueOnce(std::string("SDL_RenderTexture failed: ") + SDL_GetError());
@@ -348,19 +349,19 @@ void Canvas::drawTransparent(const Canvas & image, const Point & pos, double tra
 	SDL_SetSurfaceBlendMode(image.surface, oldMode);
 }
 
-void Canvas::drawScaled(const Canvas & image, const Point & pos, const Point & targetSize)
+void Canvas::drawScaled(const Canvas & image, const Point & pos, const Point & targetSize, bool smooth)
 {
 	// SDL_BlitSurfaceScaled is a software scaler - expensive on large areas.
 	Rect targetArea(transformPos(pos), transformSize(targetSize));
 
 	if(renderTarget)
 	{
-		copyFromCanvas(image, targetArea, SDL_BLENDMODE_NONE, SDL_ALPHA_OPAQUE);
+		copyFromCanvas(image, targetArea, SDL_BLENDMODE_NONE, SDL_ALPHA_OPAQUE, smooth);
 		return;
 	}
 
 	SDL_Rect targetRect = CSDL_Ext::toSDL(targetArea);
-	SDL_BlitSurfaceScaled(image.surface, nullptr, surface, &targetRect, SDL_SCALEMODE_NEAREST);
+	SDL_BlitSurfaceScaled(image.surface, nullptr, surface, &targetRect, smooth ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
 }
 
 void Canvas::drawScaledBatch(const Canvas & image, const std::vector<std::pair<Rect, Rect>> & regions)

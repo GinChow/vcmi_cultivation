@@ -145,7 +145,7 @@ void Canvas::drawTransparent(const Canvas & image, const Point & pos, double tra
 	SDL_SetSurfaceBlendMode(image.surface, oldMode);
 }
 
-void Canvas::drawScaled(const Canvas & image, const Point & pos, const Point & targetSize)
+void Canvas::drawScaled(const Canvas & image, const Point & pos, const Point & targetSize, bool /*smooth*/)
 {
 	SDL_Rect targetRect = CSDL_Ext::toSDL(Rect(transformPos(pos), transformSize(targetSize)));
 	SDL_BlitScaled(image.surface, nullptr, surface, &targetRect);
