@@ -48,7 +48,7 @@ struct Params
 	float4 sunColor;  // rgb：阳光颜色；w：边缘光强度
 	float4 shade;     // rgb：背阴处的色调；w：长投影的浓度
 	float4 camera;    // xy：屏幕中心的地图坐标；z：云层的视差系数；w：云层的高度（图块）
-	float4 atmos;     // x：雾的浓度；y：云海的浓度
+	float4 atmos;     // x：雾的浓度；y：云海的浓度；z：这一帧之后后处理统一色调的强度（不经后处理时为 0）；w：修仙建筑保色的程度
 	float4 shadowDir; // xy：离地 1 个图块的点，影子在屏幕上落出多远（图块）
 	float4 grade;     // rgb：整幅画面的时段色调
 	float4 terrain;   // x：地表材质强度（缩得太小时为 0）；y：一格材质铺多少图块；zw：地形场尺寸（图块）
@@ -163,6 +163,44 @@ static inline Relief decodeRelief(float4 r)
 	result.normal = normalize(mix(groundNormal, n, result.known));
 	result.height = enc.b * reliefHeightRange * result.known * saturate(r.a * 1.5);
 	return result;
+}
+
+// 修仙建筑记号（2026-11-18）：模组给按修仙设定重绘的建筑配一张起伏图，RGB 存 (10, 0, 0)/255、A 为覆盖度——
+// R+G 不到 0.08，按“没有起伏图”处理（不重新打光、不投长影、不起雾、不盖云，长投影着色器只看 B，B 为 0 即平地）；
+// 真实法线不会落在 R≈0.04、G≈0 这一角（那是长度超过 1 的法线），所以这个组合只当记号用。
+// 压在建筑前面、没有起伏图的物件（英雄、宝物）按清零剪影画进起伏层，会把这里的 RGB 乘掉，记号也就跟着消失
+static inline float vividMark(float4 r)
+{
+	if(r.a < 0.02)
+		return 0.0;
+	float3 enc = r.rgb / r.a;
+	return smoothstep(0.015, 0.028, enc.r) * (1.0 - smoothstep(0.06, 0.09, enc.r))
+		* (1.0 - smoothstep(0.015, 0.03, enc.g)) * (1.0 - smoothstep(0.015, 0.03, enc.b)) * saturate(r.a * 1.5);
+}
+
+// 后处理“统一色调”（postShaderSource 第 2 步）的反变换：先在这里把建筑的颜色往反方向推，经过后处理正好回到原色，
+// 工笔重彩不被收艳、压墨青、抬黑位罩灰（2026-11-18 用户反馈）。三小步倒着来：纸墨范围 → 冷暖 → 收艳。
+// 常量必须与后处理着色器一致；收艳的力度取决于“收之前”的饱和度，用推回去的结果再算一遍
+static inline float3 undoPostGrade(float3 y, float g, float night)
+{
+	const float3 lumW = float3(0.299, 0.587, 0.114);
+	float3 inkFloor = float3(0.05, 0.05, 0.06) * (1.0 - 0.6 * night);
+	const float3 paperTop = float3(0.97, 0.95, 0.905);
+	float3 x = (y - g * inkFloor) / ((1.0 - g) + g * (paperTop - inkFloor));
+	float lum = dot(x, lumW);
+	float3 tint = mix(float3(0.95, 0.975, 1.02), float3(1.025, 1.0, 0.95), smoothstep(0.12, 0.7, lum));
+	x /= mix(float3(1.0), tint, g);
+	lum = dot(x, lumW);
+	float3 z = x;
+	for(int i = 0; i < 2; ++i)
+	{
+		float hi = max(z.r, max(z.g, z.b));
+		float lo = min(z.r, min(z.g, z.b));
+		float sat = (hi - lo) / max(hi, 1e-3);
+		float keep = 1.0 - g * (0.08 + 0.30 * smoothstep(0.35, 0.9, sat));
+		z = lum + (x - lum) / keep;
+	}
+	return saturate(z);
 }
 
 // 物件按法线重新打光（颜色为预乘 alpha）。原画本身就画了明暗，所以按“相对平地”的比例调：
@@ -1113,6 +1151,14 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	// 植被粒子（MapParticles）和覆盖层（迷雾、路径）在这一遍之后另外画上去，粒子才能夹在物件和迷雾之间。
 	// alpha 是自发光的程度：这一遍直接覆盖（不混合），画进离屏图后由后处理取出来做辉光；直接画到窗口上时 alpha 用不到
 
+	// 修仙建筑保色：后处理会统一调色时，建筑像素先做反变换（见 undoPostGrade）。时段色调、夜色、灯光照旧——那是光，不是调色
+	if(P.atmos.z > 0.001 && P.atmos.w > 0.001)
+	{
+		float vivid = vividMark(relief) * P.atmos.w;
+		if(vivid > 0.001)
+			color = mix(color, undoPostGrade(color, P.atmos.z, P.night.x), vivid);
+	}
+
 	main0_out out;
 	out.color = float4(color, saturate(emission)) * in.color;
 	return out;
@@ -1743,6 +1789,8 @@ constexpr Uint32 postSamplerCount = 4;
 /// 后处理的强度（2026-11-18 初版，实机调）：辉光、统一色调、宣纸纹理、暗角与边缘墨晕
 constexpr float bloomStrength = 1.0f;
 constexpr float gradeStrength = 0.85f;
+/// 修仙建筑（起伏层记号，见着色器 vividMark）不受统一色调影响的程度：1 为完全保住原色（2026-11-18 用户要求建筑不被调色罩灰）
+constexpr float vividStrength = 1.0f;
 constexpr float paperStrength = 1.0f;
 constexpr float frameStrength = 1.0f;
 
@@ -3078,6 +3126,9 @@ void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs
 	uniforms.camera[3] = cloudAltitude;
 	uniforms.atmos[0] = 0.36f; // 雾
 	uniforms.atmos[1] = 0.85f; // 云
+	// 画进离屏图、之后经后处理统一调色时（renderFrame 传 emissionKeepingBlend），建筑先做反调色；直接画到窗口上时不调色，也就不反
+	uniforms.atmos[2] = overlayBlend == emissionKeepingBlend ? gradeStrength : 0.0f;
+	uniforms.atmos[3] = vividStrength;
 
 	// 地表材质：按屏幕上一个图块多大淡入（缩得太小时退回图块原画）
 	float materialStrength = 0.0f;
