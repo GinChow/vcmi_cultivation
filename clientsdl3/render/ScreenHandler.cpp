@@ -1069,6 +1069,11 @@ void ScreenHandler::setMapFogField(const std::vector<uint8_t> & rgba, const Poin
 	mapCompositor->setFogField(rgba, size);
 }
 
+void ScreenHandler::setMapUnderground(bool underground)
+{
+	mapCompositor->setUnderground(underground);
+}
+
 /// presentMapLayers() 登记的大地图图层，整理成合成器要的输入
 template<typename Presented>
 static MapLayerCompositor::Inputs mapCompositorInputs(const Presented & presented)

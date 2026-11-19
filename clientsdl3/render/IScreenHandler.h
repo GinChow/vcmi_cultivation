@@ -333,4 +333,8 @@ public:
 	/// G 正在散开的程度（散到一半最大），B 为 255 表示在冒险法术射程外（云压暗）。分层合成时覆盖层不画原版迷雾，由合成器据此画云。
 	/// 换地图层时整张给一次，之后迷雾变化、云在散开时由地图缓存每帧调用
 	virtual void setMapFogField(const std::vector<uint8_t> & rgba, const Point & size) = 0;
+
+	/// 当前显示的地图层是不是地下（2026-11-19）：地下没有天，合成器不画云层、云影、阵雨和雨雪，水墨迷雾改成泼墨的幽暗。
+	/// 换地图层时由地图缓存调用
+	virtual void setMapUnderground(bool underground) = 0;
 };

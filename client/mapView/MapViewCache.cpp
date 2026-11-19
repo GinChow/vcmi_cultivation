@@ -534,7 +534,8 @@ void MapViewCache::sendVegetationField(const std::shared_ptr<IMapRendererContext
 			leaves[i] = vegetation.leaves * terrain.leaves;
 			petals[i] = vegetation.petals * terrain.petals;
 			fireflies[i] = terrain.fireflies;
-			birdRoosts[i] = vegetation.birds * terrain.birds;
+			// 地下没有鸟（地下的草地、树林也一样）
+			birdRoosts[i] = level > 0 ? 0.0f : vegetation.birds * terrain.birds;
 			lively[i] = mapTile.getTerrain()->isWater() || vegetation.leaves + vegetation.petals + vegetation.birds > 0.0f;
 		}
 	}
@@ -1609,6 +1610,8 @@ void MapViewCache::update(const std::shared_ptr<IMapRendererContext> & context)
 
 	if(layered && depthFieldLevel != model->getLevel())
 	{
+		// 地图只有地上（0）、地下（1）两层
+		ENGINE->screenHandler().setMapUnderground(model->getLevel() > 0);
 		sendDepthField(context);
 		sendVegetationField(context);
 		sendAtmosphereField(context);

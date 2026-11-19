@@ -1280,6 +1280,7 @@ struct Params
 	float4 misc;   // x：时间（秒）；y：屏幕上一个图块多少像素；zw：云雾场尺寸（图块）
 	float4 sun;    // xyz：指向太阳的方向（屏幕坐标：x 右、y 上、z 朝镜头）；w：天黑的程度
 	float4 grade;  // rgb：整幅画面的时段色调；w：夜里颜色褪掉多少
+	float4 style;  // x：地下（1）还是地上（0）
 };
 
 struct main0_in
@@ -1456,7 +1457,9 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 
 	// 远山：固定在地图上。原来带视差（比地面移得慢），镜头跟着英雄走时山也跟着滑，看上去像山在动（2026-11-18 用户反馈）
 	// 缩得很小时（屏幕上一个图块不到二十几个像素）远山只剩满屏的小三角，像撒了一地帐篷，淡出
-	float hills = inkMountains(world, noiseTex, noiseSmp) * deep * smoothstep(16.0, 28.0, P.misc.y);
+	// 地下没有远山（2026-11-19 用户：地下不该有云）
+	bool underground = P.style.x > 0.5;
+	float hills = underground ? 0.0 : inkMountains(world, noiseTex, noiseSmp) * deep * smoothstep(16.0, 28.0, P.misc.y);
 
 	// 云：留白。云头盖住烟云和山腰（云遮山），云头下沿勾一笔淡墨、染一点淡墨，笔触时断时续
 	float cloudWhite = smoothstep(0.50, 0.72, form.x);
@@ -1474,6 +1477,18 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 
 	float3 color = mix(paper * (0.96 + (fiber - 0.5) * 0.08 * detail), inkColor, clamp(ink, 0.0, 0.9));
 
+	// 地下：不是云海，是一片泼墨的幽暗——浓墨底子带宣纸纤维，上面只有横向缓缓流动、颜色略浅的墨烟，
+	// 云面的大起伏只留成浓淡变化（墨分五色），没有留白的云头；边上里侧略浅，像墨洇开，最外一笔更浓的墨边
+	const float3 deepInk = float3(0.15, 0.145, 0.14);
+	const float3 smokeInk = float3(0.34, 0.33, 0.31);
+	if(underground)
+	{
+		float smoke = wash * 0.55 + pool * 0.12 * detail + smoothstep(0.35, 0.75, form.y) * 0.12;
+		color = mix(deepInk, smokeInk, smoke) * (0.95 + (fiber - 0.5) * 0.12 * detail);
+		color = mix(color, smokeInk * 0.85, inner * 0.35);
+		color = mix(color, deepInk * 0.5, contour * 0.5 * detail);
+	}
+
 	// 法术射程外压暗
 	color *= 1.0 - 0.6 * dark;
 
@@ -1485,7 +1500,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	color = mix(color, color * float3(0.32, 0.35, 0.44), night);
 
 	// 外面一圈淡墨烟是半透明的灰，正在散开的云变薄
-	float3 hazeColor = mix(paper, inkColor, 0.18) * P.grade.rgb;
+	float3 hazeColor = (underground ? mix(deepInk, smokeInk, 0.35) : mix(paper, inkColor, 0.18)) * P.grade.rgb;
 	hazeColor = mix(hazeColor, hazeColor * float3(0.32, 0.35, 0.44), night);
 	float alpha = clamp(max(body, haze) * (1.0 - stir * 0.45), 0.0, 1.0);
 	color = mix(hazeColor, color, body / max(max(body, haze), 1e-4));
@@ -1756,6 +1771,7 @@ struct FogUniforms
 	float misc[4];
 	float sun[4];
 	float grade[4];
+	float style[4];
 };
 
 /// 云雾着色器：主纹理（覆盖层）加云雾场、噪声
@@ -2841,6 +2857,11 @@ void MapLayerCompositor::setAtmosphereField(const std::vector<uint8_t> & rgba, c
 	depthField.dirty = true;
 }
 
+void MapLayerCompositor::setUnderground(bool value)
+{
+	underground = value;
+}
+
 void MapLayerCompositor::setFogField(const std::vector<uint8_t> & rgba, const Point & size)
 {
 	fogField.rgba = rgba;
@@ -3062,6 +3083,7 @@ void MapLayerCompositor::drawOverlay(SDL_Renderer * renderer, const Inputs & inp
 		}
 		uniforms.sun[3] = sun.night;
 		uniforms.grade[3] = sun.desaturate;
+		uniforms.style[0] = underground ? 1.0f : 0.0f;
 
 		SDL_SetGPURenderStateFragmentUniforms(fogState, 0, &uniforms, sizeof(uniforms));
 		SDL_SetGPURenderState(renderer, fogState);
@@ -3125,8 +3147,8 @@ void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs
 	uniforms.camera[1] = center[1];
 	uniforms.camera[2] = cloudParallax;
 	uniforms.camera[3] = cloudAltitude;
-	uniforms.atmos[0] = 0.36f; // 雾
-	uniforms.atmos[1] = 0.85f; // 云
+	uniforms.atmos[0] = 0.36f; // 雾（贴地的雾气，地下也有）
+	uniforms.atmos[1] = underground ? 0.0f : 0.85f; // 云（云层、山腰云海与云影都是天上的，地下没有）
 	// 画进离屏图、之后经后处理统一调色时（renderFrame 传 emissionKeepingBlend），建筑先做反调色；直接画到窗口上时不调色，也就不反
 	uniforms.atmos[2] = overlayBlend == emissionKeepingBlend ? gradeStrength : 0.0f;
 	uniforms.atmos[3] = vividStrength;
@@ -3156,8 +3178,8 @@ void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs
 	uniforms.night[1] = sun.lamps;
 	uniforms.night[2] = sun.desaturate;
 	uniforms.night[3] = sun.heat;
-	uniforms.weather[0] = sun.cloudShadow;
-	uniforms.weather[1] = 1.0f; // 阵雨
+	uniforms.weather[0] = underground ? 0.0f : sun.cloudShadow;
+	uniforms.weather[1] = underground ? 0.0f : 1.0f; // 阵雨
 
 	// 局部光：离屏幕中心近的优先，闪动在这里算好（每盏灯一个相位）
 	const float centerX = uniforms.camera[0];
@@ -3276,6 +3298,7 @@ void MapLayerCompositor::composeWithShader(SDL_Renderer * renderer, const Inputs
 	frame.time = now;
 	frame.grade = sun.grade;
 	frame.night = sun.night;
+	frame.sky = !underground;
 	frame.objects = inputs.objects;
 	frame.blendMode = overlayBlend;
 	frame.sparkles = effects.sparkles;

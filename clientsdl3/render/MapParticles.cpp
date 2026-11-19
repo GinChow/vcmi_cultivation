@@ -1075,10 +1075,12 @@ void MapParticles::draw(SDL_Renderer * renderer, const Frame & frame, const std:
 	// 天气粒子按图块数逐个算，缩到全图时几千个图块、每片雪不到一个像素，不算
 	if(frame.weatherStrength > 0.01f)
 	{
-		buildSnow(placement, frame);
+		if(frame.sky)
+			buildSnow(placement, frame);
 		buildEmbers(placement, frame);
 		buildMiasma(placement, frame);
-		buildRain(placement, frame);
+		if(frame.sky)
+			buildRain(placement, frame);
 	}
 	// 尘土、炊烟、宝物闪光与物件个数有关（不按图块逐个算），缩小时照画，只随粒子强度淡出
 	buildDust(placement, frame);

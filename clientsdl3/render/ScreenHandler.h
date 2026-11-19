@@ -206,6 +206,7 @@ public:
 	void setMapDayProgress(int day, std::optional<float> dayProgress) final;
 	void setMapObjectEffects(const MapObjectEffects & effects) final;
 	void setMapFogField(const std::vector<uint8_t> & rgba, const Point & size) final;
+	void setMapUnderground(bool underground) final;
 	void updateScreenTexture() final;
 	void presentScreenTexture() final;
 

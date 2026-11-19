@@ -127,6 +127,9 @@ public:
 	/// 设置云雾场（含义见 IScreenHandler::setMapFogField）。须在渲染线程上调用
 	void setFogField(const std::vector<uint8_t> & rgba, const Point & size);
 
+	/// 当前显示的是不是地下（含义见 IScreenHandler::setMapUnderground）。须在渲染线程上调用
+	void setUnderground(bool underground);
+
 	/// 着色器在这个渲染器上建不起来（或缺纹理）、已退回逐层叠加：这时分层的地图缓存画不出云，屏幕处理器据此让它退回原版单层缓存
 	bool isShaderBroken() const { return shaderUnavailable; }
 
@@ -232,6 +235,8 @@ private:
 	SDL_GPUShader * fogShader = nullptr;
 	SDL_GPURenderState * fogState = nullptr;
 	TileField fogField;
+	/// 地下（2026-11-19）：没有天，云层、云影、阵雨、雨雪都不画，水墨迷雾不画云海远山、改成泼墨的幽暗
+	bool underground = false;
 	std::array<SDL_Texture *, 2> fogBoundTextures = {};
 	/// 与 inputsForgotten 同时置位：纹理可能换过（新纹理可能分到旧地址），云雾的渲染状态也要重建
 	std::atomic<bool> fogInputsForgotten{false};
