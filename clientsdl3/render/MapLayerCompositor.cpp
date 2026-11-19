@@ -208,12 +208,22 @@ static inline float3 undoPostGrade(float3 y, float g, float night)
 // ---- 修仙建筑融进场景（2026-11-19）----
 // 用户嫌建筑像贴上去的：原来建筑整个跳过打光、雾、云，雾和云影飘到建筑轮廓就断，像在场景里挖了个洞；
 // 地上的影子朝左（光从右来），朝左的墙却一样亮；墙脚直接切在草上。建筑没有逐像素法线，这里按剪影和地面线估。
-constant float buildingFog = 0.7;        // 贴地的雾落到建筑上的比例：雾云只是气氛，可交互的建筑不能被埋掉
-constant float buildingCloud = 0.6;      // 山腰云海盖到建筑上的比例
-constant float buildingSideLight = 0.16; // 朝太阳一侧提亮、背阴一侧压暗的幅度（太阳在正东、正西时最大）
-constant float buildingFootShade = 0.16; // 墙脚压暗：离地 0 处压这么多，往上 buildingFootHeight 个图块淡出
-constant float buildingBounce = 0.3;     // 墙脚映上地面的颜色（草地偏绿、雪地偏白）
-constant float buildingFootHeight = 0.4;
+// 第一版（只加雾云、侧光 0.16、墙脚 0.16）用户嫌不明显：最大的差别是建筑本身比周围亮一倍（白寺庙台基 0.69，周围 0.34）、
+// 树冠饱和度是周围的 2～5 倍、没有深色，第一版没动这些。第二版加“明度匹配”（matchBuildingTone）并加大各项；
+// 第二版雾 0.85、云海 0.75、饱和度 0.75，再加上后处理收艳全量作用，神像褪成旧照片、白亭灰成一片，第三版往回收
+constant float buildingFog = 0.75;       // 贴地的雾落到建筑上的比例：雾云只是气氛，可交互的建筑不能被埋掉
+constant float buildingCloud = 0.65;     // 山腰云海盖到建筑上的比例
+constant float buildingSideLight = 0.3;  // 朝太阳一侧提亮、背阴一侧压暗的幅度（太阳在正东、正西时最大）
+constant float buildingFootShade = 0.3;  // 墙脚压暗：离地 0 处压这么多，往上 buildingFootHeight 个图块淡出
+constant float buildingBounce = 0.35;    // 墙脚映上地面的颜色（草地偏绿、雪地偏白）
+constant float buildingFootHeight = 0.6;
+// 明度匹配：大地图是淡墨底子，亮部到 0.5～0.7 为止、暗部到 0.15；工笔建筑白墙近 0.9、最暗处 0.25～0.4，
+// 整张图里只有它像在棚里打了光。亮部从 buildingKnee 起按 buildingHighlight 压缓，暗部（亮度 0.1 处最多）再压深，
+// 饱和度留 buildingSaturation。只改明度结构和艳度，不改色相
+constant float buildingKnee = 0.5;
+constant float buildingHighlight = 0.45;    // 白墙 0.9 → 0.68
+constant float buildingShadowDepth = 0.3;   // 亮度 0.1 处压 30%，0.45 以上不压
+constant float buildingSaturation = 0.85; // 后处理的统一收艳也照常作用（vividStrength 为 0），两者相乘
 // 建筑起伏图 B 的底数（图块）：导出时（export_mod.BUILDING_HEIGHT_FLOOR）整张加上，资源与宝物的 B 为 0，靠它区分两者。
 // 资源与宝物也带修仙记号（保色），但它们是可交互的小物件，照旧不起雾、不加明暗
 constant float buildingHeightFloor = 0.1;
@@ -244,11 +254,11 @@ static inline float2 buildingProbe(float4 r)
 }
 
 // 这一点在建筑的哪一侧：左右各取三处看还在不在建筑上。左边是建筑、右边空着为正（靠右边），反过来为负，
-// 离两边都超过 1.4 个图块为 0。三处由近到远权重递减，明暗从边上往里渐渐淡，不是一道硬边
+// 离两边都超过 2.2 个图块为 0。三处由近到远权重递减，明暗从边上往里渐渐淡，不是一道硬边
 static inline float buildingSide(float2 rel, float2 slots, float2 slotOrigin, texture2d<float> reliefTex, sampler reliefSmp)
 {
-	const float reach[3] = {0.35, 0.8, 1.4};
-	const float weight[3] = {0.5, 0.3, 0.2};
+	const float reach[3] = {0.5, 1.2, 2.2};
+	const float weight[3] = {0.45, 0.35, 0.2};
 	float side = 0.0;
 	for(int i = 0; i < 3; ++i)
 	{
@@ -257,6 +267,17 @@ static inline float buildingSide(float2 rel, float2 slots, float2 slotOrigin, te
 		side += weight[i] * (left.x - right.x) * left.y * right.y;
 	}
 	return side;
+}
+
+// 明度匹配（见 buildingKnee 等）。c 是不预乘的颜色
+static inline float3 matchBuildingTone(float3 c)
+{
+	const float3 lumW = float3(0.299, 0.587, 0.114);
+	float lum = dot(c, lumW);
+	float target = lum <= buildingKnee ? lum : buildingKnee + (lum - buildingKnee) * buildingHighlight;
+	target *= 1.0 - buildingShadowDepth * (1.0 - smoothstep(0.1, 0.45, lum));
+	float3 scaled = c * (target / max(lum, 1e-3));
+	return max(mix(float3(target), scaled, buildingSaturation), float3(0.0));
 }
 
 // 建筑表面的明暗：朝太阳一侧亮、背阴一侧暗（随时段换边，正午太阳在南、左右差不多），墙脚压暗并映上地面颜色。
@@ -1105,7 +1126,8 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		if(P.misc.y > 0.001)
 		{
 			float side = buildingSide(rel, slots, slotOrigin, reliefTex, reliefSmp);
-			objects.rgb = mix(objects.rgb, shadeBuilding(objects.rgb, side, buildingHeight, color, sunlit, P), building * P.misc.y);
+			float3 toned = matchBuildingTone(objects.rgb / max(objects.a, 0.001)) * objects.a;
+			objects.rgb = mix(objects.rgb, shadeBuilding(toned, side, buildingHeight, color, sunlit, P), building * P.misc.y);
 		}
 	}
 
@@ -1236,10 +1258,11 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	// 植被粒子（MapParticles）和覆盖层（迷雾、路径）在这一遍之后另外画上去，粒子才能夹在物件和迷雾之间。
 	// alpha 是自发光的程度：这一遍直接覆盖（不混合），画进离屏图后由后处理取出来做辉光；直接画到窗口上时 alpha 用不到
 
-	// 修仙建筑保色：后处理会统一调色时，建筑像素先做反变换（见 undoPostGrade）。时段色调、夜色、灯光照旧——那是光，不是调色
-	if(P.atmos.z > 0.001 && P.atmos.w > 0.001)
+	// 修仙保色：后处理会统一调色时，资源与宝物的像素先做反变换（见 undoPostGrade），建筑按 vividStrength（atmos.w）。
+	// 时段色调、夜色、灯光照旧——那是光，不是调色
+	if(P.atmos.z > 0.001)
 	{
-		float keep = mark * mix(1.0, P.atmos.w, building); // 资源与宝物照旧全保
+		float keep = mark * mix(1.0, P.atmos.w, building);
 		if(keep > 0.001)
 			color = mix(color, undoPostGrade(color, P.atmos.z, P.night.x), keep);
 	}
@@ -1894,8 +1917,9 @@ constexpr Uint32 postSamplerCount = 4;
 constexpr float bloomStrength = 1.0f;
 constexpr float gradeStrength = 0.85f;
 /// 修仙建筑（起伏层记号，见着色器 vividMark、buildingMark）不受统一色调影响的程度：1 为完全保住原色（2026-11-18 用户要求建筑不被调色罩灰）。
-/// 2026-11-19 用户又嫌建筑像贴上去的：整张图都收艳、压墨青，只有建筑不变，就和周围不在一个色调里，降到一半。资源与宝物照旧全保
-constexpr float vividStrength = 0.5f;
+/// 2026-11-19 用户又嫌建筑像贴上去的：整张图都收艳、压墨青，只有建筑不变，就和周围不在一个色调里。第一版降到一半，
+/// 第二版建筑另做明度匹配（着色器 matchBuildingTone），统一色调也照常吃，降到 0。资源与宝物照旧全保
+constexpr float vividStrength = 0.0f;
 constexpr float paperStrength = 1.0f;
 constexpr float frameStrength = 1.0f;
 
