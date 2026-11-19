@@ -166,8 +166,9 @@ static inline Relief decodeRelief(float4 r)
 }
 
 // 修仙建筑记号（2026-11-18）：模组给按修仙设定重绘的建筑配一张起伏图，R、G 存 (10, 0)/255、A 为覆盖度——
-// R+G 不到 0.08，按“没有法线”处理（不重新打光、不起雾、不盖云）；
-// B 是离地高度（2026-11-19 起）：长投影着色器只看 B，建筑像山、树一样随时段投长影，所以记号不看 B。
+// R+G 不到 0.08，按“没有法线”处理（不按法线重新打光）；雾、云、明暗按下面的 building* 另算（2026-11-19）；
+// B 是离地高度（按地面线量，建筑另加 buildingHeightFloor 底数；资源与宝物也带记号，B 为 0）：只给雾、云海、云影和墙脚压暗用，
+// 长投影着色器跳过带记号的像素（建筑的影子是烘好的固定投影），记号本身不看 B。
 // 真实法线不会落在 R≈0.04、G≈0 这一角（那是长度超过 1 的法线），所以这个组合只当记号用。
 // 压在建筑前面、没有起伏图的物件（英雄、宝物）按清零剪影画进起伏层，会把这里的 RGB 乘掉，记号也就跟着消失
 static inline float vividMark(float4 r)
@@ -202,6 +203,72 @@ static inline float3 undoPostGrade(float3 y, float g, float night)
 		z = lum + (x - lum) / keep;
 	}
 	return saturate(z);
+}
+
+// ---- 修仙建筑融进场景（2026-11-19）----
+// 用户嫌建筑像贴上去的：原来建筑整个跳过打光、雾、云，雾和云影飘到建筑轮廓就断，像在场景里挖了个洞；
+// 地上的影子朝左（光从右来），朝左的墙却一样亮；墙脚直接切在草上。建筑没有逐像素法线，这里按剪影和地面线估。
+constant float buildingFog = 0.7;        // 贴地的雾落到建筑上的比例：雾云只是气氛，可交互的建筑不能被埋掉
+constant float buildingCloud = 0.6;      // 山腰云海盖到建筑上的比例
+constant float buildingSideLight = 0.16; // 朝太阳一侧提亮、背阴一侧压暗的幅度（太阳在正东、正西时最大）
+constant float buildingFootShade = 0.16; // 墙脚压暗：离地 0 处压这么多，往上 buildingFootHeight 个图块淡出
+constant float buildingBounce = 0.3;     // 墙脚映上地面的颜色（草地偏绿、雪地偏白）
+constant float buildingFootHeight = 0.4;
+// 建筑起伏图 B 的底数（图块）：导出时（export_mod.BUILDING_HEIGHT_FLOOR）整张加上，资源与宝物的 B 为 0，靠它区分两者。
+// 资源与宝物也带修仙记号（保色），但它们是可交互的小物件，照旧不起雾、不加明暗
+constant float buildingHeightFloor = 0.1;
+
+// 修仙建筑的程度：有记号、且 B 不为 0（资源与宝物为 0）
+static inline float buildingMark(float4 r)
+{
+	float encB = r.b / max(r.a, 0.001);
+	return vividMark(r) * smoothstep(0.008, 0.018, encB);
+}
+
+// 建筑离地高度（图块），去掉底数
+static inline float buildingHeightOf(float4 r)
+{
+	return max(r.b / max(r.a, 0.001) * reliefHeightRange - buildingHeightFloor, 0.0) * saturate(r.a * 1.5);
+}
+
+// 起伏层上一个取样：x 是修仙建筑的程度，y 是这个取样能不能用。
+// 英雄、原版物件、道路在起伏层上是清零剪影（RGB 为 0、A 有值），资源与宝物带记号但 B 为 0，都看不出后面是不是建筑，不能用：
+// 当成“建筑到此为止”的话，英雄走过时建筑上会跟着一圈明暗
+static inline float2 buildingProbe(float4 r)
+{
+	float3 enc = r.rgb / max(r.a, 0.001);
+	float cutout = smoothstep(0.1, 0.3, r.a) * (1.0 - smoothstep(0.004, 0.012, enc.r + enc.g));
+	float building = buildingMark(r);
+	float pickup = vividMark(r) - building;
+	return float2(building, 1.0 - saturate(cutout + pickup));
+}
+
+// 这一点在建筑的哪一侧：左右各取三处看还在不在建筑上。左边是建筑、右边空着为正（靠右边），反过来为负，
+// 离两边都超过 1.4 个图块为 0。三处由近到远权重递减，明暗从边上往里渐渐淡，不是一道硬边
+static inline float buildingSide(float2 rel, float2 slots, float2 slotOrigin, texture2d<float> reliefTex, sampler reliefSmp)
+{
+	const float reach[3] = {0.35, 0.8, 1.4};
+	const float weight[3] = {0.5, 0.3, 0.2};
+	float side = 0.0;
+	for(int i = 0; i < 3; ++i)
+	{
+		float2 left = buildingProbe(reliefTex.sample(reliefSmp, windowToUV(rel - float2(reach[i], 0.0), slots, slotOrigin)));
+		float2 right = buildingProbe(reliefTex.sample(reliefSmp, windowToUV(rel + float2(reach[i], 0.0), slots, slotOrigin)));
+		side += weight[i] * (left.x - right.x) * left.y * right.y;
+	}
+	return side;
+}
+
+// 建筑表面的明暗：朝太阳一侧亮、背阴一侧暗（随时段换边，正午太阳在南、左右差不多），墙脚压暗并映上地面颜色。
+// rgb 是预乘 alpha 的建筑颜色，ground 是这一点下面的地面颜色，height 是离地高度（图块）
+static inline float3 shadeBuilding(float3 rgb, float side, float height, float3 ground, float sunlit, constant Params & P)
+{
+	float sideLight = 1.0 + buildingSideLight * side * P.sun.x * P.sun.w * sunlit;
+	float foot = 1.0 - smoothstep(0.0, buildingFootHeight, height);
+	float groundLum = max(dot(ground, float3(0.299, 0.587, 0.114)), 0.05);
+	float3 bounce = clamp(ground / groundLum, float3(0.75), float3(1.25));
+	float3 footTint = mix(float3(1.0), bounce, buildingBounce * foot) * (1.0 - buildingFootShade * foot);
+	return rgb * sideLight * footTint;
 }
 
 // 物件按法线重新打光（颜色为预乘 alpha）。原画本身就画了明暗，所以按“相对平地”的比例调：
@@ -1027,6 +1094,21 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	if(P.sun.w * P.misc.y > 0.001 && surface.known > 0.001)
 		objects.rgb = relight(objects.rgb, objects.a, surface, sunlit, P);
 
+	// 修仙建筑：离地高度取起伏层 B，后面的雾、云海、云影、局部光都按它算；再按左右剪影和墙脚加明暗（见 shadeBuilding）。
+	// 这时 color 还是建筑下面的地面，墙脚映的就是它的颜色
+	float mark = vividMark(relief);         // 带修仙记号：建筑、资源与宝物（保色用）
+	float building = buildingMark(relief);  // 其中的建筑
+	if(building > 0.001)
+	{
+		float buildingHeight = buildingHeightOf(relief);
+		surface.height = mix(surface.height, buildingHeight, building);
+		if(P.misc.y > 0.001)
+		{
+			float side = buildingSide(rel, slots, slotOrigin, reliefTex, reliefSmp);
+			objects.rgb = mix(objects.rgb, shadeBuilding(objects.rgb, side, buildingHeight, color, sunlit, P), building * P.misc.y);
+		}
+	}
+
 	color = objects.rgb + color * (1.0 - objects.a);
 
 	// 长投影：预处理着色器按起伏层逐点朝太阳方向找遮挡，算在 1/4 大小的光照图上（线性取样，影子边缘自然柔和）。
@@ -1044,9 +1126,10 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	color *= mix(float3(1.0), float3(0.74, 0.77, 0.86), cloudShade);
 
 	// 雾云场：G 生雾多少，B 山腰绕云多少（与离岸距离图同一张，按地图坐标取样）。
-	// 没有起伏图的物件（英雄、城镇、宝物、资源、船……都是可交互的）上不起雾、不盖云：雾和云只是气氛，不能挡住要点的东西
+	// 没有起伏图的物件（英雄、城镇、宝物、资源、船……都是可交互的）上不起雾、不盖云：雾和云只是气氛，不能挡住要点的东西。
+	// 修仙建筑也可交互，但整个跳过的话雾和云影飘到轮廓就断，像贴上去的（2026-11-19）：云影照落，雾和云海打折（buildingFog、buildingCloud）
 	float2 fieldSize = max(P.misc.zw, float2(1.0));
-	float interactive = saturate(relief.a * 1.5) * (1.0 - surface.known);
+	float interactive = saturate(relief.a * 1.5) * (1.0 - surface.known) * (1.0 - building);
 	float4 field = depthTex.sample(depthSmp, world / fieldSize) * P.misc.y * (1.0 - interactive);
 	const float2 cloudWind = float2(0.94, 0.34);
 	float cloudAltitude = P.camera.w;
@@ -1070,7 +1153,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	const float3 miasmaColor = float3(0.60, 0.70, 0.42);
 	if(field.g * P.atmos.x > 0.003)
 	{
-		float fog = fogAt(world, t, field.g, surface.height, noiseTex, noiseSmp) * P.atmos.x;
+		float fog = fogAt(world, t, field.g, surface.height, noiseTex, noiseSmp) * P.atmos.x * mix(1.0, buildingFog, building);
 		float3 fogColor = mix(float3(0.86, 0.89, 0.92), float3(0.86, 0.89, 0.92) * P.sunColor.rgb, 0.35);
 		fogColor = mix(fogColor, miasmaColor, miasma * 0.55);
 		color = mix(color, fogColor, saturate(fog));
@@ -1093,7 +1176,8 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	{
 		float2 cloudPos = world + P.camera.xy * P.camera.z + cloudWind * (t * 0.12);
 		float shape = cloudShape(cloudPos, noiseTex, noiseSmp);
-		float density = cloudDensity(shape, cloudCover) * (1.0 - smoothstep(cloudAltitude - 0.2, cloudAltitude + 0.4, surface.height));
+		float density = cloudDensity(shape, cloudCover) * (1.0 - smoothstep(cloudAltitude - 0.2, cloudAltitude + 0.4, surface.height))
+			* mix(1.0, buildingCloud, building);
 		if(density > 0.001)
 		{
 			float2 toSun = -P.shadowDir.xy / max(length(P.shadowDir.xy), 1e-3);
@@ -1155,9 +1239,9 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	// 修仙建筑保色：后处理会统一调色时，建筑像素先做反变换（见 undoPostGrade）。时段色调、夜色、灯光照旧——那是光，不是调色
 	if(P.atmos.z > 0.001 && P.atmos.w > 0.001)
 	{
-		float vivid = vividMark(relief) * P.atmos.w;
-		if(vivid > 0.001)
-			color = mix(color, undoPostGrade(color, P.atmos.z, P.night.x), vivid);
+		float keep = mark * mix(1.0, P.atmos.w, building); // 资源与宝物照旧全保
+		if(keep > 0.001)
+			color = mix(color, undoPostGrade(color, P.atmos.z, P.night.x), keep);
 	}
 
 	main0_out out;
@@ -1239,7 +1323,10 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		float4 c = reliefTex.sample(reliefSmp, windowToUV(p, slots, slotOrigin));
 		if(c.a < 0.2)
 			continue;
-		float caster = c.b / c.a * range;
+		// 修仙建筑（R、G 记号，与主着色器 vividMark 一致）不当遮挡物：它的 B 只给雾、云海用，影子是导出时烘好的固定投影
+		float3 enc = c.rgb / c.a;
+		float building = smoothstep(0.015, 0.028, enc.r) * (1.0 - smoothstep(0.06, 0.09, enc.r)) * (1.0 - smoothstep(0.015, 0.03, enc.g));
+		float caster = c.b / c.a * range * (1.0 - building);
 		float diff = caster - (receiver + s) - margin;
 		// 半影随距离变宽：离遮挡物越远（射线升得越高）影子边越虚，影子梢也就不是一刀切的直边
 		float soft = 0.06 + 0.22 * s;
@@ -1806,8 +1893,9 @@ constexpr Uint32 postSamplerCount = 4;
 /// 后处理的强度（2026-11-18 初版，实机调）：辉光、统一色调、宣纸纹理、暗角与边缘墨晕
 constexpr float bloomStrength = 1.0f;
 constexpr float gradeStrength = 0.85f;
-/// 修仙建筑（起伏层记号，见着色器 vividMark）不受统一色调影响的程度：1 为完全保住原色（2026-11-18 用户要求建筑不被调色罩灰）
-constexpr float vividStrength = 1.0f;
+/// 修仙建筑（起伏层记号，见着色器 vividMark、buildingMark）不受统一色调影响的程度：1 为完全保住原色（2026-11-18 用户要求建筑不被调色罩灰）。
+/// 2026-11-19 用户又嫌建筑像贴上去的：整张图都收艳、压墨青，只有建筑不变，就和周围不在一个色调里，降到一半。资源与宝物照旧全保
+constexpr float vividStrength = 0.5f;
 constexpr float paperStrength = 1.0f;
 constexpr float frameStrength = 1.0f;
 
