@@ -1134,6 +1134,14 @@ static constexpr size_t maxStoredFootprints = 160;
 /// 马蹄在英雄站的图块中心往下这么多（图块）
 static constexpr float hoofOffset = 0.25f;
 
+/// 物件在地图上的落点：可访问物件取入口格；不可访问的（熔岩流、火山、熔岩湖这类装饰）没有入口格，
+/// 问 visitablePos() 每次都会写一条 DEBUG 日志——每帧收集光源时熔岩在视野附近就是每秒几千行
+/// （2026-11-19 日志两小时涨到 40 MB），所以改取锚点格
+static int3 objectSpot(const CGObjectInstance * object)
+{
+	return object->isVisitable() ? object->visitablePos() : object->anchorPos();
+}
+
 void MapViewCache::sendObjectEffects(const std::shared_ptr<IMapRendererContext> & context)
 {
 	// 光最远照 5 个图块：可见窗口外这一圈里的光也能照进来
@@ -1183,7 +1191,7 @@ void MapViewCache::sendObjectEffects(const std::shared_ptr<IMapRendererContext> 
 				// 光源放在物件占地的中央；英雄放在他站的格子上，走路时跟着动画平滑移动
 				float centerX = 0.0f;
 				float centerY = 0.0f;
-				int3 lookout = object->visitablePos();
+				int3 lookout = objectSpot(object);
 				const CGHeroInstance * hero = nullptr;
 				std::set<int3> blocked;
 				if(object->ID == Obj::HERO)
@@ -1424,7 +1432,7 @@ void MapViewCache::updateHighlight(const std::shared_ptr<IMapRendererContext> & 
 	MapHighlight & highlight = objectEffects.highlight;
 	const int id = hoveredObject;
 	const CGObjectInstance * object = id >= 0 && canvasesOnGpu ? context->getObject(ObjectInstanceID(id)) : nullptr;
-	if(object && (object->anchorPos().z != model->getLevel() || !context->isInMap(object->visitablePos()) || !context->isVisible(object->visitablePos())))
+	if(object && (object->anchorPos().z != model->getLevel() || !context->isInMap(objectSpot(object)) || !context->isVisible(objectSpot(object))))
 		object = nullptr;
 
 	if(!object)
