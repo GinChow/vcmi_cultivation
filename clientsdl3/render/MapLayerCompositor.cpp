@@ -53,7 +53,7 @@ struct Params
 	float4 grade;     // rgb：整幅画面的时段色调
 	float4 terrain;   // x：地表材质强度（缩得太小时为 0）；y：一格材质铺多少图块；zw：地形场尺寸（图块）
 	float4 atlas;     // xy：材质图集像素尺寸；z：一格多少像素；w：每格四周环绕边的宽度（像素）
-	float4 cellMean[32]; // 材质图集每格的平均颜色（rgb）与平均高度（a），按 组 × 4 + 子材质 排
+	float4 cellMean[40]; // 材质图集每格的平均颜色（rgb）与平均高度（a），按 组 × 4 + 子材质 排（组 8、9 是特殊地面）
 	float4 night;     // x：天黑的程度；y：局部光显出来多少；z：夜里颜色褪掉多少；w：沙地热浪的强度
 	float4 weather;   // x：大块云影的浓度；y：阵雨开关（0 或 1）
 	float4 lightInfo; // x：这一帧有几盏局部光；y：有几对蹄印
@@ -399,7 +399,7 @@ static inline float3 groundVariation(float3 c, float2 world, float t, float amou
 // 再加大尺度的缓坡起伏（雪地加风吹出的雪垄），按游戏里的太阳打光，地表就有了真实的层次和光影。
 
 // 每组的子材质覆盖率：x 大斑（第 1 列）、y 中斑（第 2 列）、z 点缀（第 3 列），w 是材质高度换成的起伏幅度（图块）
-constant float4 setCoverage[8] = {
+constant float4 setCoverage[10] = {
 	float4(0.32, 0.28, 0.18, 0.10), // 泥地：黄土底，龟裂黏土、深色腐殖土、碎石浮土
 	float4(0.28, 0.18, 0.14, 0.06), // 沙地：风纹细沙，粗砂贝壳、湿沙、沙丘草
 	float4(0.34, 0.22, 0.20, 0.08), // 草地：茂草，干草三叶草、踩秃的土、苔藓蕨类
@@ -407,10 +407,32 @@ constant float4 setCoverage[8] = {
 	float4(0.38, 0.30, 0.24, 0.08), // 沼泽：烂泥水洼，苔草墩、浅水芦苇、泥炭
 	float4(0.30, 0.30, 0.16, 0.14), // 碎石：碎石坡，石板地衣、石土枯草、大石块
 	float4(0.30, 0.24, 0.16, 0.12), // 地下：湿石地，碎石蘑菇、乱石、矿晶
-	float4(0.34, 0.26, 0.16, 0.12)  // 岩浆：玄武岩红裂缝，火山灰、绳状熔岩、硫磺焦土
+	float4(0.34, 0.26, 0.16, 0.12), // 岩浆：玄武岩红裂缝，火山灰、绳状熔岩、硫磺焦土
+	// 特殊地面（2026-11-19，tools/gen_v5.sh）：第一版 (0.32, 0.14, 0.16) 实机里几乎只剩灰烬底子，白骨残剑看不到，调高到零星可见
+	float4(0.38, 0.22, 0.22, 0.10), // 阴煞地（被诅咒的大地）：灰烬死土，焦土枯草、白骨残剑、碎石纸钱
+	float4(0.30, 0.20, 0.24, 0.06)  // 灵气草甸（魔法平原）：玉青灵草，零星灵花、灵脉微光的苔地、灵草露珠
 };
 // 靠近山脚时加多的子材质（1~3 列）：碎石、乱石这类
-constant int mountainSub[8] = {3, 1, 3, 2, 3, 3, 2, 1};
+constant int mountainSub[10] = {3, 1, 3, 2, 3, 3, 2, 1, 3, 1};
+
+// 四周图块的特殊地面种类（地形场 R 的高四位）按地图坐标双线性插值（2026-11-19）：x 阴煞地、y 灵气草甸，
+// 在其中为 1，出了边界约半个图块淡到 0。阴气、灵气按它的浓淡画，不按图块一刀切
+static inline float2 specialGroundField(float2 world, constant Params & P, texture2d<float> terrainTex)
+{
+	float2 p = world - 0.5;
+	float2 base = floor(p);
+	float2 f = p - base;
+	float2 result = float2(0.0);
+	for(int k = 0; k < 4; ++k)
+	{
+		float2 offset = float2(float(k & 1), float(k >> 1));
+		uint2 tile = uint2(clamp(base + offset, float2(0.0), P.terrain.zw - 1.0));
+		int kind = int(terrainTex.read(tile).r * 255.0 + 0.5) >> 4;
+		float w = (offset.x > 0.5 ? f.x : 1.0 - f.x) * (offset.y > 0.5 ? f.y : 1.0 - f.y);
+		result += w * float2(kind == 1 ? 1.0 : 0.0, kind == 2 ? 1.0 : 0.0);
+	}
+	return result;
+}
 
 static inline float2 hash22(float2 p)
 {
@@ -773,8 +795,22 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	// 再加按地图坐标连续变化的明暗、干湿。地形的变化幅度在雾云场的 A 通道（与离岸距离图同一张，按地图坐标取样）
 	float land = (1.0 - saturate(maskRGB.g)) * P.misc.y;
 	float4 fieldHere = depthTex.sample(depthSmp, world / max(P.misc.zw, float2(1.0)));
-	float3 splat = splatTex.sample(splatSmp, uv).rgb;
-	float materialShare = saturate(splat.r + splat.g + splat.b) * P.terrain.x * land;
+	float4 splatFull = splatTex.sample(splatSmp, uv);
+	float3 splat = splatFull.rgb;
+
+	// 特殊地面（2026-11-19）：分布层的 1 − A 是它盖住这里的程度（MapMaskBlend::SPECIAL_GROUND，那里 RGB 也已按它压低），
+	// 是哪一种看地形场 R 的高四位。种类按四周图块双线性插值（specialGroundField），阴煞地、灵气草甸紧挨着时
+	// 两种材质在交界处过渡约一个图块，不按图块切出直边。图集里有那一组材质（阴煞地组 8、灵气草甸组 9）才铺，
+	// 否则那里照旧显示它的贴图
+	uint2 tile = uint2(clamp(floor(world), float2(0.0), P.terrain.zw - 1.0));
+	int terrainCode = int(terrainTex.read(tile).r * 255.0 + 0.5);
+	int atlasSets = int(P.atlas.y / max(P.atlas.z, 1.0) + 0.5);
+	float2 specialKinds = specialGroundField(world, P, terrainTex);
+	float2 specialSplit = float2(atlasSets > 8 ? specialKinds.x : 0.0, atlasSets > 9 ? specialKinds.y : 0.0);
+	specialSplit /= max(specialKinds.x + specialKinds.y, 1e-3);
+	float2 specialWeights = saturate(1.0 - splatFull.a) * specialSplit; // x 阴煞地、y 灵气草甸
+	float specialCover = specialWeights.x + specialWeights.y;
+	float materialShare = saturate(splat.r + splat.g + splat.b + specialCover) * P.terrain.x * land;
 
 	// 大尺度缓坡：两层低频噪声，起伏约一个图块（与材质无关，所有像素都算，导数才连续）
 	float macro = noiseTex.sample(noiseSmp, world * 0.03 + float2(0.71, 0.29)).r * 0.75
@@ -785,8 +821,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 
 	if(materialShare > 0.003)
 	{
-		uint2 tile = uint2(clamp(floor(world), float2(0.0), P.terrain.zw - 1.0));
-		int own = int(terrainTex.read(tile).r * 255.0 + 0.5);
+		int own = terrainCode & 15;
 
 		// 离山多近（雾云场的云量）、离水多近（1/16 水面遮罩在半个图块外的四点）
 		float mountain = smoothstep(0.15, 0.7, fieldHere.b);
@@ -796,15 +831,15 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 			+ maskLow.sample(maskLowSmp, windowToUV(rel - float2(0.0, 0.5), slots, slotOrigin)).g;
 		float shore = smoothstep(0.05, 0.6, near * 0.25);
 
-		// 本地形、泥地、沙地三组按分布图的比重混合；比重很小的组不算
-		float3 weights = splat;
-		int sets[3] = {own, 0, 1};
+		// 本地形、泥地、沙地、两种特殊地面按分布图的比重混合；比重很小的组不算。水面、岩石、模组新增的地形没有材质
+		float weights[5] = {splat.r, splat.g, splat.b, specialWeights.x, specialWeights.y};
+		int sets[5] = {own <= 7 ? own : -1, 0, 1, 8, 9};
 		float4 sum = float4(0.0);
 		float total = 0.0;
 		float detail = 0.0;
-		for(int k = 0; k < 3; ++k)
+		for(int k = 0; k < 5; ++k)
 		{
-			if(weights[k] < 0.02 || sets[k] > 7)
+			if(weights[k] < 0.02 || sets[k] < 0)
 				continue;
 			float4 m = terrainMaterial(sets[k], world, mountain, shore, P, atlasTex, atlasSmp, noiseTex, noiseSmp);
 			sum += m * weights[k];
@@ -843,6 +878,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	float2 slope = float2(dfdx(terrainHeight), dfdy(terrainHeight)) / max(dWorld, float2(1e-5));
 	float splatEdgeWidth = fwidth(splat.r);
 	float sandEdgeWidth = fwidth(splat.g - splat.b);
+	float specialEdgeWidth = fwidth(specialCover);
 	float3 groundN = groundNormal; // 地面的法线（屏幕坐标），局部光也按它照
 
 	if(materialShare > 0.003)
@@ -863,7 +899,9 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		float breakup = smoothstep(0.25, 0.65, noiseTex.sample(noiseSmp, world * 0.9 + float2(0.7, 0.4)).b);
 		float inkOwn = 1.0 - smoothstep(0.0, max(splatEdgeWidth * 1.4, 1e-4), abs(splat.r - 0.5));
 		float inkSand = (1.0 - smoothstep(0.0, max(sandEdgeWidth * 1.4, 1e-4), abs(splat.g - splat.b))) * smoothstep(0.3, 0.6, splat.g + splat.b);
-		float ink = max(inkOwn * step(0.05, splat.g + splat.b), inkSand * 0.6) * (0.35 + 0.65 * breakup) * 0.32;
+		// 特殊地面的边界也勾一道（阴煞地重些，灵气草甸淡些）
+		float inkSpecial = (1.0 - smoothstep(0.0, max(specialEdgeWidth * 1.4, 1e-4), abs(specialCover - 0.5))) * mix(0.5, 1.0, specialSplit.x);
+		float ink = max(max(inkOwn * step(0.05, splat.g + splat.b), inkSand * 0.6), inkSpecial) * (0.35 + 0.65 * breakup) * 0.32;
 		lit = mix(lit, float3(0.15, 0.17, 0.18), ink);
 
 		color = mix(color, lit, materialShare);
@@ -1190,6 +1228,27 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		float breath = 0.7 + 0.3 * sin(t * 0.35 + m1 * 6.283);
 		float density = miasma * (0.2 + 0.6 * swirl) * breath * exp(-surface.height / 0.5) * 0.42;
 		color = mix(color, miasmaColor * mix(float3(1.0), P.sunColor.rgb, 0.3), saturate(density));
+	}
+
+	// 阴气、灵气（2026-11-19，特殊地面）：阴煞地（被诅咒的大地）上贴地一层灰紫的淡墨，比瘴气更低、更暗、更慢，
+	// 一缕缕游走，入夜更浓；灵气草甸（魔法平原）贴地泛一层很淡的玉青微光，一处处缓缓明灭。可交互物件上不画
+	float2 specialField = specialKinds * P.misc.y * (1.0 - interactive);
+	if(specialField.x > 0.003)
+	{
+		float y1 = noiseTex.sample(noiseSmp, (world - cloudWind * (t * 0.03)) * 0.16 + float2(0.83, 0.12)).b;
+		float y2 = noiseTex.sample(noiseSmp, world * 0.42 + float2(-t * 0.015, t * 0.01)).g;
+		float wisps = smoothstep(0.3, 0.8, y1 * 0.65 + y2 * 0.35);
+		float density = specialField.x * (0.3 + 0.7 * wisps) * exp(-surface.height / 0.35) * (0.42 + 0.15 * P.night.x);
+		float3 yinColor = float3(0.27, 0.26, 0.31) * mix(float3(1.0), P.sunColor.rgb, 0.2);
+		color = mix(color, yinColor, saturate(density));
+	}
+	if(specialField.y > 0.003)
+	{
+		float s1 = noiseTex.sample(noiseSmp, (world + cloudWind * (t * 0.02)) * 0.22 + float2(0.37, 0.58)).r;
+		float pulse = 0.7 + 0.3 * sin(t * 0.8 + s1 * 6.283);
+		float glow = specialField.y * smoothstep(0.4, 0.8, s1) * pulse * exp(-surface.height / 0.3) * (0.07 + 0.08 * P.night.x);
+		color += float3(0.45, 0.85, 0.72) * glow;
+		emission = max(emission, glow * 2.0);
 	}
 
 	// 云层（山腰云海）：在离地 cloudAltitude 处。滚动地图时云层比地面移得快（视差），像离镜头更近；
@@ -2896,10 +2955,12 @@ bool MapLayerCompositor::ensureMaterialAtlas(SDL_Renderer * renderer)
 			logGlobal->error("Failed to decode the adventure map terrain materials: %s", SDL_GetError());
 	}
 
-	// 图集必须正好是 4 列 × 8 行的正方形格子
-	if(decoded && (decoded->w % materialsPerSet != 0 || decoded->w / materialsPerSet * materialSets != decoded->h))
+	// 图集必须是 4 列 × 8~10 行的正方形格子（第 9、10 行是特殊地面的材质，可以没有）
+	const int atlasRows = decoded && decoded->w >= materialsPerSet ? decoded->h / (decoded->w / materialsPerSet) : 0;
+	if(decoded && (decoded->w % materialsPerSet != 0 || decoded->w / materialsPerSet * atlasRows != decoded->h
+		|| atlasRows < baseMaterialSets || atlasRows > materialSets))
 	{
-		logGlobal->error("Adventure map terrain materials are %dx%d, expected 4 columns by 8 rows of square cells - not used", decoded->w, decoded->h);
+		logGlobal->error("Adventure map terrain materials are %dx%d, expected 4 columns by 8 to 10 rows of square cells - not used", decoded->w, decoded->h);
 		SDL_DestroySurface(decoded);
 		decoded = nullptr;
 	}
@@ -2914,7 +2975,7 @@ bool MapLayerCompositor::ensureMaterialAtlas(SDL_Renderer * renderer)
 			materialCell = decoded->w / materialsPerSet;
 
 			// 每格的平均颜色与高度（隔几个像素取一个就够）
-			for(int set = 0; set < materialSets; ++set)
+			for(int set = 0; set < atlasRows; ++set)
 			{
 				for(int sub = 0; sub < materialsPerSet; ++sub)
 				{

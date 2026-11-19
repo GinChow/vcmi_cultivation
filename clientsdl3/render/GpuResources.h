@@ -23,7 +23,8 @@ enum class ImageBlendOverride : uint8_t
 	NONE,
 	MASK_SWAY_PARAMETERS,
 	MASK_OCCLUDER,
-	MASK_CUTOUT
+	MASK_CUTOUT,
+	MASK_SPECIAL_GROUND
 };
 
 /// Everything that belongs to the one renderer and dies with it: the renderer itself, the caches

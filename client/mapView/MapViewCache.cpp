@@ -33,6 +33,7 @@
 #include "../../lib/int3.h"
 #include "../../lib/mapObjects/CGHeroInstance.h"
 #include "../../lib/mapObjects/CGObjectInstance.h"
+#include "../../lib/mapObjects/MapObjectDrawOrder.h"
 #include "../../lib/mapping/TerrainTile.h"
 
 MapViewCache::~MapViewCache()
@@ -719,6 +720,19 @@ void MapViewCache::sendAtmosphereField(const std::shared_ptr<IMapRendererContext
 	ENGINE->screenHandler().setMapAtmosphereField(rgba, Point(width, height));
 }
 
+/// 特殊地面的种类（2026-11-19）：1 被诅咒的大地（修仙版“阴煞地”），2 魔法平原（“灵气草甸”）；
+/// 不是特殊地面，或是没有配材质的那几种（HotA 的三叶草地、圣地……）为 0，照旧只显示它的贴图
+static uint8_t specialGroundKind(const CGObjectInstance * object)
+{
+	if(!object || !MapObjectDrawOrder::isSpecialGround(object))
+		return 0;
+	if(object->ID == Obj::CURSED_GROUND1 || object->ID == Obj::CURSED_GROUND2)
+		return 1;
+	if(object->ID == Obj::MAGIC_PLAINS1 || object->ID == Obj::MAGIC_PLAINS2)
+		return 2;
+	return 0;
+}
+
 void MapViewCache::sendTerrainField(const std::shared_ptr<IMapRendererContext> & context)
 {
 	// 材质图集只读一次：模组 Content/Data/MapMaterials.png（地形模组 tools/materials.py 生成），没有就不铺地表材质
@@ -735,8 +749,11 @@ void MapViewCache::sendTerrainField(const std::shared_ptr<IMapRendererContext> &
 			logGlobal->info("No adventure map terrain materials (DATA/MAPMATERIALS) - terrain keeps its tile art");
 	}
 
-	// R：每个图块的地形。0~7 依次是泥地、沙地、草地、雪地、沼泽、碎石、地下、岩浆（与 TerrainId 的编号、材质图集的行一致，
-	// 着色器只给这几种铺地表材质），8 水面、9 岩石，255 为模组新增的地形，照旧显示图块原画。粒子按它放飘雪、余烬、瘴气、雨丝。
+	// R 低四位：每个图块的地形。0~7 依次是泥地、沙地、草地、雪地、沼泽、碎石、地下、岩浆（与 TerrainId 的编号、材质图集的行一致，
+	// 着色器只给这几种铺地表材质），8 水面、9 岩石，15 为模组新增的地形，照旧显示图块原画。粒子按它放飘雪、余烬、瘴气、雨丝。
+	// R 高四位（2026-11-19）：盖在这个图块上的特殊地面种类（specialGroundKind，有几块取最上面那块）。
+	// 盖住多少由地形分布层的 A 逐像素给出（MapMaskBlend::SPECIAL_GROUND），这里只说是哪一种：着色器取材质组 7 + 种类，
+	// 并按四周图块的种类插值出阴气、灵气的浓淡；粒子按它放鬼火、灵光
 	// G、B、A（2026-11-18，按地形的天气）：热浪（沙地、岩浆）、瘴气（沼泽）、熔岩照到这里的红光，都向四周晕开，
 	// 着色器按地图坐标线性取样，所以地形交界处是渐变，不是按图块一刀切
 	const int3 mapSize = context->getMapSize();
@@ -753,9 +770,18 @@ void MapViewCache::sendTerrainField(const std::shared_ptr<IMapRendererContext> &
 	{
 		for(int x = 0; x < width; ++x)
 		{
-			const int id = context->getMapTile(int3(x, y, level)).getTerrainID().getNum();
+			const int3 tile(x, y, level);
+			const int id = context->getMapTile(tile).getTerrainID().getNum();
 			const size_t i = static_cast<size_t>(y * width + x);
-			rgba[i * 4] = id >= ETerrainId::DIRT && id <= ETerrainId::ROCK ? static_cast<uint8_t>(id) : 255;
+			uint8_t special = 0;
+			for(const auto & objectID : context->getObjects(tile))
+			{
+				const uint8_t kind = specialGroundKind(context->getObject(objectID));
+				if(kind != 0)
+					special = kind; // 列表按画的先后排，最后一块在最上面
+			}
+			const uint8_t terrainCode = id >= ETerrainId::DIRT && id <= ETerrainId::ROCK ? static_cast<uint8_t>(id) : 15;
+			rgba[i * 4] = static_cast<uint8_t>(terrainCode | (special << 4));
 			heat[i] = id == ETerrainId::SAND ? 0.7f : (id == ETerrainId::LAVA ? 1.0f : 0.0f);
 			miasma[i] = id == ETerrainId::SWAMP ? 1.0f : 0.0f;
 			lava[i] = id == ETerrainId::LAVA ? 1.0f : 0.0f;

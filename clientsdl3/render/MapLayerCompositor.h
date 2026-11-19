@@ -120,8 +120,10 @@ public:
 	/// 局部光分格：可见窗口均分成这么多 × 这么多格，与着色器的 lightGridSize 一致
 	static constexpr int lightGridSize = 16;
 
-	/// 地表材质图集的布局：8 行（材质组，与 TerrainId 0~7 一致）× 4 列（子材质），每格是正方形，四周 8 像素是环绕的内容
-	static constexpr int materialSets = 8;
+	/// 地表材质图集的布局：至多 10 行（材质组：0~7 与 TerrainId 一致，8 阴煞地、9 灵气草甸是特殊地面的材质，2026-11-19）
+	/// × 4 列（子材质），每格是正方形，四周 8 像素是环绕的内容。只有前 8 行的旧图集照样能用，那时特殊地面保留贴图
+	static constexpr int materialSets = 10;
+	static constexpr int baseMaterialSets = 8;
 	static constexpr int materialsPerSet = 4;
 
 	/// 设置云雾场（含义见 IScreenHandler::setMapFogField）。须在渲染线程上调用
@@ -173,7 +175,7 @@ private:
 	bool materialsLoaded = false; ///< 图集有效（模组提供了、解码成功、尺寸对）
 	Point materialAtlasSize;
 	int materialCell = 0;
-	std::array<std::array<float, 4>, 32> materialMeans = {};
+	std::array<std::array<float, 4>, materialSets * materialsPerSet> materialMeans = {};
 
 	/// 解码图集、建纹理；没有图集时建一张 1×1 的占位，materialsLoaded 为假
 	bool ensureMaterialAtlas(SDL_Renderer * renderer);

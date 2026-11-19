@@ -919,12 +919,16 @@ MapAtmosphere MapRendererObjects::atmosphereAt(IMapRendererContext & context, co
 	return result;
 }
 
-void MapRendererObjects::renderGroundCutouts(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
+void MapRendererObjects::renderGroundCutouts(IMapRendererContext & context, Canvas & target, const int3 & coordinates, bool specialGround)
 {
 	for(const auto & objectID : context.getObjects(coordinates))
 	{
 		const CGObjectInstance * object = context.getObject(objectID);
-		if(object && (MapObjectDrawOrder::isSpecialGround(object) || getEffectKind(object).waterSurface))
+		if(!object)
+			continue;
+		if(specialGround && MapObjectDrawOrder::isSpecialGround(object))
+			renderObject(context, target, coordinates, object, 1.0, MapMaskBlend::SPECIAL_GROUND);
+		else if(!specialGround && !MapObjectDrawOrder::isSpecialGround(object) && getEffectKind(object).waterSurface)
 			renderObject(context, target, coordinates, object, 1.0, MapMaskBlend::CUTOUT);
 	}
 }
@@ -1584,14 +1588,23 @@ void MapRenderer::renderTileLayer(IMapRendererContext & context, Canvas & target
 			rendererObjects.renderRelief(context, target, coordinates);
 			break;
 		case MapTileLayer::TERRAIN_SPLAT:
-			// 先画本图块的分布图，再把画在地面层上的道路、河流、贴地物件挖空：那些地方保留原画
+		{
+			// 先画本图块的分布图，再把画在地面层上的道路、河流、贴地物件挖空：那些地方保留原画。
+			// 特殊地面压低 A（覆盖度），与地面层同一个先后：H3 里它盖住道路、河流（覆盖度留着），
+			// 设成道路在上面时先画它，后画的道路、河流把 A 抬回 1，道路上就不铺特殊地面的材质
+			const bool roadsAboveGround = LIBRARY->engineSettings()->getBoolean(EGameSettings::MAP_OBJECTS_ROADS_ABOVE_SPECIAL_GROUND);
 			rendererTerrainSplat.renderTile(context, target, coordinates);
+			if(roadsAboveGround)
+				rendererObjects.renderGroundCutouts(context, target, coordinates, true);
 			if(context.showRivers())
 				rendererRiver.renderTile(context, target, coordinates, MapMaskBlend::CUTOUT);
 			if(context.showRoads())
 				rendererRoad.renderTile(context, target, coordinates, MapMaskBlend::CUTOUT);
-			rendererObjects.renderGroundCutouts(context, target, coordinates);
+			if(!roadsAboveGround)
+				rendererObjects.renderGroundCutouts(context, target, coordinates, true);
+			rendererObjects.renderGroundCutouts(context, target, coordinates, false);
 			break;
+		}
 		case MapTileLayer::OVERLAY:
 			if(withOverlays)
 			{

@@ -32,7 +32,7 @@ struct SDL_GPURenderState;
 /// 惊鸟的鸟群由地图缓存登记（startBirdFlock），这里按起飞时间算每只鸟的位置。
 ///
 /// 天气粒子（2026-11-18）：雪地上飘雪（一阵大一阵小）、岩浆和营火上飞起的余烬、沼泽上一团团升起的瘴气、
-/// 阵雨落在水面上的雨丝。按地形场（每个图块的地形）放；阵雨落在哪由大块云影的形状决定，这里在 CPU 上
+/// 阵雨落在水面上的雨丝；特殊地面（2026-11-19）：阴煞地上飘着鬼火，灵气草甸上升起灵光。按地形场（每个图块的地形）放；阵雨落在哪由大块云影的形状决定，这里在 CPU 上
 /// 用与合成着色器同一张噪声、同一个公式算（cloudShape、showerAt），雨丝才会落在水面涟漪的那片云下。
 /// 粒子颜色跟着时段调色走（夜里偏蓝变暗），萤火虫、余烬入夜更亮。
 ///
@@ -136,8 +136,10 @@ private:
 	std::vector<uint8_t> vegetation;
 	Point vegetationSize;
 
-	/// 每个图块的地形（TerrainId，255 为模组新增地形），按行存放
+	/// 每个图块的地形（TerrainId，15 为模组新增地形），按行存放
 	std::vector<uint8_t> terrain;
+	/// 每个图块上盖着的特殊地面（2026-11-19，地形场 R 的高四位：1 被诅咒的大地、2 魔法平原，0 没有），按行存放
+	std::vector<uint8_t> special;
 	Point terrainSize;
 
 	std::vector<uint8_t> noise;
@@ -146,6 +148,8 @@ private:
 	float sampleNoise(float u, float v, int channel) const;
 	/// 图块 (x, y) 的地形；地图外为 255
 	uint8_t terrainAt(int x, int y) const;
+	/// 图块 (x, y) 上的特殊地面种类；地图外为 0
+	uint8_t specialAt(int x, int y) const;
 
 	SDL_Renderer * owner = nullptr;
 	SDL_GPUShader * shader = nullptr;
@@ -215,6 +219,9 @@ private:
 	void buildSnow(const Placement & placement, const Frame & frame);
 	void buildEmbers(const Placement & placement, const Frame & frame);
 	void buildMiasma(const Placement & placement, const Frame & frame);
+	/// 阴煞地（被诅咒的大地）上的鬼火、灵气草甸（魔法平原）上升起的灵光（2026-11-19）
+	void buildGhostFires(const Placement & placement, const Frame & frame);
+	void buildSpiritMotes(const Placement & placement, const Frame & frame);
 	void buildRain(const Placement & placement, const Frame & frame);
 	void buildDust(const Placement & placement, const Frame & frame);
 	void buildSmoke(const Placement & placement, const Frame & frame);

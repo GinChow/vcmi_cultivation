@@ -312,7 +312,8 @@ public:
 	virtual void setMapAtmosphereField(const std::vector<uint8_t> & rgba, const Point & size) = 0;
 
 	/// 地形场（2026-11-17，2026-11-18 加天气）：rgba 按行存放 size.x × size.y 个地图图块。
-	/// R 是该图块的地形（TerrainId 0~9：泥地、沙地、草地、雪地、沼泽、碎石、地下、岩浆、水、岩石；0~7 也是地表材质组，255 为模组新增的地形）；
+	/// R 的低四位是该图块的地形（TerrainId 0~9：泥地、沙地、草地、雪地、沼泽、碎石、地下、岩浆、水、岩石；0~7 也是地表材质组，15 为模组新增的地形），
+	/// 高四位是盖在这里的特殊地面（2026-11-19：0 没有或没有配材质，1 被诅咒的大地，2 魔法平原；材质组为 7 + 种类）；
 	/// G 热浪多少（沙地、岩浆），B 瘴气多少（沼泽），A 熔岩的红光照到这里多少，三者都向四周晕开一两个图块。
 	/// 换地图或切换地上地下时由地图缓存调用
 	virtual void setMapTerrainField(const std::vector<uint8_t> & rgba, const Point & size) = 0;

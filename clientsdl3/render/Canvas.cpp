@@ -458,6 +458,9 @@ void Canvas::drawMapMask(const std::shared_ptr<IImage> & image, const Point & po
 			case MapMaskBlend::CUTOUT:
 				GpuResources::get().setImageBlendOverride(ImageBlendOverride::MASK_CUTOUT);
 				break;
+			case MapMaskBlend::SPECIAL_GROUND:
+				GpuResources::get().setImageBlendOverride(ImageBlendOverride::MASK_SPECIAL_GROUND);
+				break;
 		}
 	}
 

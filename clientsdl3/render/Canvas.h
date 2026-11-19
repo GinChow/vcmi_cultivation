@@ -39,7 +39,11 @@ enum class MapMaskBlend : uint8_t
 	OCCLUDER,
 	/// 没有起伏图的物件（原版的城镇、英雄、矿……）在起伏层上的剪影：RGB 按 alpha 清零、A 按 alpha 叠上，
 	/// 即这里最上面是一件“不知道起伏”的物件。着色器把 RGB 为 0 的地方当成平地，不重新打光、也不投长影
-	CUTOUT
+	CUTOUT,
+	/// 特殊地面（被诅咒的大地、魔法平原……）在地形分布层上的覆盖度（2026-11-19）：RGB 与 A 都乘以 (1 − alpha)。
+	/// 分布层清成不透明的黑、图块和其余剪影都不降低 A，所以 1 − A 就是特殊地面盖住这里的程度，
+	/// 合成着色器按它铺特殊地面的材质（见 MapRendererObjects::renderGroundCutouts）
+	SPECIAL_GROUND
 };
 
 /// Class that represents surface for drawing on

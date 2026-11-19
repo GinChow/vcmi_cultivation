@@ -39,7 +39,8 @@ class SDLImageLoader;
 /// 画进大地图遮罩画布时用的自定义混合模式（2026-11-17，大地图风场摇摆、光影，含义见 MapMaskBlend）。
 /// 摇摆参数图：RGB 照常按 alpha 叠加（纹理已预乘时源因子取 1），A 乘以 (1 − alpha)；
 /// 遮挡剪影：RGB 原样保留，A 按 alpha 叠加；
-/// 清零剪影：RGB 乘以 (1 − alpha)（源颜色不计），A 按 alpha 叠加。SDL3 的 gpu 渲染器支持任意组合的混合因子（2026-11-17 实测）
+/// 清零剪影：RGB 乘以 (1 − alpha)（源颜色不计），A 按 alpha 叠加。SDL3 的 gpu 渲染器支持任意组合的混合因子（2026-11-17 实测）；
+/// 特殊地面覆盖度：RGB、A 都乘以 (1 − alpha)（2026-11-19）
 static SDL_BlendMode mapMaskBlendMode(ImageBlendOverride blendOverride, bool premultipliedAlpha)
 {
 	if(blendOverride == ImageBlendOverride::MASK_OCCLUDER)
@@ -56,6 +57,14 @@ static SDL_BlendMode mapMaskBlendMode(ImageBlendOverride blendOverride, bool pre
 			SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD,
 			SDL_BLENDFACTOR_ONE, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD);
 		return cutout;
+	}
+
+	if(blendOverride == ImageBlendOverride::MASK_SPECIAL_GROUND)
+	{
+		static const SDL_BlendMode specialGround = SDL_ComposeCustomBlendMode(
+			SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD,
+			SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, SDL_BLENDOPERATION_ADD);
+		return specialGround;
 	}
 
 	static const SDL_BlendMode swayStraight = SDL_ComposeCustomBlendMode(

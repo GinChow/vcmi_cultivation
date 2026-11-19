@@ -121,7 +121,8 @@ enum class MapTileLayer : uint8_t
 	SWAY_OBJECTS, ///< 随风摇摆的物件本体（树、灌木、花草），由着色器按风场扭动
 	WIND_MASK,    ///< 风场遮罩（不参与叠加）：RGB 是摇摆物件的风场参数，A 是“上面盖着不摇摆物件”的程度
 	RELIEF,       ///< 起伏层（不参与叠加）：RG 是物件表面的法线，B 是离地高度，A 是本体覆盖度（预乘），给长投影、打光、雾和云用
-	TERRAIN_SPLAT,///< 地形分布层（不参与叠加）：RGB 是本地形、泥地、沙地的比重，道路、河流、湖等贴地物件处挖空，见 MapRendererTerrainSplat
+	TERRAIN_SPLAT,///< 地形分布层（不参与叠加）：RGB 是本地形、泥地、沙地的比重，道路、河流、湖等贴地物件处挖空，见 MapRendererTerrainSplat；
+	              ///< 1 − A 是特殊地面的覆盖度（2026-11-19，见 MapRendererObjects::renderGroundCutouts）
 	OVERLAY,      ///< 行军路径、覆盖图标、战争迷雾
 	ALL           ///< 不分层：整块图块，与 renderTile 相同
 };
@@ -296,8 +297,10 @@ public:
 	/// 图块上各物件雾、云参数的最大值
 	MapAtmosphere atmosphereAt(IMapRendererContext & context, const int3 & coordinates);
 
-	/// 把图块上画在地面层的物件（特殊地面、湖这类水面装饰物）按清零剪影画进地形分布层，那里保留原画、不铺地表材质
-	void renderGroundCutouts(IMapRendererContext & context, Canvas & target, const int3 & coordinates);
+	/// 把图块上画在地面层的物件画进地形分布层：湖这类水面装饰物按清零剪影，那里保留原画、不铺地表材质；
+	/// 特殊地面（被诅咒的大地、魔法平原……）把 RGB、A 都按 alpha 压低（MapMaskBlend::SPECIAL_GROUND），
+	/// 着色器按 1 − A 在那里铺特殊地面自己的材质（2026-11-19）。specialGround 选画哪一类：两类在道路、河流前后画的时机不同
+	void renderGroundCutouts(IMapRendererContext & context, Canvas & target, const int3 & coordinates, bool specialGround);
 
 	/// 把图块画进起伏层（target 须先清成全透明）：按与物件层相同的前后顺序，有起伏图的物件画起伏图，
 	/// 其余物件画清零剪影（见 MapMaskBlend::CUTOUT），阴影、水面装饰物不画。

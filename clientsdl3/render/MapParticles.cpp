@@ -22,8 +22,9 @@ namespace
 ///   落叶、飞花：rg 是出发点在缓存纹理里的坐标，b 是明暗的一半，a 是淡入淡出；
 ///   萤火虫：a 是这一刻的亮度；飞鸟：r 是扇翅的相位 0~1，a 是淡入淡出；鸟影：a 是浓淡；
 ///   雪花、瘴气、雨丝：a 是浓淡；余烬：a 是这一刻的亮度；
-///   宝物闪光：rg 是落点在缓存纹理里的坐标（落点要在物件上），a 是这一刻的亮度；尘土、炊烟：rgb 是颜色，a 是浓淡。
-/// 输出预乘 alpha，按 SDL_BLENDMODE_BLEND_PREMULTIPLIED 叠；萤火虫、余烬输出 alpha 为 0，于是成了加色的光。
+///   宝物闪光：rg 是落点在缓存纹理里的坐标（落点要在物件上），a 是这一刻的亮度；尘土、炊烟：rgb 是颜色，a 是浓淡；
+///   鬼火：a 是这一刻的亮度；灵光：r 选颜色（0 青白、1 淡金），a 是这一刻的亮度。
+/// 输出预乘 alpha，按 SDL_BLENDMODE_BLEND_PREMULTIPLIED 叠；萤火虫、余烬、鬼火、灵光输出 alpha 为 0，于是成了加色的光。
 /// uniform 的 grade 是时段色调（rgb）与天黑的程度（w），粒子的颜色跟画面一起调。
 const char * const particleShaderSource = R"MSL(
 #include <metal_stdlib>
@@ -157,7 +158,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		float glow = (rays * 0.9 + diagonal * 0.35 + core * 1.2) * (1.0 - smoothstep(0.7, 1.0, r)) * p.a * (1.0 - 0.5 * P.grade.w);
 		result = float4(float3(1.0, 0.95, 0.80) * glow, 0.0);
 	}
-	else
+	else if(kind < 12.5)
 	{
 		// 尘土、炊烟：一团边缘很虚的烟，颜色由顶点给；边上按角度略起伏，不是正圆。
 		// 上面亮、下面暗一些，看得出是一团有体积的烟——与地面颜色相近时（浅色沙地上的沙尘）只靠颜色分不出来
@@ -167,6 +168,27 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		float alpha = p.a * exp(-d2 * 2.4);
 		float shade = 1.08 - 0.22 * smoothstep(-1.0, 1.0, local.y);
 		result = float4(p.rgb * shade * P.grade.rgb * alpha, alpha);
+	}
+	else if(kind < 13.5)
+	{
+		// 鬼火：一团青白的冷焰，下圆上尖、焰尾往上飘（局部 y 朝下，局部 1 对应 0.2 个图块），加色。
+		// 白天只淡淡一点，入夜才显眼
+		float up = -local.y;
+		float width = 0.42 * (1.0 - smoothstep(-0.5, 1.3, up)) + 0.06;
+		float body = exp(-local.x * local.x / (width * width)) * (1.0 - smoothstep(0.3, 1.5, up)) * smoothstep(-0.9, -0.35, up);
+		float2 c = local - float2(0.0, 0.2);
+		float core = exp(-dot(c, c) * 9.0);
+		float halo = 0.22 * exp(-dot(local, local) * 1.1);
+		float glow = (body * 0.55 + core + halo) * p.a * (0.3 + 1.2 * P.grade.w);
+		result = float4(float3(0.55, 0.95, 0.88) * glow, 0.0);
+	}
+	else
+	{
+		// 灵光：一粒小光点外面罩一圈柔光，青白或淡金，加色；灵气白天也看得见，入夜更亮
+		float d2 = dot(local, local);
+		float glow = exp(-d2 * 7.0) + 0.3 * exp(-d2 * 1.5);
+		float3 tint = mix(float3(0.62, 1.0, 0.92), float3(1.0, 0.9, 0.58), p.r);
+		result = float4(tint * glow * p.a * (0.6 + 0.8 * P.grade.w), 0.0);
 	}
 
 	main0_out out;
@@ -190,7 +212,9 @@ enum ParticleKind : int
 	KIND_MIASMA = 9,
 	KIND_RAIN = 10,
 	KIND_SPARKLE = 11,
-	KIND_PUFF = 12
+	KIND_PUFF = 12,
+	KIND_GHOSTFIRE = 13,
+	KIND_SPIRIT = 14
 };
 
 /// 与粒子着色器的 Params 一一对应
@@ -269,9 +293,14 @@ void MapParticles::setVegetationField(const std::vector<uint8_t> & rgba, const P
 
 void MapParticles::setTerrainField(const std::vector<uint8_t> & rgba, const Point & size)
 {
+	// R 低四位是地形，高四位是特殊地面（见 IScreenHandler::setMapTerrainField）
 	terrain.resize(rgba.size() / 4);
+	special.resize(rgba.size() / 4);
 	for(size_t i = 0; i < terrain.size(); ++i)
-		terrain[i] = rgba[i * 4];
+	{
+		terrain[i] = rgba[i * 4] & 15;
+		special[i] = rgba[i * 4] >> 4;
+	}
 	terrainSize = size;
 }
 
@@ -328,6 +357,13 @@ uint8_t MapParticles::terrainAt(int x, int y) const
 	if(x < 0 || y < 0 || x >= terrainSize.x || y >= terrainSize.y || terrain.size() != static_cast<size_t>(terrainSize.x * terrainSize.y))
 		return 255;
 	return terrain[static_cast<size_t>(y) * terrainSize.x + x];
+}
+
+uint8_t MapParticles::specialAt(int x, int y) const
+{
+	if(x < 0 || y < 0 || x >= terrainSize.x || y >= terrainSize.y || special.size() != static_cast<size_t>(terrainSize.x * terrainSize.y))
+		return 0;
+	return special[static_cast<size_t>(y) * terrainSize.x + x];
 }
 
 void MapParticles::startBirdFlock(float x, float y, float directionX, float directionY, float now)
@@ -809,6 +845,90 @@ void MapParticles::buildMiasma(const Placement & placement, const Frame & frame)
 	}
 }
 
+/// 特殊地面种类（与 MapViewCache 的 specialGroundKind 一致）
+constexpr uint8_t specialCursed = 1;
+constexpr uint8_t specialSpirit = 2;
+
+void MapParticles::buildGhostFires(const Placement & placement, const Frame & frame)
+{
+	// 鬼火：阴煞地上零星飘着青白的冷焰，离地半个图块上下浮动、慢慢游走、忽明忽暗，几秒后熄掉，换个地方再起。
+	// 每个图块一个槽位，约三成的周期里有一团；鬼火在空中，画在离地点上方，所以窗口下边外一排图块也要算
+	const float t = frame.time;
+	for(int y = 0; y < frame.slots.y + 1; ++y)
+	{
+		for(int x = 0; x < frame.slots.x; ++x)
+		{
+			const int tileX = frame.worldOrigin.x + x;
+			const int tileY = frame.worldOrigin.y + y;
+			if(specialAt(tileX, tileY) != specialCursed)
+				continue;
+
+			const float cellX = static_cast<float>(tileX);
+			const float cellY = static_cast<float>(tileY);
+			const Random4 r = hash44(cellX, cellY, 131.0f, 29.0f);
+			const float life = 4.0f + 3.0f * r.z;
+			const float period = life + 3.0f + 6.0f * r.w;
+			const float clock = t + r.x * period;
+			const float cycle = std::floor(clock / period);
+			const float age = clock - cycle * period;
+			if(age > life)
+				continue;
+			const Random4 q = hash44(cellX, cellY, cycle, 137.0f);
+			if(q.w > 0.3f)
+				continue;
+
+			const float progress = age / life;
+			const float fade = smoothstep(0.0f, 0.15f, progress) * (1.0f - smoothstep(0.75f, 1.0f, progress));
+			const float flicker = 0.78f + 0.22f * std::sin(t * (7.0f + 5.0f * q.z) + q.x * 20.0f) * std::sin(t * 3.1f + q.y * 11.0f);
+			const float positionX = cellX + 0.2f + 0.6f * q.x + (q.z - 0.5f) * 0.6f * progress + 0.12f * std::sin(t * 0.7f + q.x * pi2);
+			const float positionY = cellY + 0.2f + 0.6f * q.y - 0.45f - 0.08f * std::sin(t * 1.3f + q.y * pi2);
+			addQuad(glowVertices, placement, positionX, positionY, 0.2f, 0.0f, 0.0f, 0.2f, 1.6f, 1.6f, KIND_GHOSTFIRE,
+				{0.0f, 0.0f, 0.0f, fade * flicker * frame.weatherStrength});
+		}
+	}
+}
+
+void MapParticles::buildSpiritMotes(const Placement & placement, const Frame & frame)
+{
+	// 灵光：灵气草甸上一粒粒青白、淡金的光点从草间慢慢升起，边升边顺风飘、边淡掉，像地脉往外冒的灵气。
+	// 每个图块两个槽位，各按自己的周期起一粒
+	const float t = frame.time;
+	for(int y = 0; y < frame.slots.y + 1; ++y)
+	{
+		for(int x = 0; x < frame.slots.x; ++x)
+		{
+			const int tileX = frame.worldOrigin.x + x;
+			const int tileY = frame.worldOrigin.y + y;
+			if(specialAt(tileX, tileY) != specialSpirit)
+				continue;
+
+			const float cellX = static_cast<float>(tileX);
+			const float cellY = static_cast<float>(tileY);
+			for(int k = 0; k < 2; ++k)
+			{
+				const Random4 r = hash44(cellX, cellY, 151.0f + static_cast<float>(k), 31.0f);
+				const float life = 3.0f + 2.0f * r.z;
+				const float period = life + 1.0f + 4.0f * r.w;
+				const float clock = t + r.x * period;
+				const float cycle = std::floor(clock / period);
+				const float age = clock - cycle * period;
+				if(age > life)
+					continue;
+				const Random4 q = hash44(cellX, cellY, cycle, 157.0f + static_cast<float>(k));
+				if(q.w > 0.6f)
+					continue;
+
+				const float progress = age / life;
+				const float fade = smoothstep(0.0f, 0.2f, progress) * (1.0f - smoothstep(0.55f, 1.0f, progress));
+				const float positionX = cellX + 0.1f + 0.8f * q.x + 0.06f * std::sin(t * 1.7f + q.x * pi2) + 0.94f * 0.03f * age;
+				const float positionY = cellY + 0.1f + 0.8f * q.y - 0.7f * progress + 0.34f * 0.03f * age;
+				addQuad(glowVertices, placement, positionX, positionY, 0.07f, 0.0f, 0.0f, 0.07f, 1.0f, 1.0f, KIND_SPIRIT,
+					{q.z < 0.6f ? 0.0f : 1.0f, 0.0f, 0.0f, fade * 0.9f * frame.weatherStrength});
+			}
+		}
+	}
+}
+
 void MapParticles::buildRain(const Placement & placement, const Frame & frame)
 {
 	// 雨丝：阵雨的云下面、水面上，一道道细雨斜着落下（风从西边来，雨丝往右偏），落进水里打出涟漪（涟漪在合成着色器里画）
@@ -1079,6 +1199,8 @@ void MapParticles::draw(SDL_Renderer * renderer, const Frame & frame, const std:
 			buildSnow(placement, frame);
 		buildEmbers(placement, frame);
 		buildMiasma(placement, frame);
+		buildGhostFires(placement, frame);
+		buildSpiritMotes(placement, frame);
 		if(frame.sky)
 			buildRain(placement, frame);
 	}
