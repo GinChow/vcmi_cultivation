@@ -165,8 +165,9 @@ static inline Relief decodeRelief(float4 r)
 	return result;
 }
 
-// 修仙建筑记号（2026-11-18）：模组给按修仙设定重绘的建筑配一张起伏图，RGB 存 (10, 0, 0)/255、A 为覆盖度——
-// R+G 不到 0.08，按“没有起伏图”处理（不重新打光、不投长影、不起雾、不盖云，长投影着色器只看 B，B 为 0 即平地）；
+// 修仙建筑记号（2026-11-18）：模组给按修仙设定重绘的建筑配一张起伏图，R、G 存 (10, 0)/255、A 为覆盖度——
+// R+G 不到 0.08，按“没有法线”处理（不重新打光、不起雾、不盖云）；
+// B 是离地高度（2026-11-19 起）：长投影着色器只看 B，建筑像山、树一样随时段投长影，所以记号不看 B。
 // 真实法线不会落在 R≈0.04、G≈0 这一角（那是长度超过 1 的法线），所以这个组合只当记号用。
 // 压在建筑前面、没有起伏图的物件（英雄、宝物）按清零剪影画进起伏层，会把这里的 RGB 乘掉，记号也就跟着消失
 static inline float vividMark(float4 r)
@@ -175,7 +176,7 @@ static inline float vividMark(float4 r)
 		return 0.0;
 	float3 enc = r.rgb / r.a;
 	return smoothstep(0.015, 0.028, enc.r) * (1.0 - smoothstep(0.06, 0.09, enc.r))
-		* (1.0 - smoothstep(0.015, 0.03, enc.g)) * (1.0 - smoothstep(0.015, 0.03, enc.b)) * saturate(r.a * 1.5);
+		* (1.0 - smoothstep(0.015, 0.03, enc.g)) * saturate(r.a * 1.5);
 }
 
 // 后处理“统一色调”（postShaderSource 第 2 步）的反变换：先在这里把建筑的颜色往反方向推，经过后处理正好回到原色，
