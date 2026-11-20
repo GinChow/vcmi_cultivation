@@ -43,12 +43,13 @@ CSelWindow::CSelWindow( const std::string & Text, PlayerColor player, int charpe
 {
 	OBJECT_CONSTRUCTION;
 
-	backgroundTexture = std::make_shared<CFilledTexture>(ImagePath::builtin("DiBoxBck"), pos);
+	const auto & style = CMessage::infoWindowStyle();
+	backgroundTexture = std::make_shared<CFilledTexture>(style.background, pos);
 
 	ID = questionID;
 	for(int i = 0; i < Buttons.size(); i++)
 	{
-		buttons.push_back(std::make_shared<CButton>(Point(0, 0), Buttons[i].first, CButton::tooltip(), Buttons[i].second));
+		buttons.push_back(std::make_shared<CButton>(Point(0, 0), style.replaceButton(Buttons[i].first), CButton::tooltip(), Buttons[i].second));
 		if(!i && questionID.getNum() >= 0)
 			buttons.back()->addCallback(std::bind(&CSelWindow::madeChoice, this));
 		buttons[i]->addCallback(std::bind(&CInfoWindow::close, this)); //each button will close the window apart from call-defined actions
@@ -75,6 +76,7 @@ CSelWindow::CSelWindow( const std::string & Text, PlayerColor player, int charpe
 			comp->onChoose = [this](){ madeChoiceAndClose(); };
 	}
 
+	applyStyle();
 	CMessage::drawIWindow(this, Text, player);
 }
 
@@ -99,12 +101,13 @@ CInfoWindow::CInfoWindow(const std::string & Text, PlayerColor player, const TCo
 {
 	OBJECT_CONSTRUCTION;
 
-	backgroundTexture = std::make_shared<CFilledTexture>(ImagePath::builtin("DiBoxBck"), pos);
+	const auto & style = CMessage::infoWindowStyle();
+	backgroundTexture = std::make_shared<CFilledTexture>(style.background, pos);
 
 	ID = QuestionID(-1);
 	for(const auto & Button : Buttons)
 	{
-		auto button = std::make_shared<CButton>(Point(0, 0), Button.first, CButton::tooltip(), std::bind(&CInfoWindow::close, this));
+		auto button = std::make_shared<CButton>(Point(0, 0), style.replaceButton(Button.first), CButton::tooltip(), std::bind(&CInfoWindow::close, this));
 		button->setBorderColor(Colors::METALLIC_GOLD);
 		button->addCallback(Button.second); //each button will close the window apart from call-defined actions
 		buttons.push_back(button);
@@ -130,7 +133,35 @@ CInfoWindow::CInfoWindow(const std::string & Text, PlayerColor player, const TCo
 	if(!comps.empty())
 		components = std::make_shared<CComponentBox>(comps, Rect(0,0,0,0));
 
+	applyStyle();
 	CMessage::drawIWindow(this, Text, player);
+}
+
+void CInfoWindow::applyStyle()
+{
+	const auto & style = CMessage::infoWindowStyle();
+	if(!style.custom)
+		return;
+	text->label->setColor(style.textColor);
+	text->label->highlightColor = style.highlightColor;
+	if(components)
+	{
+		components->setTextColor(style.textColor);
+		components->setRedrawParentAll(true);
+	}
+	for(auto & button : buttons)
+	{
+		button->setBorderColor(std::nullopt); // 原版在按钮外描一圈金边，笔刷按钮不要
+		button->setRedrawParent(true);
+	}
+}
+
+void CInfoWindow::redraw()
+{
+	if(CMessage::infoWindowStyle().custom)
+		ENGINE->windows().totalRedraw();
+	else
+		WindowBase::redraw();
 }
 
 CInfoWindow::CInfoWindow()
@@ -165,7 +196,7 @@ void CInfoWindow::tick(uint32_t msPassed)
 void CInfoWindow::showAll(Canvas & to)
 {
 	CIntObject::showAll(to);
-	CMessage::drawBorder(GAME->interface() ? GAME->interface()->playerID : PlayerColor(1), to, pos.w+28, pos.h+29, pos.x-14, pos.y-15);
+	CMessage::drawInfoWindowBorder(GAME->interface() ? GAME->interface()->playerID : PlayerColor(1), to, pos.x, pos.y, pos.w, pos.h);
 }
 
 CInfoWindow::~CInfoWindow() = default;

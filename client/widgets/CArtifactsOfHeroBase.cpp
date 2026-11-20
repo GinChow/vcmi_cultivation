@@ -25,6 +25,8 @@
 #include "../../lib/entities/artifact/CArtifactFittingSet.h"
 #include "../../lib/mapObjects/CGHeroInstance.h"
 #include "../../lib/networkPacks/ArtifactLocation.h"
+#include "../../lib/json/JsonNode.h"
+#include "WidgetLayout.h"
 
 CArtifactsOfHeroBase::CArtifactsOfHeroBase()
 	: curHero(nullptr)
@@ -64,9 +66,9 @@ void CArtifactsOfHeroBase::init(
 		artWorn[ArtifactPosition(g)] = std::make_shared<CArtPlace>(slotPos[g]);
 	}
 	backpack.clear();
-	for(int s = 0; s < 5; s++)
+	for(const auto & place : backpackPos)
 	{
-		auto artPlace = std::make_shared<CArtPlace>(Point(403 + 46 * s, 365));
+		auto artPlace = std::make_shared<CArtPlace>(place);
 		backpack.push_back(artPlace);
 	}
 	for(auto & artPlace : artWorn)
@@ -78,17 +80,40 @@ void CArtifactsOfHeroBase::init(
 	{
 		artPlace->setArtifact(ArtifactID(ArtifactID::NONE));
 	}
-	leftBackpackRoll = std::make_shared<CButton>(Point(379, 364), AnimationPath::builtin("hsbtns3.def"), CButton::tooltip(),
+	leftBackpackRoll = std::make_shared<CButton>(backpackLeftPos, backpackLeftImage, CButton::tooltip(),
 		[scrollCallback](){scrollCallback(true);}, EShortcut::MOVE_LEFT);
-	rightBackpackRoll = std::make_shared<CButton>(Point(632, 364), AnimationPath::builtin("hsbtns5.def"), CButton::tooltip(),
+	rightBackpackRoll = std::make_shared<CButton>(backpackRightPos, backpackRightImage, CButton::tooltip(),
 		[scrollCallback](){scrollCallback(false);}, EShortcut::MOVE_RIGHT);
 	leftBackpackRoll->block(true);
 	rightBackpackRoll->block(true);
 
-	backpackScroller = std::make_shared<BackpackScroller>(this, Rect(380, 30, 278, 382));
+	backpackScroller = std::make_shared<BackpackScroller>(this, backpackScrollArea);
 	backpackScroller->setScrollingEnabled(false);
 
 	setRedrawParent(true);
+}
+
+void CArtifactsOfHeroBase::applyLayout(const JsonNode & layout)
+{
+	if(layout.isNull())
+		return;
+	if(layout["slots"].isVector())
+	{
+		const auto & slots = layout["slots"].Vector();
+		for(size_t i = 0; i < std::min(slots.size(), slotPos.size()); ++i)
+			slotPos[i] = WidgetLayout::point(slots[i], slotPos[i]);
+	}
+	if(layout["backpack"].isVector())
+	{
+		backpackPos.clear();
+		for(const auto & place : layout["backpack"].Vector())
+			backpackPos.push_back(WidgetLayout::point(place, Point()));
+	}
+	backpackLeftPos = WidgetLayout::point(layout["backpackLeft"], backpackLeftPos);
+	backpackLeftImage = WidgetLayout::animation(layout["backpackLeft"]["image"], backpackLeftImage);
+	backpackRightPos = WidgetLayout::point(layout["backpackRight"], backpackRightPos);
+	backpackRightImage = WidgetLayout::animation(layout["backpackRight"]["image"], backpackRightImage);
+	backpackScrollArea = WidgetLayout::rect(layout["backpackScroll"], backpackScrollArea);
 }
 
 void CArtifactsOfHeroBase::setClickPressedArtPlacesCallback(const CArtPlace::ClickFunctor & callback) const

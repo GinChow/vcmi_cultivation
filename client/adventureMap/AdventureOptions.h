@@ -12,6 +12,7 @@
 #include "../windows/CWindowObject.h"
 #include "../gui/Shortcut.h"
 #include "../../lib/filesystem/ResourcePath.h"
+#include "../../lib/json/JsonNode.h"
 
 class CButton;
 class CLabel;
@@ -49,8 +50,17 @@ class AdventureOptions : public CWindowObject
 	static constexpr int BUTTON_STEP    = 58;
 	static constexpr int MAX_VISIBLE    = 5;
 
+	/// 按钮排布：默认是原版竖列；布局 JSON 写了 "layout" 时按其中的起点、步长、可见个数排（可横排）
+	Point buttonOrigin = Point(BUTTON_X, BUTTON_START_Y);
+	Point buttonStep = Point(0, BUTTON_STEP);
+	int maxVisible = MAX_VISIBLE;
+	/// 自定义布局可关掉按钮旁的说明文字（文字已画进按钮图时）
+	bool showLabels = true;
+
 	/// (Re)creates the visible buttons for the given scroll position.
 	void rebuildVisibleButtons(int scrollPos, bool enhanced);
+
+	explicit AdventureOptions(const JsonNode & config);
 
 public:
 	AdventureOptions();

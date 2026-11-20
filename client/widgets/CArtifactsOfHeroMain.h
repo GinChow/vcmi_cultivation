@@ -15,6 +15,8 @@ class CArtifactsOfHeroMain : public CArtifactsOfHeroBase
 {
 public:
 	CArtifactsOfHeroMain(const Point & position);
+	/// 修士窗口换皮：按布局 JSON 摆穿戴槽和储物袋（见 CArtifactsOfHeroBase::applyLayout）
+	CArtifactsOfHeroMain(const Point & position, const JsonNode & layout);
 	~CArtifactsOfHeroMain() override;
 	void keyPressed(EShortcut key) override;
 	void keyReleased(EShortcut key) override;

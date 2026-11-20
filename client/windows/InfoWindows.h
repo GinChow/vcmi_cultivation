@@ -50,6 +50,8 @@ public:
 	void close() override;
 	void showAll(Canvas & to) override;
 	void tick(uint32_t msPassed) override;
+	/// 模组外观（宣纸、卷轴边框）带半透明毛边，只重画弹窗自己会越叠越深：改为请求整屏重画
+	void redraw() override;
 
 	/// closes the window on its own, as if nobody had answered
 	void closeAfter(uint32_t ms);
@@ -58,6 +60,12 @@ public:
 
 	CInfoWindow(const std::string & Text, PlayerColor player, const TCompsInfo & comps = TCompsInfo(), const TButtonsInfo & Buttons = TButtonsInfo());
 	CInfoWindow();
+
+protected:
+	/// 按 CMessage::infoWindowStyle 套用文字色、高亮色、组件文字色（在 drawIWindow 排版之前调用）
+	void applyStyle();
+
+public:
 	~CInfoWindow();
 
 	//use only before the game starts! (showYesNoDialog in GAME->interface() must be used then)

@@ -26,6 +26,8 @@
 #include "InfoWindows.h"
 
 #include "../../lib/texts/TextOperations.h"
+#include "../../lib/filesystem/Filesystem.h"
+#include "../../lib/json/JsonNode.h"
 
 constexpr int RIGHT_CLICK_POPUP_MIN_SIZE = 100;
 constexpr int RIGHT_CLICK_POPUP_MAX_HEIGHT_TEXTONLY = 450;
@@ -37,6 +39,71 @@ constexpr int INTERVAL_BETWEEN_TEXT_AND_BUTTONS = 24;
 
 static std::array<std::shared_ptr<CAnimation>, PlayerColor::PLAYER_LIMIT_I> dialogBorders;
 static std::array<std::vector<std::shared_ptr<IImage>>, PlayerColor::PLAYER_LIMIT_I> piecesOfBox;
+/// 模组弹窗边框 8 块（不分玩家色）；只在外观 custom 时加载
+static std::vector<std::shared_ptr<IImage>> infoWindowPieces;
+
+namespace
+{
+ColorRGBA readStyleColor(const JsonNode & node, const ColorRGBA & fallback)
+{
+	if(node.isString())
+		return Colors::parseColor(node.String()).value_or(fallback);
+	if(node.isVector() && node.Vector().size() >= 3)
+	{
+		const auto & v = node.Vector();
+		return ColorRGBA(v[0].Integer(), v[1].Integer(), v[2].Integer(), v.size() > 3 ? v[3].Integer() : 255);
+	}
+	return fallback;
+}
+
+InfoWindowStyle loadInfoWindowStyle()
+{
+	InfoWindowStyle style;
+	const JsonPath path = JsonPath::builtin("config/widgets/infoWindow.json");
+	if(!CResourceHandler::get()->existsResource(path))
+		return style;
+
+	const JsonNode config(path);
+	style.custom = true;
+	if(!config["background"].isNull())
+		style.background = ImagePath::fromJson(config["background"]);
+	const JsonNode & margins = config["borderMargins"];
+	if(!margins.isNull())
+	{
+		style.marginLeft = margins["left"].Integer();
+		style.marginTop = margins["top"].Integer();
+		style.marginRight = margins["right"].Integer();
+		style.marginBottom = margins["bottom"].Integer();
+	}
+	style.textColor = readStyleColor(config["textColor"], style.textColor);
+	style.highlightColor = readStyleColor(config["highlightColor"], style.highlightColor);
+	if(config["buttons"].isStruct())
+		for(const auto & [original, replacement] : config["buttons"].Struct())
+			style.buttons[AnimationPath::builtin(original).getName()] = AnimationPath::fromJson(replacement);
+
+	auto border = ENGINE->renderHandler().loadAnimation(AnimationPath::fromJson(config["border"]), EImageBlitMode::COLORKEY);
+	for(int j = 0; j < border->size(0); j++)
+		infoWindowPieces.push_back(border->getImage(j, 0));
+	if(infoWindowPieces.size() < 8)
+	{
+		logGlobal->error("config/widgets/infoWindow.json: border needs 8 frames, got %d", infoWindowPieces.size());
+		infoWindowPieces.clear();
+	}
+	return style;
+}
+}
+
+AnimationPath InfoWindowStyle::replaceButton(const AnimationPath & original) const
+{
+	auto it = buttons.find(original.getName());
+	return it == buttons.end() ? original : it->second;
+}
+
+const InfoWindowStyle & CMessage::infoWindowStyle()
+{
+	static const InfoWindowStyle style = loadInfoWindowStyle();
+	return style;
+}
 
 void CMessage::init()
 {
@@ -63,6 +130,7 @@ void CMessage::dispose()
 	// each image is also cached here in its own right, not only inside its animation above
 	for(auto & item : piecesOfBox)
 		item.clear();
+	infoWindowPieces.clear();
 }
 
 /// State of line breaking after some symbols of the text were consumed
@@ -390,11 +458,35 @@ void CMessage::drawIWindow(CInfoWindow * ret, std::string text, PlayerColor play
 	ret->center();
 }
 
+namespace
+{
+/// 用 8 块拼框：四边平铺、四角压在上面（各块尺寸可以不同）
+void drawBoxPieces(const std::vector<std::shared_ptr<IImage>> & box, Canvas & to, int w, int h, int x, int y);
+}
+
+void CMessage::drawInfoWindowBorder(PlayerColor playerColor, Canvas & to, int x, int y, int w, int h)
+{
+	const auto & style = infoWindowStyle();
+	if(style.custom && !infoWindowPieces.empty())
+	{
+		drawBoxPieces(infoWindowPieces, to, w + style.marginLeft + style.marginRight, h + style.marginTop + style.marginBottom,
+			x - style.marginLeft, y - style.marginTop);
+		return;
+	}
+	drawBorder(playerColor, to, w + 28, h + 29, x - 14, y - 15);
+}
+
 void CMessage::drawBorder(PlayerColor playerColor, Canvas & to, int w, int h, int x, int y)
 {
 	if(playerColor.isSpectator())
 		playerColor = PlayerColor(1);
-	auto & box = piecesOfBox.at(playerColor.getNum());
+	drawBoxPieces(piecesOfBox.at(playerColor.getNum()), to, w, h, x, y);
+}
+
+namespace
+{
+void drawBoxPieces(const std::vector<std::shared_ptr<IImage>> & box, Canvas & to, int w, int h, int x, int y)
+{
 
 	// Note: this code assumes that the corner dimensions are all the same.
 
@@ -433,4 +525,5 @@ void CMessage::drawBorder(PlayerColor playerColor, Canvas & to, int w, int h, in
 	to.draw(box[1], Point(x + w - box[1]->width(), y));
 	to.draw(box[2], Point(x, y + h - box[2]->height() + 1));
 	to.draw(box[3], Point(x + w - box[3]->width(), y + h - box[3]->height() + 1));
+}
 }

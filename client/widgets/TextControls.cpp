@@ -260,10 +260,10 @@ void CTextContainer::blitLine(Canvas & to, Rect destRect, std::string what)
 						to.drawText(where, font, *color, ETextAlignment::TOPLEFT, toPrint);
 					}
 					else
-						to.drawText(where, font, Colors::YELLOW, ETextAlignment::TOPLEFT, toPrint);
+						to.drawText(where, font, highlightColor, ETextAlignment::TOPLEFT, toPrint);
 				}
 				else
-					to.drawText(where, font, Colors::YELLOW, ETextAlignment::TOPLEFT, toPrint);
+					to.drawText(where, font, highlightColor, ETextAlignment::TOPLEFT, toPrint);
 			}
 			else // Non-enclosed text, use default color
 				to.drawText(where, font, color, ETextAlignment::TOPLEFT, toPrint);

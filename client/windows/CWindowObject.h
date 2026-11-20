@@ -40,7 +40,8 @@ public:
 		BORDERED=4, // window will have border if current resolution is bigger than size of window
 		SHADOW_DISABLED=8, //this window won't display any shadow
 		NEEDS_ANIMATED_BACKGROUND=16, //there are videos in the background that have to be played
-		PLAYER_COLORED_BORDERED_STATUSBAR=32 //composite player-colored bordered frame for statusbar dialogs
+		PLAYER_COLORED_BORDERED_STATUSBAR=32, //composite player-colored bordered frame for statusbar dialogs
+		BACKGROUND_ALPHA=64 // 底图按透明通道叠在下层画面上（模组的毛边墨带、卷轴等不规则外形）；默认底图当不透明图贴
 	};
 
 	/*
@@ -53,6 +54,8 @@ public:
 	~CWindowObject();
 
 	void showAll(Canvas & to) override;
+	/// 底图带透明通道（BACKGROUND_ALPHA）的窗口：只重画自己时半透明毛边会叠在上一次的图上越来越深，改为请求整屏重画
+	void redraw() override;
 };
 
 class CStatusbarWindow : virtual public CWindowObject

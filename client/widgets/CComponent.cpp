@@ -129,6 +129,12 @@ void CComponent::init(ComponentType Type, ComponentSubType Subtype, std::optiona
 	}
 }
 
+void CComponent::setTextColor(const ColorRGBA & color)
+{
+	for(auto & line : lines)
+		line->setColor(color);
+}
+
 std::vector<AnimationPath> CComponent::getFileName() const
 {
 	static const std::array<std::string, 4>  primSkillsArr = {"PSKIL32",        "PSKIL32",        "PSKIL42",        "PSKILL"};
@@ -621,4 +627,19 @@ CComponentBox::CComponentBox(std::vector<std::shared_ptr<CSelectableComponent>> 
 		key = vstd::next(key, 1);
 	}
 	selectionChanged(_components.front());
+}
+
+void CComponentBox::setTextColor(const ColorRGBA & color)
+{
+	for(auto & comp : components)
+		comp->setTextColor(color);
+	for(auto & label : orLabels)
+		label->setColor(color);
+}
+
+void CComponentBox::setRedrawParentAll(bool on)
+{
+	setRedrawParent(on);
+	for(auto & comp : components)
+		comp->setRedrawParent(on);
 }

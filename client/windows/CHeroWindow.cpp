@@ -30,6 +30,7 @@
 #include "../widgets/TextControls.h"
 #include "../widgets/Buttons.h"
 #include "../widgets/Slider.h"
+#include "../widgets/WidgetLayout.h"
 #include "render/IRenderHandler.h"
 
 #include "../../lib/CConfigHandler.h"
@@ -41,6 +42,7 @@
 #include "../../lib/mapObjects/CGHeroInstance.h"
 #include "../../lib/networkPacks/ArtifactLocation.h"
 #include "../../lib/texts/CGeneralTextHandler.h"
+#include "../../lib/json/JsonNode.h"
 
 void CHeroSwitcher::clickPressed(const Point & cursorPosition)
 {
@@ -70,27 +72,75 @@ CHeroSwitcher::CHeroSwitcher(CHeroWindow * owner_, Point pos_, const CGHeroInsta
 	pos.h = image->pos.h;
 }
 
+namespace
+{
+/// 修士窗口布局：模组的 config/widgets/heroWindow.json；没有这份文件时是空节点，下面每一项都取原版值
+const JsonNode & heroLayout()
+{
+	static const JsonNode layout = WidgetLayout::load(JsonPath::builtin("config/widgets/heroWindow.json"));
+	return layout;
+}
+
+int heroWindowOptions()
+{
+	const JsonNode & layout = heroLayout();
+	if(layout["background"].isNull())
+		return CWindowObject::PLAYER_COLORED;
+	// 模组底图：不按玩家色染色、不带矩形阴影；"backgroundAlpha": true 时按透明通道贴（毛边窗口）
+	return CWindowObject::SHADOW_DISABLED | (layout["backgroundAlpha"].Bool() ? CWindowObject::BACKGROUND_ALPHA : 0);
+}
+
+ImagePath heroWindowBackground()
+{
+	return WidgetLayout::image(heroLayout()["background"], ImagePath::builtin(ENGINE->isRoeData() ? "HeroScr3" : "HeroScr4"));
+}
+
+/// 布局里按钮项 {"x", "y", "image"}：位置和动画，缺省用原版
+Point buttonPos(const char * key, const Point & fallback)
+{
+	return WidgetLayout::point(heroLayout()["buttons"][key], fallback);
+}
+
+AnimationPath buttonImage(const char * key, const AnimationPath & fallback)
+{
+	return WidgetLayout::animation(heroLayout()["buttons"][key]["image"], fallback);
+}
+
+/// 模组换了按钮图时，原版叠在按钮上的小图标（储物袋、统领）不再叠
+bool keepButtonOverlay(const char * key)
+{
+	return heroLayout()["buttons"][key]["image"].isNull();
+}
+}
+
 CHeroWindow::CHeroWindow(const CGHeroInstance * hero)
-	: CWindowObject(PLAYER_COLORED, ImagePath::builtin(ENGINE->isRoeData() ? "HeroScr3" : "HeroScr4"))
+	: CWindowObject(heroWindowOptions(), heroWindowBackground())
 {
 
 	OBJECT_CONSTRUCTION;
 	curHero = hero;
+	const JsonNode & layout = heroLayout();
 
-	banner = std::make_shared<CAnimImage>(AnimationPath::builtin("CREST58"), GAME->interface()->playerID.getNum(), 0, 606, 8);
-	name = std::make_shared<CLabel>(190, 38, EFonts::FONT_BIG, ETextAlignment::CENTER, Colors::YELLOW);
-	title = std::make_shared<CLabel>(190, 65, EFonts::FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE);
+	if(!(layout["banner"].isBool() && !layout["banner"].Bool()))
+	{
+		const Point bannerPos = WidgetLayout::point(layout["banner"], Point(606, 8));
+		banner = std::make_shared<CAnimImage>(AnimationPath::builtin("CREST58"), GAME->interface()->playerID.getNum(), 0, bannerPos.x, bannerPos.y);
+	}
+	name = WidgetLayout::label(layout["name"], Point(190, 38), EFonts::FONT_BIG, ETextAlignment::CENTER, Colors::YELLOW);
+	title = WidgetLayout::label(layout["title"], Point(190, 65), EFonts::FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE);
 
-	statusbar = CGStatusBar::create(std::make_shared<CPicture>(background->getSurface(), Rect(7, 559, 660, 19), 7, 559));
+	const Rect statusRect = WidgetLayout::rect(layout["statusBar"], Rect(7, 559, 660, 19));
+	statusbar = CGStatusBar::create(std::make_shared<CPicture>(background->getSurface(), statusRect, statusRect.x, statusRect.y));
 
-	quitButton = std::make_shared<CButton>(Point(609, 516), AnimationPath::builtin("hsbtns.def"), CButton::tooltip(LIBRARY->generaltexth->translate("core.heroscrn.17")), [this](){ close(); }, EShortcut::GLOBAL_RETURN);
+	quitButton = std::make_shared<CButton>(buttonPos("quit", Point(609, 516)), buttonImage("quit", AnimationPath::builtin("hsbtns.def")), CButton::tooltip(LIBRARY->generaltexth->translate("core.heroscrn.17")), [this](){ close(); }, EShortcut::GLOBAL_RETURN);
 
 	if(settings["general"]["enableUiEnhancements"].Bool())
 	{
-		questlogButton = std::make_shared<CButton>(Point(314, 429), AnimationPath::builtin("hsbtns4.def"), CButton::tooltip(LIBRARY->generaltexth->translate("core.heroscrn.0")), [](){ GAME->interface()->showQuestLog(); }, EShortcut::ADVENTURE_QUEST_LOG);
-		backpackButton = std::make_shared<CButton>(Point(424, 429), AnimationPath::builtin("heroBackpack"), CButton::tooltipLocalized("vcmi.heroWindow.openBackpack"), [this](){ createBackpackWindow(); }, EShortcut::HERO_BACKPACK);
-		backpackButton->setOverlay(std::make_shared<CPicture>(ImagePath::builtin("heroWindow/backpackButtonIcon")));
-		dismissButton = std::make_shared<CButton>(Point(534, 429), AnimationPath::builtin("hsbtns2.def"), CButton::tooltip(LIBRARY->generaltexth->translate("core.heroscrn.28")), [this](){ dismissCurrent(); }, EShortcut::HERO_DISMISS);
+		questlogButton = std::make_shared<CButton>(buttonPos("questLog", Point(314, 429)), buttonImage("questLog", AnimationPath::builtin("hsbtns4.def")), CButton::tooltip(LIBRARY->generaltexth->translate("core.heroscrn.0")), [](){ GAME->interface()->showQuestLog(); }, EShortcut::ADVENTURE_QUEST_LOG);
+		backpackButton = std::make_shared<CButton>(buttonPos("backpack", Point(424, 429)), buttonImage("backpack", AnimationPath::builtin("heroBackpack")), CButton::tooltipLocalized("vcmi.heroWindow.openBackpack"), [this](){ createBackpackWindow(); }, EShortcut::HERO_BACKPACK);
+		if(keepButtonOverlay("backpack"))
+			backpackButton->setOverlay(std::make_shared<CPicture>(ImagePath::builtin("heroWindow/backpackButtonIcon")));
+		dismissButton = std::make_shared<CButton>(buttonPos("dismiss", Point(534, 429)), buttonImage("dismiss", AnimationPath::builtin("hsbtns2.def")), CButton::tooltip(LIBRARY->generaltexth->translate("core.heroscrn.28")), [this](){ dismissCurrent(); }, EShortcut::HERO_DISMISS);
 	}
 	else
 	{
@@ -102,33 +152,42 @@ CHeroWindow::CHeroWindow(const CGHeroInstance * hero)
 	questlogButton->block(!GAME->interface()->hasJournalEntries());
 
 	formations = std::make_shared<CToggleGroup>(0);
-	formations->addToggle(0, std::make_shared<CToggleButton>(Point(481, 483), AnimationPath::builtin("hsbtns6.def"), std::make_pair(LIBRARY->generaltexth->translate("core.heroscrn.23"), LIBRARY->generaltexth->translate("core.heroscrn.29")), 0, EShortcut::HERO_TIGHT_FORMATION));
-	formations->addToggle(1, std::make_shared<CToggleButton>(Point(481, 519), AnimationPath::builtin("hsbtns7.def"), std::make_pair(LIBRARY->generaltexth->translate("core.heroscrn.24"), LIBRARY->generaltexth->translate("core.heroscrn.30")), 0, EShortcut::HERO_LOOSE_FORMATION));
+	formations->addToggle(0, std::make_shared<CToggleButton>(buttonPos("formation0", Point(481, 483)), buttonImage("formation0", AnimationPath::builtin("hsbtns6.def")), std::make_pair(LIBRARY->generaltexth->translate("core.heroscrn.23"), LIBRARY->generaltexth->translate("core.heroscrn.29")), 0, EShortcut::HERO_TIGHT_FORMATION));
+	formations->addToggle(1, std::make_shared<CToggleButton>(buttonPos("formation1", Point(481, 519)), buttonImage("formation1", AnimationPath::builtin("hsbtns7.def")), std::make_pair(LIBRARY->generaltexth->translate("core.heroscrn.24"), LIBRARY->generaltexth->translate("core.heroscrn.30")), 0, EShortcut::HERO_LOOSE_FORMATION));
 
 	if(hero->getCommander())
 	{
-		commanderButton = std::make_shared<CButton>(Point(317, 18), AnimationPath::builtin("heroCommander"), CButton::tooltipLocalized("vcmi.heroWindow.openCommander"), [&](){ commanderWindow(); }, EShortcut::HERO_COMMANDER);
-		commanderButton->setOverlay(std::make_shared<CPicture>(ImagePath::builtin("heroWindow/commanderButtonIcon")));
+		commanderButton = std::make_shared<CButton>(buttonPos("commander", Point(317, 18)), buttonImage("commander", AnimationPath::builtin("heroCommander")), CButton::tooltipLocalized("vcmi.heroWindow.openCommander"), [&](){ commanderWindow(); }, EShortcut::HERO_COMMANDER);
+		if(keepButtonOverlay("commander"))
+			commanderButton->setOverlay(std::make_shared<CPicture>(ImagePath::builtin("heroWindow/commanderButtonIcon")));
 	}
 
-	//right list of heroes
-	for(int i=0; i < std::min(GAME->interface()->cb->howManyHeroes(false), 8); i++)
-		heroList.push_back(std::make_shared<CHeroSwitcher>(this, Point(612, 87 + i * 54), GAME->interface()->cb->getHeroBySerial(i, false)));
+	//right list of heroes（布局 "heroList"：起点、步长、最多几个）
+	const JsonNode & listLayout = layout["heroList"];
+	const Point listOrigin = WidgetLayout::point(listLayout, Point(612, 87));
+	const Point listStep = WidgetLayout::point(listLayout["step"], Point(0, 54));
+	const int listMax = listLayout["max"].isNull() ? 8 : listLayout["max"].Integer();
+	for(int i=0; i < std::min<int>(GAME->interface()->cb->howManyHeroes(false), listMax); i++)
+		heroList.push_back(std::make_shared<CHeroSwitcher>(this, listOrigin + listStep * i, GAME->interface()->cb->getHeroBySerial(i, false)));
 
 	//areas
-	portraitArea = std::make_shared<LRClickableAreaWText>(Rect(18, 18, 58, 64));
-	portraitImage = std::make_shared<CAnimImage>(AnimationPath::builtin("PortraitsLarge"), 0, 0, 19, 19);
+	const Point portraitPos = WidgetLayout::point(layout["portrait"], Point(18, 18));
+	portraitArea = std::make_shared<LRClickableAreaWText>(Rect(portraitPos, Point(58, 64)));
+	portraitImage = std::make_shared<CAnimImage>(AnimationPath::builtin("PortraitsLarge"), 0, 0, portraitPos.x + 1, portraitPos.y + 1);
 
-	portraitWikiArea = std::make_shared<LRClickableArea>(Rect(18, 18, 58, 64), [this]()
+	portraitWikiArea = std::make_shared<LRClickableArea>(Rect(portraitPos, Point(58, 64)), [this]()
 	{
 		ENGINE->windows().createAndPushWindow<WikiWindow>(
 			WikiWindow::Style::BROWN,
 			WikiEntryKey{WikiCategory::HERO, curHero->getHeroType()->getJsonKey()});
 	});
 
+	// 主属性：布局 "primarySkills" 是 4 项 {"area": {x,y,w,h}, "value": 标签}
+	const JsonNode & primLayout = layout["primarySkills"];
 	for(int v = 0; v < GameConstants::PRIMARY_SKILLS; ++v)
 	{
-		auto area = std::make_shared<LRClickableAreaWTextComp>(Rect(30 + 70 * v, 109, 42, 64), ComponentType::PRIM_SKILL);
+		const JsonNode & primNode = primLayout.isVector() && v < primLayout.Vector().size() ? primLayout.Vector()[v] : JsonNode();
+		auto area = std::make_shared<LRClickableAreaWTextComp>(WidgetLayout::rect(primNode["area"], Rect(30 + 70 * v, 109, 42, 64)), ComponentType::PRIM_SKILL);
 		area->text = GAME->translator().translate("core.arraytxt", 2+v);
 		area->component.subType = PrimarySkill(v);
 		MetaString hoverText;
@@ -137,53 +196,76 @@ CHeroWindow::CHeroWindow(const CGHeroInstance * hero)
 		area->hoverText = hoverText.toString(&GAME->translator());
 		primSkillAreas.push_back(area);
 
-		auto value = std::make_shared<CLabel>(53 + 70 * v, 166, FONT_SMALL, ETextAlignment::CENTER);
+		auto value = WidgetLayout::label(primNode["value"], Point(53 + 70 * v, 166), FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE);
 		primSkillValues.push_back(value);
 	}
 
-	primSkillImages.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("PSKIL42"), 0, 0, 32, 111));
-	primSkillImages.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("PSKIL42"), 1, 0, 102, 111));
-	primSkillImages.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("PSKIL42"), 2, 0, 172, 111));
-	primSkillImages.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("PSKIL42"), 3, 0, 162, 230));
-	primSkillImages.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("PSKIL42"), 4, 0, 20, 230));
-	primSkillImages.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("PSKIL42"), 5, 0, 242, 111));
+	// 主属性、修为、灵力的图标：布局 "skillImages": {"image": 动画, "positions": [6 个 {x,y}]}（按 PSKIL42 的帧序）
+	const JsonNode & skillImages = layout["skillImages"];
+	const AnimationPath skillAnim = WidgetLayout::animation(skillImages["image"], AnimationPath::builtin("PSKIL42"));
+	const std::array<Point, 6> skillImagePos = {Point(32, 111), Point(102, 111), Point(172, 111), Point(162, 230), Point(20, 230), Point(242, 111)};
+	for(int frame = 0; frame < skillImagePos.size(); ++frame)
+	{
+		const JsonNode & posNode = skillImages["positions"].isVector() && frame < skillImages["positions"].Vector().size() ? skillImages["positions"].Vector()[frame] : JsonNode();
+		const Point at = WidgetLayout::point(posNode, skillImagePos[frame]);
+		primSkillImages.push_back(std::make_shared<CAnimImage>(skillAnim, frame, 0, at.x, at.y));
+	}
 
-	specImage = std::make_shared<CAnimImage>(AnimationPath::builtin("UN44"), 0, 0, 18, 180);
-	specArea = std::make_shared<LRClickableAreaWText>(Rect(18, 180, 136, 42), LIBRARY->generaltexth->translate("core.heroscrn.27"));
-	specName = std::make_shared<CLabel>(69, 205);
+	const JsonNode & specLayout = layout["specialty"];
+	const Point specPos = WidgetLayout::point(specLayout["image"], Point(18, 180));
+	specImage = std::make_shared<CAnimImage>(AnimationPath::builtin("UN44"), 0, 0, specPos.x, specPos.y);
+	specArea = std::make_shared<LRClickableAreaWText>(WidgetLayout::rect(specLayout["area"], Rect(18, 180, 136, 42)), LIBRARY->generaltexth->translate("core.heroscrn.27"));
+	specName = WidgetLayout::label(specLayout["name"], Point(69, 205), FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE);
 
-	expArea = std::make_shared<LRClickableAreaWText>(Rect(18, 228, 136, 42), LIBRARY->generaltexth->translate("core.heroscrn.9"));
-	morale = std::make_shared<MoraleLuckBox>(true, Rect(175, 179, 53, 45));
-	luck = std::make_shared<MoraleLuckBox>(false, Rect(233, 179, 53, 45));
-	spellPointsArea = std::make_shared<LRClickableAreaWText>(Rect(162,228, 136, 42), LIBRARY->generaltexth->translate("core.heroscrn.22"));
+	expArea = std::make_shared<LRClickableAreaWText>(WidgetLayout::rect(layout["experience"]["area"], Rect(18, 228, 136, 42)), LIBRARY->generaltexth->translate("core.heroscrn.9"));
+	morale = std::make_shared<MoraleLuckBox>(true, WidgetLayout::rect(layout["morale"], Rect(175, 179, 53, 45)));
+	luck = std::make_shared<MoraleLuckBox>(false, WidgetLayout::rect(layout["luck"], Rect(233, 179, 53, 45)));
+	spellPointsArea = std::make_shared<LRClickableAreaWText>(WidgetLayout::rect(layout["mana"]["area"], Rect(162,228, 136, 42)), LIBRARY->generaltexth->translate("core.heroscrn.22"));
 
-	expValue = std::make_shared<CLabel>(68, 252);
-	manaValue = std::make_shared<CLabel>(211, 252);
+	expValue = WidgetLayout::label(layout["experience"]["value"], Point(68, 252), FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE);
+	manaValue = WidgetLayout::label(layout["mana"]["value"], Point(211, 252), FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE);
 
+	// 功法（二级技能）：布局 "secondarySkills": {"slots": [8 个 {x,y}], "value": {dx,dy}, "name": {dx,dy}, "width", "color", "slider": {x,y,length}}
+	const JsonNode & secLayout = layout["secondarySkills"];
 	if(hero->secSkills.size() > 8)
 	{
 		auto divisionRoundUp = [](int x, int y){ return (x + (y - 1)) / y; };
 		int lines = divisionRoundUp(hero->secSkills.size(), 2);
-		secSkillSlider = std::make_shared<CSlider>(Point(284, 276), 189, [this](int val){ CHeroWindow::updateArtifacts(); }, 4, lines, 0, Orientation::VERTICAL, CSlider::BROWN);
+		const Point sliderPos = WidgetLayout::point(secLayout["slider"], Point(284, 276));
+		const int sliderLength = secLayout["slider"]["length"].isNull() ? 189 : secLayout["slider"]["length"].Integer();
+		const int sliderReach = secLayout["slider"]["reach"].isNull() ? 266 : secLayout["slider"]["reach"].Integer();
+		secSkillSlider = std::make_shared<CSlider>(sliderPos, sliderLength, [this](int val){ CHeroWindow::updateArtifacts(); }, 4, lines, 0, Orientation::VERTICAL, CSlider::BROWN);
 		secSkillSlider->setPanningStep(48);
-		secSkillSlider->setScrollBounds(Rect(-266, 0, secSkillSlider->pos.x - pos.x + secSkillSlider->pos.w, secSkillSlider->pos.h));
+		secSkillSlider->setScrollBounds(Rect(-sliderReach, 0, secSkillSlider->pos.x - pos.x + secSkillSlider->pos.w, secSkillSlider->pos.h));
 	}
 
+	const Point secValueOffset = WidgetLayout::point(secLayout["value"], Point(50, 4));
+	const Point secNameOffset = WidgetLayout::point(secLayout["name"], Point(50, 24));
+	const ColorRGBA secColor = WidgetLayout::color(secLayout["color"], Colors::WHITE);
 	for(int i = 0; i < std::min<size_t>(hero->secSkills.size(), 8u); ++i)
 	{
 		bool isSmallBox = (secSkillSlider && i%2 == 1);
-		Rect r(i%2 == 0  ?  18  :  162,  276 + 48 * (i/2), isSmallBox ? 120 : 136,  42);
-		secSkills.emplace_back(std::make_shared<CSecSkillPlace>(r.topLeft(), CSecSkillPlace::ImageSize::MEDIUM));
+		Point slot(i%2 == 0  ?  18  :  162,  276 + 48 * (i/2));
+		if(secLayout["slots"].isVector() && i < secLayout["slots"].Vector().size())
+			slot = WidgetLayout::point(secLayout["slots"].Vector()[i], slot);
+		secSkills.emplace_back(std::make_shared<CSecSkillPlace>(slot, CSecSkillPlace::ImageSize::MEDIUM));
 
-		int x = (i % 2) ? 212 : 68;
-		int y = 280 + 48 * (i/2);
-		int width = isSmallBox ? 71 : 87;
+		int width = secLayout["width"].isNull() ? (isSmallBox ? 71 : 87) : secLayout["width"].Integer();
+		const Point valuePos = slot + secValueOffset;
+		const Point namePos = slot + secNameOffset;
 
-		secSkillValues.push_back(std::make_shared<CLabel>(x, y, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, "", width));
-		secSkillNames.push_back(std::make_shared<CLabel>(x, y+20, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, "", width));
+		secSkillValues.push_back(std::make_shared<CLabel>(valuePos.x, valuePos.y, FONT_SMALL, ETextAlignment::TOPLEFT, secColor, "", width));
+		secSkillNames.push_back(std::make_shared<CLabel>(namePos.x, namePos.y, FONT_SMALL, ETextAlignment::TOPLEFT, secColor, "", width));
 	}
 
-	// various texts
+	// various texts：布局 "labels" 是数组时整组替换（空数组 = 不要这些字，比如字已经画在底图上）
+	if(layout["labels"].isVector())
+	{
+		for(const JsonNode & entry : layout["labels"].Vector())
+			labels.push_back(WidgetLayout::label(entry, Point(), FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, LIBRARY->generaltexth->translate(entry["text"].String())));
+	}
+	else
+	{
 	labels.push_back(std::make_shared<CLabel>(52, 99, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, LIBRARY->generaltexth->translate("core.jktext.1")));
 	labels.push_back(std::make_shared<CLabel>(123, 99, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, LIBRARY->generaltexth->translate("core.jktext.2")));
 	labels.push_back(std::make_shared<CLabel>(193, 99, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, LIBRARY->generaltexth->translate("core.jktext.3")));
@@ -192,6 +274,7 @@ CHeroWindow::CHeroWindow(const CGHeroInstance * hero)
 	labels.push_back(std::make_shared<CLabel>(69, 183, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, LIBRARY->generaltexth->translate("core.jktext.5")));
 	labels.push_back(std::make_shared<CLabel>(69, 232, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, LIBRARY->generaltexth->translate("core.jktext.6")));
 	labels.push_back(std::make_shared<CLabel>(213, 232, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, LIBRARY->generaltexth->translate("core.jktext.7")));
+	}
 
 	addUsedEvents(KEYBOARD);
 	CHeroWindow::updateArtifacts();
@@ -223,7 +306,7 @@ void CHeroWindow::updateArtifacts()
 	specImage->setFrame(curHero->getHeroType()->imageIndex);
 	specName->setText(curHero->getHeroType()->getSpecialtyNameTranslated());
 
-	tacticsButton = std::make_shared<CToggleButton>(Point(539, 483), AnimationPath::builtin("hsbtns8.def"), std::make_pair(LIBRARY->generaltexth->translate("core.heroscrn.26"), LIBRARY->generaltexth->translate("core.heroscrn.31")), 0, EShortcut::HERO_TOGGLE_TACTICS);
+	tacticsButton = std::make_shared<CToggleButton>(buttonPos("tactics", Point(539, 483)), buttonImage("tactics", AnimationPath::builtin("hsbtns8.def")), std::make_pair(LIBRARY->generaltexth->translate("core.heroscrn.26"), LIBRARY->generaltexth->translate("core.heroscrn.31")), 0, EShortcut::HERO_TOGGLE_TACTICS);
 	tacticsButton->addHoverText(EButtonState::HIGHLIGHTED, LIBRARY->generaltexth->translate("core.heroscrn.25"));
 	tacticsButton->setSelectedSilent(curHero->tacticFormationEnabled);
 
@@ -245,13 +328,16 @@ void CHeroWindow::updateArtifacts()
 			helpBoxText.replaceTextID("core.genrltxt.43");
 			std::string helpBox = helpBoxText.toString(&GAME->translator());
 
-			garr = std::make_shared<CGarrisonInt>(Point(15, 485), 8, Point(), curHero, nullptr, removableTroops);
-			auto split = std::make_shared<CButton>(Point(539, 519), AnimationPath::builtin("hsbtns9.def"), CButton::tooltip(LIBRARY->generaltexth->allTexts[256], helpBox), [this](){ garr->splitClick(); }, EShortcut::HERO_ARMY_SPLIT);
+			const JsonNode & garrLayout = heroLayout()["garrison"];
+			const int garrInterval = garrLayout["interval"].isNull() ? 8 : garrLayout["interval"].Integer();
+			garr = std::make_shared<CGarrisonInt>(WidgetLayout::point(garrLayout, Point(15, 485)), garrInterval, Point(), curHero, nullptr, removableTroops);
+			auto split = std::make_shared<CButton>(buttonPos("split", Point(539, 519)), buttonImage("split", AnimationPath::builtin("hsbtns9.def")), CButton::tooltip(LIBRARY->generaltexth->allTexts[256], helpBox), [this](){ garr->splitClick(); }, EShortcut::HERO_ARMY_SPLIT);
 			garr->addSplitBtn(split);
 		}
 		if(!arts)
 		{
-			arts = std::make_shared<CArtifactsOfHeroMain>(Point(-65, -8));
+			const JsonNode & artsLayout = heroLayout()["artifacts"];
+			arts = std::make_shared<CArtifactsOfHeroMain>(WidgetLayout::point(artsLayout, Point(-65, -8)), artsLayout);
 			arts->clickPressedCallback = [this](const CArtPlace & artPlace, const Point & cursorPosition){clickPressedOnArtPlace(curHero, artPlace.slot, true, false, false, cursorPosition);};
 			arts->showPopupCallback = [this](CArtPlace & artPlace, const Point & cursorPosition){showArtifactPopup(*arts, artPlace, cursorPosition);};
 			arts->gestureCallback = [this](const CArtPlace & artPlace, const Point & cursorPosition){showQuickBackpackWindow(curHero, artPlace.slot, cursorPosition);};
@@ -263,8 +349,17 @@ void CHeroWindow::updateArtifacts()
 		int serial = GAME->interface()->cb->getHeroSerial(curHero, false);
 
 		listSelection.reset();
-		if(serial >= 0)
-			listSelection = std::make_shared<CPicture>(ImagePath::builtin("HPSYYY"), 612, 33 + serial * 54);
+		// getHeroSerial 从 1 开始数（未驻守的修士里第几个）
+		if(serial >= 1 && serial <= heroList.size())
+		{
+			// 选中框：布局 "heroList" 的 "selection" 图和相对头像的 "selectionOffset"
+			const JsonNode & listLayout = heroLayout()["heroList"];
+			const Point origin = WidgetLayout::point(listLayout, Point(612, 87));
+			const Point step = WidgetLayout::point(listLayout["step"], Point(0, 54));
+			const Point offset = WidgetLayout::point(listLayout["selectionOffset"], Point(0, 0));
+			const Point at = origin + step * (serial - 1) + offset;
+			listSelection = std::make_shared<CPicture>(WidgetLayout::image(listLayout["selection"], ImagePath::builtin("HPSYYY")), at.x, at.y);
+		}
 	}
 
 	//primary skills support

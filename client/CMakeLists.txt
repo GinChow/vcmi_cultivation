@@ -119,6 +119,7 @@ set(vcmiclientcommon_SRCS
 	widgets/CViewport.cpp
 	widgets/ObjectLists.cpp
 	widgets/TextControls.cpp
+	widgets/WidgetLayout.cpp
 	widgets/Scrollable.cpp
 	widgets/Slider.cpp
 	widgets/CArtifactsOfHeroBase.cpp
@@ -342,6 +343,7 @@ set(vcmiclientcommon_HEADERS
 	widgets/CViewport.h
 	widgets/ObjectLists.h
 	widgets/TextControls.h
+	widgets/WidgetLayout.h
 	widgets/Scrollable.h
 	widgets/Slider.h
 	widgets/CArtifactsOfHeroBase.h

@@ -26,6 +26,15 @@ CArtifactsOfHeroMain::CArtifactsOfHeroMain(const Point & position)
 	enableGesture();
 }
 
+CArtifactsOfHeroMain::CArtifactsOfHeroMain(const Point & position, const JsonNode & layout)
+{
+	applyLayout(layout);
+	init(position, std::bind(&CArtifactsOfHeroBase::scrollBackpack, this, _1));
+	setClickPressedArtPlacesCallback(std::bind(&CArtifactsOfHeroBase::clickPressedArtPlace, this, _1, _2));
+	setShowPopupArtPlacesCallback(std::bind(&CArtifactsOfHeroBase::showPopupArtPlace, this, _1, _2));
+	enableGesture();
+}
+
 CArtifactsOfHeroMain::~CArtifactsOfHeroMain()
 {
 	if(curHero)

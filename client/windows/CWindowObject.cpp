@@ -16,6 +16,7 @@
 #include "../GameEngine.h"
 #include "../GameInstance.h"
 #include "../gui/CursorHandler.h"
+#include "../gui/WindowHandler.h"
 #include "../battle/BattleInterface.h"
 #include "CMessage.h"
 #include "render/IImage.h"
@@ -83,7 +84,7 @@ std::shared_ptr<CPicture> CWindowObject::createBg(const ImagePath & imageName, i
 	if(imageName.empty())
 		return nullptr;
 
-	auto image = std::make_shared<CPicture>(imageName, Point(0,0), EImageBlitMode::OPAQUE);
+	auto image = std::make_shared<CPicture>(imageName, Point(0,0), (windowOptions & BACKGROUND_ALPHA) ? EImageBlitMode::COLORKEY : EImageBlitMode::OPAQUE);
 	PlayerColor playerColor = GAME->interface() ? GAME->interface()->playerID : PlayerColor(1);
 
 	if(windowOptions & PLAYER_COLORED_BORDERED_STATUSBAR)
@@ -246,6 +247,18 @@ void CWindowObject::showAll(Canvas & to)
 	CIntObject::showAll(to);
 	if ((options & BORDERED) && (pos.dimensions() != ENGINE->screenDimensions()))
 		CMessage::drawBorder(color, to, pos.w+28, pos.h+29, pos.x-14, pos.y-15);
+}
+
+void CWindowObject::redraw()
+{
+	if(options & BACKGROUND_ALPHA)
+	{
+		// 与 CIntObject::redraw 一样，不在最上层（未激活）时不画
+		if(isActive())
+			ENGINE->windows().totalRedraw();
+	}
+	else
+		WindowBase::redraw();
 }
 
 bool CWindowObject::isPopupWindow() const

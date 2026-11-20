@@ -36,6 +36,7 @@ public:
 	ETextAlignment alignment;
 	EFonts font;
 	ColorRGBA color; // default font color. Can be overridden by placing "{}" into the string
+	ColorRGBA highlightColor = Colors::YELLOW; // "{}" 括起来、没写颜色名的字用这个颜色（宣纸底弹窗改成朱砂）
 };
 
 /// Label which shows text

@@ -58,6 +58,9 @@ public:
 	CComponent(const Component &c, ESize imageSize=large, EFonts font = FONT_SMALL);
 
 	void showPopupWindow(const Point & cursorPosition) override; //call-in
+
+	/// 改说明文字颜色（宣纸底弹窗用墨色）
+	void setTextColor(const ColorRGBA & color);
 };
 
 /// component that can be selected or deselected
@@ -112,6 +115,11 @@ class CComponentBox : public CIntObject
 public:
 	/// return index of selected item
 	int selectedIndex();
+
+	/// 改所有组件说明文字和“或”字的颜色
+	void setTextColor(const ColorRGBA & color);
+	/// 组件状态变化时（选中、悬停）连同本框一起交给上层窗口重画
+	void setRedrawParentAll(bool on);
 
 	/// constructors for non-selectable components
 	CComponentBox(std::vector<std::shared_ptr<CComponent>> components, Rect position);

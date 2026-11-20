@@ -10,14 +10,36 @@
 #pragma once
 
 #include "render/EFont.h"
+#include "render/Colors.h"
 #include "../../lib/GameConstants.h"
+#include "../../lib/filesystem/ResourcePath.h"
 
 struct SDL_Surface;
 class CInfoWindow;
 class CComponent;
 class Canvas;
 
-class ColorRGBA;
+/// 通用信息弹窗（CInfoWindow、CSelWindow、右键说明文字）的外观。
+/// 模组提供 config/widgets/infoWindow.json 时启用（custom = true），否则各项保持原版：
+/// 棕色底纹 DIBOXBCK、玩家色边框 DIALGBOX、白字黄色高亮、原版按钮。
+struct InfoWindowStyle
+{
+	bool custom = false;
+	/// 平铺在弹窗内容区的底纹
+	ImagePath background = ImagePath::builtin("DiBoxBck");
+	/// 边框 8 块（与 DIALGBOX 同序：左上、右上、左下、右下、左、右、上、下），边框画在内容区外面这几个像素里
+	int marginLeft = 14;
+	int marginTop = 15;
+	int marginRight = 14;
+	int marginBottom = 14;
+	ColorRGBA textColor = Colors::WHITE;
+	/// 正文里 {} 括起来的字
+	ColorRGBA highlightColor = Colors::YELLOW;
+	/// 按钮动画替换表：原版名（大写、不带扩展名）→ 模组动画
+	std::map<std::string, AnimationPath> buttons;
+
+	AnimationPath replaceButton(const AnimationPath & original) const;
+};
 
 /// Class which draws formatted text messages and generates chat windows
 class CMessage
@@ -28,6 +50,11 @@ class CMessage
 public:
 	/// Draw border on exiting surface
 	static void drawBorder(PlayerColor playerColor, Canvas & to, int w, int h, int x, int y);
+
+	/// 信息弹窗外观（第一次用到时读布局 JSON，此后不变）
+	static const InfoWindowStyle & infoWindowStyle();
+	/// 画信息弹窗边框：x、y、w、h 是内容区（窗口 pos），边框按外观里的边距画在外面
+	static void drawInfoWindowBorder(PlayerColor playerColor, Canvas & to, int x, int y, int w, int h);
 
 	static void drawIWindow(CInfoWindow * ret, std::string text, PlayerColor player);
 
