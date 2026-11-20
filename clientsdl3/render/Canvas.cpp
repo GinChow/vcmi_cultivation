@@ -585,13 +585,13 @@ void Canvas::drawText(const Point & position, const EFonts & font, const ColorRG
 	{
 		// The font stack writes glyphs into a surface, which a render target cannot accept,
 		// so the string is rasterized once and drawn as a texture from then on
-		auto image = GpuResources::get().textCache().getImage(font, text);
+		auto image = GpuResources::get().textCache().getImage(font, colorDest, text);
 
 		if(image)
 		{
 			bindRenderTarget();
 			Point topLeft = transformPos(position) + TextTextureCache::getAlignmentOffset(font, alignment, text);
-			if(!image->drawTexture(GpuResources::get().renderer(), nullptr, topLeft, nullptr, colorDest, SDL_ALPHA_OPAQUE, EImageBlitMode::SIMPLE, ImageFlip{}))
+			if(!image->drawTexture(GpuResources::get().renderer(), nullptr, topLeft, nullptr, Colors::WHITE_TRUE, SDL_ALPHA_OPAQUE, EImageBlitMode::SIMPLE, ImageFlip{}))
 				logGpuIssueOnce("rendered text has no texture representation");
 		}
 		return;

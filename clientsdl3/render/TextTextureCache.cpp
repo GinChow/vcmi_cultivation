@@ -37,9 +37,12 @@ Point TextTextureCache::getAlignmentOffset(EFonts font, ETextAlignment alignment
 	}
 }
 
-std::shared_ptr<SDLImageShared> TextTextureCache::getImage(EFonts font, const std::string & text)
+std::shared_ptr<SDLImageShared> TextTextureCache::getImage(EFonts font, const ColorRGBA & color, const std::string & text)
 {
-	Key key{ static_cast<int>(font), text };
+	// drawn fully opaque, as the tinted white rendering this replaces ignored the color's alpha
+	const ColorRGBA opaqueColor(color.r, color.g, color.b, ColorRGBA::ALPHA_OPAQUE);
+	const uint32_t packedColor = (color.r << 16) | (color.g << 8) | color.b;
+	Key key{ static_cast<int>(font), packedColor, text };
 
 	auto it = entries.find(key);
 	if(it != entries.end())
@@ -58,8 +61,7 @@ std::shared_ptr<SDLImageShared> TextTextureCache::getImage(EFonts font, const st
 	if(!surface)
 		return nullptr;
 
-	// rendered white so the same texture can be tinted to any color with SDL_SetTextureColorMod
-	fontPtr->renderText(surface, text, Colors::WHITE_TRUE, Point(0, 0));
+	fontPtr->renderText(surface, text, opaqueColor, Point(0, 0));
 
 	// Blending onto a transparent surface leaves the color multiplied by its alpha, so the image
 	// is marked as premultiplied - drawing it as straight alpha would apply the glyph coverage a

@@ -107,6 +107,12 @@ class ScreenHandler final : public IScreenHandler
 	/// targets is slower than blitting surfaces
 	bool gpuRenderingSupported = false;
 
+	/// Render pixels per window point; 1 on mobile, where interface scaling is defined in pixels
+	float getPixelDensity() const;
+
+	/// Window area in points that is available to the interface, without the reserved area
+	Point getAvailableResolution() const;
+
 	/// Dimensions of target surfaces/textures, this value is what game logic views as screen size
 	Point getPreferredLogicalResolution() const;
 

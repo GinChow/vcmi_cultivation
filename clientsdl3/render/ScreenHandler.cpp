@@ -88,11 +88,7 @@ std::tuple<int, int> ScreenHandler::getSupportedScalingRange() const
 	// arbitrary limit on *downscaling*. Allow some downscaling, if requested by user. Should be generally limited to 100+ for all but few devices
 	static constexpr double minimalScaling = 50;
 
-	Point renderResolution = getRenderResolution();
-	double reservedAreaWidth = settings["video"]["reservedWidth"].Float();
-	Point availableResolution = Point(renderResolution.x * (1 - reservedAreaWidth), renderResolution.y);
-	if(renderResolution.x < renderResolution.y) // reserved in portrait mode
-		availableResolution = Point(renderResolution.x, renderResolution.y * (1 - reservedAreaWidth));
+	Point availableResolution = getAvailableResolution();
 
 	double maximalScalingWidth = 100.0 * availableResolution.x / minResolution.x;
 	double maximalScalingHeight = 100.0 * availableResolution.y / minResolution.y;
@@ -151,16 +147,32 @@ int ScreenHandler::getInterfaceScalingPercentage() const
 	return scaling;
 }
 
-Point ScreenHandler::getPreferredLogicalResolution() const
+float ScreenHandler::getPixelDensity() const
+{
+#ifdef VCMI_MOBILE
+	return 1.0f;
+#else
+	float density = mainWindow ? SDL_GetWindowPixelDensity(mainWindow) : 0.0f;
+	return density > 0.0f ? density : 1.0f;
+#endif
+}
+
+Point ScreenHandler::getAvailableResolution() const
 {
 	Point renderResolution = getRenderResolution();
-	double reservedAreaWidth = settings["video"]["reservedWidth"].Float();
+	float density = getPixelDensity();
+	Point windowResolution(std::lround(renderResolution.x / density), std::lround(renderResolution.y / density));
 
+	double reservedAreaWidth = settings["video"]["reservedWidth"].Float();
+	if(windowResolution.x < windowResolution.y) // reserved in portrait mode
+		return Point(windowResolution.x, windowResolution.y * (1 - reservedAreaWidth));
+	return Point(windowResolution.x * (1 - reservedAreaWidth), windowResolution.y);
+}
+
+Point ScreenHandler::getPreferredLogicalResolution() const
+{
 	int scaling = getInterfaceScalingPercentage();
-	Point availableResolution = Point(renderResolution.x * (1 - reservedAreaWidth), renderResolution.y);
-	if(renderResolution.x < renderResolution.y) // reserved in portrait mode
-		availableResolution = Point(renderResolution.x, renderResolution.y * (1 - reservedAreaWidth));
-	Point logicalResolution = availableResolution * 100.0 / scaling;
+	Point logicalResolution = getAvailableResolution() * 100.0 / scaling;
 
 	// a window smaller than this in one axis keeps that axis at the limit, while the other
 	// still follows the window - so the map gains space instead of the view being refused
@@ -566,15 +578,17 @@ SDL_Window * ScreenHandler::createWindow()
 
 	switch(getPreferredWindowMode())
 	{
+		// without SDL_WINDOW_HIGH_PIXEL_DENSITY a Retina display gets a point-sized framebuffer
+		// that the OS upscales, which blurs text even with xBRZ upscaling
 		case EWindowMode::FULLSCREEN_EXCLUSIVE:
-			return createWindowImpl(dimensions, SDL_WINDOW_FULLSCREEN, false);
+			return createWindowImpl(dimensions, SDL_WINDOW_FULLSCREEN | SDL_WINDOW_HIGH_PIXEL_DENSITY, false);
 
 		case EWindowMode::FULLSCREEN_BORDERLESS_WINDOWED:
 			// with no fullscreen mode set, SDL_WINDOW_FULLSCREEN is borderless at desktop resolution
-			return createWindowImpl(Point(), SDL_WINDOW_FULLSCREEN, false);
+			return createWindowImpl(Point(), SDL_WINDOW_FULLSCREEN | SDL_WINDOW_HIGH_PIXEL_DENSITY, false);
 
 		case EWindowMode::WINDOWED:
-			return createWindowImpl(dimensions, SDL_WINDOW_RESIZABLE, true);
+			return createWindowImpl(dimensions, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY, true);
 
 		default:
 			return nullptr;
@@ -611,10 +625,12 @@ bool ScreenHandler::onScreenResize(bool keepWindowResolution)
 		if (screen != nullptr && getRenderResolution() == buffersRenderResolution)
 			return false;
 
-		// the stored resolution is the windowed one, so a fullscreen window must not overwrite it
+		// the stored resolution is the windowed one in points, as SDL_CreateWindow takes it,
+		// so neither a fullscreen window nor the render size in pixels may overwrite it
 		if (getPreferredWindowMode() == EWindowMode::WINDOWED)
 		{
-			auto res = getRenderResolution();
+			Point res;
+			SDL_GetWindowSize(mainWindow, &res.x, &res.y);
 
 			Settings video = settings.write["video"];
 			video["resolution"]["width"].Integer() = res.x;

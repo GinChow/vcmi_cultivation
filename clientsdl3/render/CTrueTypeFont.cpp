@@ -22,6 +22,22 @@
 
 #include <SDL3/SDL_iostream.h>
 
+namespace
+{
+/// Relative luminance below which a black drop shadow only thickens and blurs the glyphs
+constexpr float darkTextLuminance = 0.15f;
+
+float relativeLuminance(const ColorRGBA & color)
+{
+	auto linear = [](uint8_t channel)
+	{
+		float value = channel / 255.0f;
+		return value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f);
+	};
+	return 0.2126f * linear(color.r) + 0.7152f * linear(color.g) + 0.0722f * linear(color.b);
+}
+}
+
 std::pair<std::unique_ptr<ui8[]>, ui64> CTrueTypeFont::loadData(const JsonNode & config)
 {
 	std::string filename = "Data/" + config["file"].String();
@@ -155,7 +171,9 @@ void CTrueTypeFont::renderText(SDL_Surface * surface, const std::string & text, 
 	if (outline)
 		renderTextImpl(surface, text, Colors::BLACK, pos - Point(1,1) * getScalingFactor());
 
-	if (dropShadow || outline)
+	// the darkest built-in text color, Colors::RED, stays above the threshold
+	bool castsShadow = dropShadow && relativeLuminance(color) >= darkTextLuminance;
+	if (castsShadow || outline)
 		renderTextImpl(surface, text, Colors::BLACK, pos + Point(1,1) * getScalingFactor());
 
 	renderTextImpl(surface, text, color, pos);

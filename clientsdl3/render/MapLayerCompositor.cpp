@@ -2581,7 +2581,13 @@ void MapLayerCompositor::prepare(SDL_Renderer * renderer, const Inputs & inputs,
 		presented.w = static_cast<float>(logicalWidth);
 		presented.h = static_cast<float>(logicalHeight);
 	}
-	const Point pixels(std::max(1, static_cast<int>(std::lround(presented.w))), std::max(1, static_cast<int>(std::lround(presented.h))));
+	// Retina 窗口（2026-11-20）：离屏图按窗口的点数建，不按物理像素——按像素建要多算 4 倍，
+	// 同一场景实测 57 → 35 FPS（当时整机 GPU 已被 WindowServer 占满）。后处理那一遍仍画到全分辨率窗口、
+	// 线性放大离屏图，地图清晰度与开高像素密度之前相同，界面与文字则按物理像素画
+	float density = SDL_GetWindowPixelDensity(SDL_GetRenderWindow(renderer));
+	if(density < 1.0f)
+		density = 1.0f;
+	const Point pixels(std::max(1, static_cast<int>(std::lround(presented.w / density))), std::max(1, static_cast<int>(std::lround(presented.h / density))));
 
 	if(!regions.empty() && ensurePostResources(renderer, pixels, Point(logicalWidth, logicalHeight)))
 		renderFrame(renderer, inputs, regions);
