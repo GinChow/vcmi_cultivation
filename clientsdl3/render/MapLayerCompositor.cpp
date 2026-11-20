@@ -800,7 +800,8 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 
 	// 地表：有地形分布的地方按世界坐标铺材质、按起伏打光；其余（岩石、道路、河流、湖、没有材质的地形）抹开图块接缝，
 	// 再加按地图坐标连续变化的明暗、干湿。地形的变化幅度在雾云场的 A 通道（与离岸距离图同一张，按地图坐标取样）
-	float land = (1.0 - saturate(maskRGB.g)) * P.misc.y;
+	// 世界之外的绫不是陆地：不然“大尺度明暗干湿”（groundVariation）会按夹到地图边缘的场在绫上铺一片片云影似的斑（2026-11-20 用户反馈）
+	float land = (1.0 - saturate(maskRGB.g)) * P.misc.y * inWorld;
 	float4 fieldHere = depthTex.sample(depthSmp, world / max(P.misc.zw, float2(1.0)));
 	float4 splatFull = splatTex.sample(splatSmp, uv);
 	float3 splat = splatFull.rgb;
