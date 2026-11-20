@@ -53,7 +53,7 @@ struct Params
 	float4 grade;     // rgb：整幅画面的时段色调
 	float4 terrain;   // x：地表材质强度（缩得太小时为 0）；y：一格材质铺多少图块；zw：地形场尺寸（图块）
 	float4 atlas;     // xy：材质图集像素尺寸；z：一格多少像素；w：每格四周环绕边的宽度（像素）
-	float4 cellMean[40]; // 材质图集每格的平均颜色（rgb）与平均高度（a），按 组 × 4 + 子材质 排（组 8、9 是特殊地面）
+	float4 cellMean[44]; // 材质图集每格的平均颜色（rgb）与平均高度（a），按 组 × 4 + 子材质 排（组 8、9 是特殊地面，组 10 是海面）
 	float4 night;     // x：天黑的程度；y：局部光显出来多少；z：夜里颜色褪掉多少；w：沙地热浪的强度
 	float4 weather;   // x：大块云影的浓度；y：阵雨开关（0 或 1）
 	float4 lightInfo; // x：这一帧有几盏局部光；y：有几对蹄印
@@ -953,6 +953,33 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		if(maskTex.sample(maskSmp, duv).g > 0.6)
 			fx = groundTex.sample(groundSmp, duv).rgb;
 		float texLum = dot(fx, float3(0.3, 0.59, 0.11)); // 水面贴图本身的明暗：笔触与白浪
+
+		// 海面的笔触与白浪按地图坐标取（2026-11-21）：图集第 10 行是用水面图块同一张材质做成的无缝海面（地形模组
+		// tools/materials.py 的 water_row），六边形随机铺贴、随时间平移流动，代替图块原画的明暗。原画每个变体从材质不同位置
+		// 切一块，图块边上笔触对不上，海上一格一道竖缝（用户 2026-11-20 截图）。湖、河照旧用原画；靠岸一窄条（遮罩 0.5~0.8）
+		// 渐变回原画（岸线的淡墨勾边画在原画里）；缩得太小、材质淡出时也退回原画。图集没有这一行时保持原样
+		const int seaSet = 10;             // 图集里海面那一行
+		const float seaCellTiles = 5.3125; // 一格海面铺多少图块，与 materials.py 的 WATER_CELL_TILES 一致
+		float seaHere = saturate(maskRGB.b) / max(maskRGB.g, 0.001);
+		float seaWorld = (atlasSets > seaSet ? 1.0 : 0.0) * seaHere * smoothstep(0.5, 0.8, maskRGB.r) * P.terrain.x;
+		if(seaWorld > 0.003)
+		{
+			// 折射扰动与上面取原画时相同；流向、流速与图块动画相同：每帧（0.18 秒）挪 (3.2, 0.8) 个 3× 像素，即每秒约 (0.185, 0.046) 个图块
+			float2 seaPos = world + ripple * (0.035 + 0.035 * deep);
+			float2 seaUV = (seaPos + float2(0.185, 0.046) * t) / seaCellTiles;
+			const int seaCell = seaSet * 4;
+			float seaLum = dot(hexMaterial(atlasTex, atlasSmp, P, seaCell, seaUV).rgb, float3(0.3, 0.59, 0.11));
+			float seaMean = dot(P.cellMean[seaCell].rgb, float3(0.3, 0.59, 0.11));
+			// 亮部此起彼伏（水光粼粼），同图块动画的 shimmer：12 帧一个周期，相位按一小片一小片的噪声错开。
+			// 原画是正的细节乘 (0.6 + shimmer)，图集里存的是 1 倍
+			float phase = noiseTex.sample(noiseSmp, seaPos * 2.1 + float2(0.53, 0.17)).g;
+			float shimmer = 0.45 + 0.55 * sin(6.2832 * (t / 2.16 + 2.0 * phase));
+			seaLum += max(seaLum - seaMean, 0.0) * (shimmer - 0.4);
+			// 岸边浅水带提亮，同原画 build_water 的 foam：遮罩 0.95→0.55 处向 240 提亮 45%
+			float foam = smoothstep(0.95, 0.55, maskRGB.r) * step(0.5, maskRGB.r);
+			seaLum = mix(seaLum, 0.94, 0.45 * foam);
+			texLum = mix(texLum, seaLum, seaWorld);
+		}
 
 		// 用两种尺度估计离岸远近：near 是 1/8 遮罩（岸线外约 0.15 个图块内从 0.5 升到 1），
 		// far 由开阔度换算（约一个图块内从 0 升到 1）
@@ -2971,12 +2998,12 @@ bool MapLayerCompositor::ensureMaterialAtlas(SDL_Renderer * renderer)
 			logGlobal->error("Failed to decode the adventure map terrain materials: %s", SDL_GetError());
 	}
 
-	// 图集必须是 4 列 × 8~10 行的正方形格子（第 9、10 行是特殊地面的材质，可以没有）
+	// 图集必须是 4 列 × 8~11 行的正方形格子（第 9、10 行是特殊地面的材质，第 11 行是海面，都可以没有）
 	const int atlasRows = decoded && decoded->w >= materialsPerSet ? decoded->h / (decoded->w / materialsPerSet) : 0;
 	if(decoded && (decoded->w % materialsPerSet != 0 || decoded->w / materialsPerSet * atlasRows != decoded->h
 		|| atlasRows < baseMaterialSets || atlasRows > materialSets))
 	{
-		logGlobal->error("Adventure map terrain materials are %dx%d, expected 4 columns by 8 to 10 rows of square cells - not used", decoded->w, decoded->h);
+		logGlobal->error("Adventure map terrain materials are %dx%d, expected 4 columns by 8 to 11 rows of square cells - not used", decoded->w, decoded->h);
 		SDL_DestroySurface(decoded);
 		decoded = nullptr;
 	}
