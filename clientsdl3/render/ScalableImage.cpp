@@ -626,6 +626,11 @@ std::shared_ptr<const ISharedImage> ScalableImageShared::loadOrGenerateImage(EIm
 		}
 	}
 
+	// a true-color image has no palette to recolor, so its player-colored variant is the plain
+	// image - which may come pre-scaled, unlike the upscaled 1x copy generated below
+	if (color != PlayerColor::CANNOT_DETERMINE && !getPalette())
+		return loadOrGenerateImage(mode, scalingFactor, PlayerColor::CANNOT_DETERMINE, scaled[1].body[0]);
+
 	ScalableImageParameters parameters(getPalette(), mode);
 	// if all else fails - use base (presumably, indexed) image and convert it to desired form
 	if (color != PlayerColor::CANNOT_DETERMINE && parameters.palette)
