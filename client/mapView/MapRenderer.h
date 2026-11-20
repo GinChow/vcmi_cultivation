@@ -319,8 +319,16 @@ public:
 class MapRendererBorder
 {
 	std::shared_ptr<CAnimation> animation;
+	/// 世界之外的底纹（模组提供 Data/mapBorderBackground 时才有，2026-11-20 修仙装裱绫绢）：
+	/// 有它时世界之外的图块都按世界像素坐标从这张图里取，EDG 只用四角四边（16–35 帧）半透明叠在上面；
+	/// 没有时保持原版，世界之外画 EDG 0–15 帧
+	std::shared_ptr<IImage> background;
 
 	size_t getIndexForTile(IMapRendererContext & context, const int3 & coordinates);
+	/// 图块是否在紧贴世界的那一圈（四角四边）
+	bool isFrameTile(IMapRendererContext & context, const int3 & coordinates) const;
+	/// 按世界像素坐标从底纹图里取一个图块大小（正取模，世界左边、上边与右边、下边同向平铺）
+	void renderBackground(Canvas & target, const int3 & coordinates);
 
 public:
 	MapRendererBorder();

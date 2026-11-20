@@ -381,7 +381,45 @@ uint8_t MapRendererRoad::checksum(IMapRendererContext & context, const int3 & co
 
 MapRendererBorder::MapRendererBorder()
 {
-	animation = ENGINE->renderHandler().loadAnimation(AnimationPath::builtin("EDG"), EImageBlitMode::OPAQUE);
+	const auto backgroundPath = ImagePath::builtin("mapBorderBackground");
+	if(CResourceHandler::get()->existsResource(backgroundPath.addPrefix("DATA/")))
+	{
+		background = ENGINE->renderHandler().loadImage(backgroundPath, EImageBlitMode::OPAQUE);
+		// 四角四边叠在底纹上，要按 alpha 画
+		animation = ENGINE->renderHandler().loadAnimation(AnimationPath::builtin("EDG"), EImageBlitMode::SIMPLE);
+	}
+	else
+		animation = ENGINE->renderHandler().loadAnimation(AnimationPath::builtin("EDG"), EImageBlitMode::OPAQUE);
+}
+
+bool MapRendererBorder::isFrameTile(IMapRendererContext & context, const int3 & tile) const
+{
+	const int3 size = context.getMapSize();
+	return tile.x >= -1 && tile.x <= size.x && tile.y >= -1 && tile.y <= size.y;
+}
+
+void MapRendererBorder::renderBackground(Canvas & target, const int3 & coordinates)
+{
+	const Point period = background->dimensions();
+	if(period.x <= 0 || period.y <= 0)
+		return;
+
+	const auto wrap = [](int value, int length) { return ((value % length) + length) % length; };
+	const int tileSize = 32;
+	// 图块可能跨过底纹图的右边、下边（周期不是 32 的倍数时），分段取
+	for(int y = 0; y < tileSize;)
+	{
+		const int sy = wrap(coordinates.y * tileSize + y, period.y);
+		const int h = std::min(tileSize - y, period.y - sy);
+		for(int x = 0; x < tileSize;)
+		{
+			const int sx = wrap(coordinates.x * tileSize + x, period.x);
+			const int w = std::min(tileSize - x, period.x - sx);
+			target.draw(background, Point(x, y), Rect(sx, sy, w, h));
+			x += w;
+		}
+		y += h;
+	}
 }
 
 size_t MapRendererBorder::getIndexForTile(IMapRendererContext & context, const int3 & tile)
@@ -424,15 +462,23 @@ size_t MapRendererBorder::getIndexForTile(IMapRendererContext & context, const i
 
 void MapRendererBorder::renderTile(IMapRendererContext & context, Canvas & target, const int3 & coordinates)
 {
-	if (context.showBorder())
+	// 原版察看世界、藏宝图里世界之外涂黑；有装裱底纹时一律画底纹和边框，与大地图一致
+	if (!context.showBorder() && !background)
+	{
+		target.drawColor(Rect(0,0,32,32), Colors::BLACK);
+		return;
+	}
+
+	if (!background)
 	{
 		const auto & image = animation->getImage(getIndexForTile(context, coordinates));
 		target.draw(image, Point(0, 0));
+		return;
 	}
-	else
-	{
-		target.drawColor(Rect(0,0,32,32), Colors::BLACK);
-	}
+
+	renderBackground(target, coordinates);
+	if (isFrameTile(context, coordinates))
+		target.draw(animation->getImage(getIndexForTile(context, coordinates)), Point(0, 0));
 }
 
 uint8_t MapRendererBorder::checksum(IMapRendererContext & context, const int3 & coordinates)

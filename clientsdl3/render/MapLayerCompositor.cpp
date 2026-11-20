@@ -1570,9 +1570,11 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	float4 fn = fogAt(fogTex, fogSmp, world - float2(0.0, r), size);
 	float4 field = (fe + fw + fs + fn) * 0.25;
 
-	// 地图外夹着边缘的值，云在边框外一个多图块内淡掉
+	// 地图外夹着边缘的值。云整片铺到世界边界、在边界上齐齐收住（抗锯齿一个屏幕像素）：世界外紧贴的一圈是边框
+	// （MapRendererBorder，模组可换成装裱的隔水），原来让云在边框外一个多图块内淡掉，边上没探索时会把边框盖住（2026-11-20）
 	float2 beyond = max(-world, world - size);
-	float fade = 1.0 - smoothstep(0.0, 1.2, max(beyond.x, beyond.y));
+	float edgePixel = 1.0 / max(P.misc.y, 1.0);
+	float fade = 1.0 - smoothstep(-edgePixel, 0.0, max(beyond.x, beyond.y));
 	float density = field.r * fade;
 	if(density <= 0.003)
 	{
