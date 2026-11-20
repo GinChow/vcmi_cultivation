@@ -80,6 +80,8 @@ class ScreenHandler final : public IScreenHandler
 		Point slotOrigin;
 		int tileSize = 32;
 		Rect viewArea;
+		/// 合成完地图后按预乘 alpha 贴到 viewArea 的标记层（见 MapLayerSet::decorations），可为空
+		SDL_Texture * decorations = nullptr;
 	};
 	std::array<PresentedCanvas, static_cast<size_t>(GpuRenderLayer::COUNT)> presentedCanvases;
 

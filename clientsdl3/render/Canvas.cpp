@@ -673,6 +673,29 @@ void Canvas::drawColorBlended(const Rect & target, const ColorRGBA & color)
 	CSDL_Ext::fillRectBlended(surface, realTarget, CSDL_Ext::toSDL(color));
 }
 
+void Canvas::clear(const ColorRGBA & color)
+{
+	if(renderTarget)
+	{
+		float width = 0;
+		float height = 0;
+		SDL_GetTextureSize(renderTarget, &width, &height);
+
+		// SDL_RenderClear 不管视口和裁剪、清的是整张纹理，所以只有画布正好是整张纹理时才能用
+		if(renderArea == Rect(0, 0, static_cast<int>(width), static_cast<int>(height)))
+		{
+			SDL_Renderer * renderer = GpuResources::get().renderer();
+
+			bindRenderTarget();
+			SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+			SDL_RenderClear(renderer);
+			return;
+		}
+	}
+
+	drawColor(Rect(Point(0, 0), renderArea.dimensions() / getScalingFactor()), color);
+}
+
 void Canvas::fillTexture(const std::shared_ptr<IImage>& image)
 {
 	assert(image);

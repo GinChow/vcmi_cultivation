@@ -1007,6 +1007,7 @@ void ScreenHandler::presentFromCanvas(GpuRenderLayer layer, const Canvas & sourc
 	presented.windMask = nullptr;
 	presented.relief = nullptr;
 	presented.splat = nullptr;
+	presented.decorations = nullptr;
 
 	// What is registered here is drawn instead of the layer, so the layer has to stop being
 	// composited - otherwise whatever it held last stays on screen on top of it. Only while it is
@@ -1121,6 +1122,7 @@ void ScreenHandler::presentMapLayers(const Canvas & ground, const MapLayerSet & 
 	presented.slotOrigin = layers.slotOrigin;
 	presented.tileSize = layers.tileSize;
 	presented.viewArea = layers.viewArea;
+	presented.decorations = layers.decorations ? layers.decorations->getRenderTargetTexture() : nullptr;
 
 	// 缺任何一层都没法分层合成，只能不画，免得只显示地面、物件全丢
 	if(!presented.objects || !presented.sway || !presented.overlay || !presented.waterMask || !presented.windMask || !presented.relief || !presented.splat)
@@ -1179,6 +1181,16 @@ void ScreenHandler::composeFrame() const
 		if(presented.objects && !presented.regions.empty())
 		{
 			mapCompositor->compose(renderer, mapCompositorInputs(presented), presented.regions, presentedScaleMode);
+
+			// 察看世界的标记：画进透明画布时已是预乘 alpha，按预乘贴上，图标半透明的纸边才不会发暗
+			if(presented.decorations)
+			{
+				SDL_FRect to = CSDL_Ext::toSDLFloat(presented.viewArea);
+				SDL_SetTextureBlendMode(presented.decorations, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
+				SDL_SetTextureScaleMode(presented.decorations, presentedScaleMode);
+				if(!SDL_RenderTexture(renderer, presented.decorations, nullptr, &to))
+					logGlobal->error("Failed to compose map decorations: %s", SDL_GetError());
+			}
 		}
 		else
 		{

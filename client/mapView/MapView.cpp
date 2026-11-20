@@ -104,7 +104,7 @@ void BasicMapView::renderGpu(bool fullUpdate)
 	// the frame, which is what stalls the GLES driver on some devices.
 	if(!tilesCache->needsOwnLayer(controller->getContext()))
 	{
-		tilesCache->present(pos * ENGINE->screenHandler().getScalingFactor());
+		tilesCache->present(controller->getContext(), pos * ENGINE->screenHandler().getScalingFactor());
 		return;
 	}
 

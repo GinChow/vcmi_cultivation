@@ -187,6 +187,10 @@ public:
 	/// fills selected area with blended color
 	void drawColorBlended(const Rect & target, const ColorRGBA & color);
 
+	/// 整张画布填成纯色（2026-11-20，察看世界地图标记层）。画布是整张 GPU 渲染目标时用 SDL_RenderClear：
+	/// 每帧整张重画的渲染目标要这样清，SDL 才能换一张新纹理来画，不必等上一帧读它的那一遍画完；否则同 drawColor
+	void clear(const ColorRGBA & color);
+
 	/// fills canvas with texture
 	void fillTexture(const std::shared_ptr<IImage>& image);
 

@@ -112,6 +112,8 @@ void MapViewCache::ensureCanvases()
 
 	layered = useLayers;
 	liteLayersCleared = false;
+	// 标记层按需在 present() 里重建（窗口、缩放倍数可能变了）
+	decorationLayer.reset();
 	if(layered)
 	{
 		objectLayer = createCanvas(cacheDimensions);
@@ -1628,7 +1630,7 @@ void MapViewCache::update(const std::shared_ptr<IMapRendererContext> & context)
 	// 缓存存缩小图块（图块不到 16 像素）时也按不分层画物件：摇摆层、风场、起伏层这时不画（见 drawPendingLayers）
 	mapRenderer->setLayeredEffects(layered && model->getCacheTileSize() == MapViewModel::getNativeTileSize());
 
-	// 云雾迷雾：只有交给合成器直接画到屏幕上时才有着色器画云；世界视图、文字覆盖、传送过渡要自己的图层（见 render()），
+	// 云雾迷雾：只有交给合成器直接画到屏幕上时才有着色器画云；文字覆盖、传送过渡（以及不分层时的察看世界）要自己的图层（见 render()），
 	// 那时覆盖层照旧画原版迷雾。切换时迷雾里的图块校验值会变，覆盖层随之重画
 	cloudFogActive = layered && !forceOriginalFog && !needsOwnLayer(context);
 	mapRenderer->setCloudFog(cloudFogActive);
@@ -1778,7 +1780,7 @@ void MapViewCache::renderCachedTiles(Canvas & target)
 	});
 }
 
-void MapViewCache::present(const Rect & targetArea)
+void MapViewCache::present(const std::shared_ptr<IMapRendererContext> & context, const Rect & targetArea)
 {
 	ensureCanvases();
 
@@ -1817,6 +1819,7 @@ void MapViewCache::present(const Rect & targetArea)
 		layers.slotOrigin = Point(((tilesRect.x % slots.x) + slots.x) % slots.x, ((tilesRect.y % slots.y) + slots.y) % slots.y);
 		layers.tileSize = model->getSingleTileSize().x;
 		layers.viewArea = targetArea;
+		layers.decorations = updateDecorationLayer(context);
 
 		ENGINE->screenHandler().presentMapLayers(*terrain, layers, regions);
 	}
@@ -1835,7 +1838,50 @@ void MapViewCache::present(const Rect & targetArea)
 
 bool MapViewCache::needsOwnLayer(const std::shared_ptr<IMapRendererContext> & context) const
 {
-	return context->showImageOverlay() || context->showTextOverlay() || !vstd::isAlmostZero(context->viewTransitionProgress());
+	// 察看世界的标记在分层时另画一张标记层、合成完地图后盖上（见 decorationLayer），地图照常交给合成器，迷雾才是水墨云；
+	// 不分层时没有合成器，仍和原版一样画进自己的图层
+	return (context->showImageOverlay() && !layered) || context->showTextOverlay() || !vstd::isAlmostZero(context->viewTransitionProgress());
+}
+
+void MapViewCache::drawImageOverlay(const std::shared_ptr<IMapRendererContext> & context, Canvas & target)
+{
+	Rect dimensions = model->getTilesTotalRect();
+
+	for(int y = dimensions.top(); y < dimensions.bottom(); ++y)
+	{
+		for(int x = dimensions.left(); x < dimensions.right(); ++x)
+		{
+			int3 tile(x, y, model->getLevel());
+			auto overlay = getOverlayImageForTile(context, tile);
+
+			if(overlay)
+			{
+				Rect targetRect = model->getTargetTileArea(tile);
+				Point position = targetRect.center() - overlay->dimensions() / 2;
+				target.draw(overlay, position);
+			}
+		}
+	}
+}
+
+const Canvas * MapViewCache::updateDecorationLayer(const std::shared_ptr<IMapRendererContext> & context)
+{
+	if(!context->showImageOverlay())
+	{
+		decorationLayer.reset();
+		return nullptr;
+	}
+
+	// 与地图视图同大；窗口大小、缩放倍数变了就重建
+	const Point size = model->getPixelsVisibleDimensions();
+	if(!decorationLayer || decorationLayer->getRenderArea().dimensions() != size * decorationLayer->getScalingFactor())
+		decorationLayer = createCanvas(size);
+
+	// 图标按普通 alpha 混合画进透明底，结果正好是预乘 alpha（屏幕处理器按预乘贴上）。每帧整张重画，所以要整张清
+	decorationLayer->clear(ColorRGBA(0, 0, 0, 0));
+	drawImageOverlay(context, *decorationLayer);
+
+	return decorationLayer.get();
 }
 
 void MapViewCache::render(const std::shared_ptr<IMapRendererContext> & context, Canvas & target, bool fullRedraw)
@@ -1889,23 +1935,7 @@ void MapViewCache::render(const std::shared_ptr<IMapRendererContext> & context, 
 	}
 
 	if(context->showImageOverlay())
-	{
-		for(int y = dimensions.top(); y < dimensions.bottom(); ++y)
-		{
-			for(int x = dimensions.left(); x < dimensions.right(); ++x)
-			{
-				int3 tile(x, y, model->getLevel());
-				auto overlay = getOverlayImageForTile(context, tile);
-
-				if(overlay)
-				{
-					Rect targetRect = model->getTargetTileArea(tile);
-					Point position = targetRect.center() - overlay->dimensions() / 2;
-					target.draw(overlay, position);
-				}
-			}
-		}
-	}
+		drawImageOverlay(context, target);
 
 	if(textOverlayVisible)
 	{

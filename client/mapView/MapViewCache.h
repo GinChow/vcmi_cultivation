@@ -203,7 +203,7 @@ class MapViewCache
 	std::vector<uint32_t> litStamp;
 	uint32_t litFrame = 0;
 
-	/// 水墨云海迷雾（2026-11-18）：分层并且由合成器直接画到屏幕上时（不需要自己的图层），覆盖层不画原版的黑色迷雾，
+	/// 水墨云海迷雾（2026-11-18；2026-11-20 起察看世界也算）：分层并且由合成器直接画到屏幕上时（不需要自己的图层），覆盖层不画原版的黑色迷雾，
 	/// 改由合成器按云雾场画流动的云（见 MapRenderer::setCloudFog）。云雾场每个图块一个像素：
 	///   R 云的浓度（在迷雾里为 1，揭开后慢慢降到 0，已按缓入缓出取好），G 正在散开的程度（散到一半最大，平时 0，着色器据此让云翻卷、往外推），
 	///   B 在冒险法术射程外（原版画成纯黑，云也压暗）。
@@ -246,6 +246,14 @@ class MapViewCache
 	void ensureCanvases();
 
 	std::shared_ptr<CAnimation> iconsStorage;
+
+	/// 察看世界（含侦察类法术）的地图标记层（2026-11-20）：地图照常分层交给合成器（才有水墨迷雾），
+	/// 城镇、英雄、矿等图标画进这张与地图视图同大的透明画布，合成完地图后盖上去。不在察看世界时释放
+	std::unique_ptr<Canvas> decorationLayer;
+	/// 把当前视野里图块的标记画到 target（target 与地图视图同大、左上角对齐）
+	void drawImageOverlay(const std::shared_ptr<IMapRendererContext> & context, Canvas & target);
+	/// 察看世界时重画标记层并返回它；不需要标记时释放它、返回空
+	const Canvas * updateDecorationLayer(const std::shared_ptr<IMapRendererContext> & context);
 
 	void updateTile(const std::shared_ptr<IMapRendererContext> & context, const int3 & coordinates);
 
@@ -309,7 +317,8 @@ public:
 	/// Hands the visible window of the cache to the screen handler, to be drawn onto the screen
 	/// while the frame is composed rather than copied into a layer now. Only valid when nothing
 	/// has to be drawn on top of the terrain - see needsOwnLayer(). targetArea is in screen pixels.
-	void present(const Rect & targetArea);
+	/// 分层时察看世界的标记也在这里画好、随地图一起交出去（见 decorationLayer）
+	void present(const std::shared_ptr<IMapRendererContext> & context, const Rect & targetArea);
 
 	/// Whether this frame draws anything over the terrain, which needs a layer of its own
 	bool needsOwnLayer(const std::shared_ptr<IMapRendererContext> & context) const;
