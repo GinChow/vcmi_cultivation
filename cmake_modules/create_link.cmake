@@ -14,5 +14,13 @@ if(WIN32)
 
 	execute_process(COMMAND cmd.exe /c mklink /J "${linkname_native}" "${existing_native}")
 else()
+	# 链接已经指向这里就不动它：create_symlink 是先删再建，正在运行的游戏按需读图时（Mods 里的图是边用边读的），
+	# 恰好碰上删掉的那一瞬会读不到文件，引擎不重试，那几帧在这局里一直是空的，动画就一闪一闪（2026-11-20 实机）
+	if(IS_SYMLINK "${CMAKE_ARGV4}")
+		file(READ_SYMLINK "${CMAKE_ARGV4}" current_target)
+		if(current_target STREQUAL "${CMAKE_ARGV3}")
+			return()
+		endif()
+	endif()
 	execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink "${CMAKE_ARGV3}" "${CMAKE_ARGV4}")
 endif()
