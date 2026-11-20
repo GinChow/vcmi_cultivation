@@ -32,6 +32,9 @@ struct InfoWindowStyle
 	int marginTop = 15;
 	int marginRight = 14;
 	int marginBottom = 14;
+	/// 四边平铺段伸到四角底下的像素：四角内侧做渐隐，盖在平铺段上交叉过渡，
+	/// 平铺段在右、下两端被截在任意位置时也接得上（原版 0：平铺段止于角块边）
+	int borderOverlap = 0;
 	ColorRGBA textColor = Colors::WHITE;
 	/// 正文里 {} 括起来的字
 	ColorRGBA highlightColor = Colors::YELLOW;

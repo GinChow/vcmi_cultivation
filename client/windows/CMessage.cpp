@@ -75,6 +75,7 @@ InfoWindowStyle loadInfoWindowStyle()
 		style.marginRight = margins["right"].Integer();
 		style.marginBottom = margins["bottom"].Integer();
 	}
+	style.borderOverlap = config["borderOverlap"].Integer();
 	style.textColor = readStyleColor(config["textColor"], style.textColor);
 	style.highlightColor = readStyleColor(config["highlightColor"], style.highlightColor);
 	if(config["buttons"].isStruct())
@@ -460,8 +461,9 @@ void CMessage::drawIWindow(CInfoWindow * ret, std::string text, PlayerColor play
 
 namespace
 {
-/// 用 8 块拼框：四边平铺、四角压在上面（各块尺寸可以不同）
-void drawBoxPieces(const std::vector<std::shared_ptr<IImage>> & box, Canvas & to, int w, int h, int x, int y);
+/// 用 8 块拼框：四边平铺、四角压在上面（各块尺寸可以不同）；
+/// overlap > 0 时四边平铺段各向两端多画 overlap 像素，伸进四角底下，由四角内侧的渐隐和它交叉过渡
+void drawBoxPieces(const std::vector<std::shared_ptr<IImage>> & box, Canvas & to, int w, int h, int x, int y, int overlap = 0);
 }
 
 void CMessage::drawInfoWindowBorder(PlayerColor playerColor, Canvas & to, int x, int y, int w, int h)
@@ -470,7 +472,7 @@ void CMessage::drawInfoWindowBorder(PlayerColor playerColor, Canvas & to, int x,
 	if(style.custom && !infoWindowPieces.empty())
 	{
 		drawBoxPieces(infoWindowPieces, to, w + style.marginLeft + style.marginRight, h + style.marginTop + style.marginBottom,
-			x - style.marginLeft, y - style.marginTop);
+			x - style.marginLeft, y - style.marginTop, style.borderOverlap);
 		return;
 	}
 	drawBorder(playerColor, to, w + 28, h + 29, x - 14, y - 15);
@@ -485,14 +487,14 @@ void CMessage::drawBorder(PlayerColor playerColor, Canvas & to, int w, int h, in
 
 namespace
 {
-void drawBoxPieces(const std::vector<std::shared_ptr<IImage>> & box, Canvas & to, int w, int h, int x, int y)
+void drawBoxPieces(const std::vector<std::shared_ptr<IImage>> & box, Canvas & to, int w, int h, int x, int y, int overlap)
 {
 
 	// Note: this code assumes that the corner dimensions are all the same.
 
 	// Horizontal borders
-	int start_x = x + box[0]->width();
-	const int stop_x = x + w - box[1]->width();
+	int start_x = x + box[0]->width() - overlap;
+	const int stop_x = x + w - box[1]->width() + overlap;
 	const int bottom_y = y + h - box[7]->height() + 1;
 	while(start_x < stop_x)
 	{
@@ -506,8 +508,8 @@ void drawBoxPieces(const std::vector<std::shared_ptr<IImage>> & box, Canvas & to
 	}
 
 	// Vertical borders
-	int start_y = y + box[0]->height();
-	const int stop_y = y + h - box[2]->height() + 1;
+	int start_y = y + box[0]->height() - overlap;
+	const int stop_y = y + h - box[2]->height() + 1 + overlap;
 	const int right_x = x + w - box[5]->width();
 	while(start_y < stop_y)
 	{
