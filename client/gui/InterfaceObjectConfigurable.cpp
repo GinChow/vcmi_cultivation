@@ -554,6 +554,24 @@ std::shared_ptr<CSlider> InterfaceObjectConfigurable::buildSlider(const JsonNode
 	if(!config["panningStep"].isNull())
 		result->setPanningStep(config["panningStep"].Integer());
 
+	// 自定义外观：{"track": 图, "fill": 图, "knob": 动画, "left": 动画, "right": 动画}，都可省略
+	const JsonNode & skinConfig = config["skin"];
+	if(!skinConfig.isNull())
+	{
+		CSlider::Skin skin;
+		if(!skinConfig["track"].isNull())
+			skin.track = ImagePath::fromJson(skinConfig["track"]);
+		if(!skinConfig["fill"].isNull())
+			skin.fill = ImagePath::fromJson(skinConfig["fill"]);
+		if(!skinConfig["knob"].isNull())
+			skin.knob = AnimationPath::fromJson(skinConfig["knob"]);
+		if(!skinConfig["left"].isNull())
+			skin.left = AnimationPath::fromJson(skinConfig["left"]);
+		if(!skinConfig["right"].isNull())
+			skin.right = AnimationPath::fromJson(skinConfig["right"]);
+		result->setSkin(skin);
+	}
+
 	return result;
 }
 

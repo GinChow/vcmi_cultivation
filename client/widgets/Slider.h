@@ -12,6 +12,9 @@
 
 #include "Scrollable.h"
 #include "../../lib/FunctionList.h"
+#include "../../lib/filesystem/ResourcePath.h"
+
+class IImage;
 
 class CButton;
 
@@ -62,12 +65,29 @@ private:
 	/// Used by gesturePanning to decide whether to use one-to-one thumb tracking.
 	bool touchDragging;
 
+	/// 自定义外观（setSkin）：轨道图铺满滑条区域、填充图从左端画到滑块中心，滑块用自定义动画；为空时用原版画法
+	std::shared_ptr<IImage> skinTrack;
+	std::shared_ptr<IImage> skinFill;
+	AnimationPath skinKnob;
+
 	void updateSliderPos();
 	void updateSlider();
 
 	double getClickPos(const Point & cursorPosition);
 
 public:
+	/// 自定义外观，由布局 JSON 的 "skin" 读入。track、fill 是不透明整图（局部重绘时能盖掉滑块旧位置）；
+	/// knob、left、right 是按钮动画（4 帧：常态、按下、禁用、悬停），空路径表示沿用原版
+	struct Skin
+	{
+		ImagePath track;
+		ImagePath fill;
+		AnimationPath knob;
+		AnimationPath left;
+		AnimationPath right;
+	};
+	void setSkin(const Skin & skin);
+
 	void block(bool on);
 
 	/// If set, mouse scroll will only scroll slider when inside of this area

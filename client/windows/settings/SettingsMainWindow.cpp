@@ -45,6 +45,7 @@ SettingsMainWindow::SettingsMainWindow(BattleInterface * parentBattleUi) : Inter
 	addCallback("returnToMainMenu", [this](int) { mainMenuButtonCallback(); });
 	addCallback("closeWindow", [this](int) { backButtonCallback(); });
 	build(config);
+	drawWindowBorder = config["drawBorder"].isNull() || config["drawBorder"].Bool();
 
 	addUsedEvents(INPUT_MODE_CHANGE);
 
@@ -184,7 +185,8 @@ void SettingsMainWindow::showAll(Canvas & to)
 		color = PlayerColor(1); // TODO: Spectator shouldn't need special code for UI colors
 
 	CIntObject::showAll(to);
-	CMessage::drawBorder(color, to, pos.w+28, pos.h+29, pos.x-14, pos.y-15);
+	if(drawWindowBorder)
+		CMessage::drawBorder(color, to, pos.w+28, pos.h+29, pos.x-14, pos.y-15);
 }
 
 void SettingsMainWindow::onScreenResize()

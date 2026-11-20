@@ -25,6 +25,8 @@ class SettingsMainWindow : public InterfaceObjectConfigurable
 private:
 	BattleInterface * parentBattleInterface;
 	std::shared_ptr<CTabbedInt> tabContentArea;
+	/// 是否画原版玩家色边框；布局 JSON 写 "drawBorder": false 时不画（窗口底图自带外框，如修仙水墨界面）
+	bool drawWindowBorder = true;
 
 	std::shared_ptr<CIntObject> createTab(size_t index);
 	void openTab(size_t index);

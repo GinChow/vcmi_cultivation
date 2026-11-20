@@ -18,6 +18,7 @@
 #include "../GameEngine.h"
 #include "render/AssetGenerator.h"
 #include "render/Canvas.h"
+#include "render/IImage.h"
 #include "render/Colors.h"
 #include "render/IRenderHandler.h"
 
@@ -346,6 +347,13 @@ void CSlider::updateSlider()
 {
 	OBJECT_CONSTRUCTION;
 
+	if(!skinKnob.empty())
+	{
+		slider = std::make_shared<CButton>(Point(), skinKnob, CButton::tooltip());
+		slider->setSoundDisabled(true);
+		return;
+	}
+
 	auto assetGenerator = ENGINE->renderHandler().getAssetGenerator();
 	auto layout = assetGenerator->createSliderBar(style == BROWN, getOrientation() == Orientation::HORIZONTAL, barLength);
 	std::string sliderName = "Slider-" + std::string(style == BROWN ? "brown" : "blue") + "-" + std::string(getOrientation() == Orientation::HORIZONTAL ? "horizontal" : "vertical") + "-" + std::to_string(barLength);
@@ -380,9 +388,50 @@ void CSlider::setAmount( int to )
 	updateSliderPos();
 }
 
+void CSlider::setSkin(const Skin & skin)
+{
+	if(!skin.track.empty())
+		skinTrack = ENGINE->renderHandler().loadImage(skin.track, EImageBlitMode::OPAQUE);
+	if(!skin.fill.empty())
+		skinFill = ENGINE->renderHandler().loadImage(skin.fill, EImageBlitMode::OPAQUE);
+	if(!skin.left.empty())
+		left->setImage(skin.left);
+	if(!skin.right.empty())
+	{
+		right->setImage(skin.right);
+		// 换图后按钮尺寸可能变了，右端按钮重新贴到滑条末端
+		if(getOrientation() == Orientation::HORIZONTAL)
+			right->moveTo(Point(pos.x + pos.w - right->pos.w, right->pos.y));
+		else
+			right->moveTo(Point(right->pos.x, pos.y + pos.h - right->pos.h));
+	}
+	if(!skin.knob.empty())
+	{
+		skinKnob = skin.knob;
+		Point oldPos = slider->pos.topLeft();
+		updateSlider();
+		slider->moveTo(oldPos);
+		updateSliderPos();
+	}
+}
+
 void CSlider::showAll(Canvas & to)
 {
-	to.drawColor(pos, Colors::BLACK);
+	if(skinTrack)
+	{
+		to.draw(skinTrack, pos.topLeft());
+		if(skinFill)
+		{
+			// 填充段：从滑条左端画到滑块中心
+			int filled = getOrientation() == Orientation::HORIZONTAL ? slider->pos.center().x - pos.x : slider->pos.center().y - pos.y;
+			filled = std::clamp(filled, 0, getOrientation() == Orientation::HORIZONTAL ? pos.w : pos.h);
+			Rect source = getOrientation() == Orientation::HORIZONTAL ? Rect(0, 0, filled, pos.h) : Rect(0, 0, pos.w, filled);
+			if(filled > 0)
+				to.draw(skinFill, pos.topLeft(), source);
+		}
+	}
+	else
+		to.drawColor(pos, Colors::BLACK);
 	CIntObject::showAll(to);
 }
 
