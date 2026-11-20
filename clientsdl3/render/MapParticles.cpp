@@ -1229,6 +1229,17 @@ void MapParticles::draw(SDL_Renderer * renderer, const Frame & frame, const std:
 	SDL_Rect viewport;
 	SDL_GetRenderViewport(renderer, &viewport);
 	bounds = bounds.intersect(Rect(0, 0, viewport.w, viewport.h));
+	// 世界之外是装裱的绫和隔水边框（MapRendererBorder），粒子只画在世界里：雨丝从落点上方一格多斜着落下，
+	// 最上一排水面的雨会画到边框和绫上；飞鸟、飘雪也会越过边界（2026-11-20）
+	if(terrainSize.x > 0 && terrainSize.y > 0)
+	{
+		const float left = placement.originX - placement.worldX * placement.tilePixels;
+		const float top = placement.originY - placement.worldY * placement.tilePixels;
+		const Rect world(static_cast<int>(std::floor(left)), static_cast<int>(std::floor(top)),
+			static_cast<int>(std::ceil(static_cast<float>(terrainSize.x) * placement.tilePixels)),
+			static_cast<int>(std::ceil(static_cast<float>(terrainSize.y) * placement.tilePixels)));
+		bounds = bounds.intersect(world);
+	}
 	if(bounds.w <= 0 || bounds.h <= 0)
 		return;
 

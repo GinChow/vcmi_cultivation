@@ -739,8 +739,13 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	float2 rel = windowPosition(uv, slots, slotOrigin);
 	float2 world = P.world.xy + rel;
 
+	// 世界之外是装裱的绫和隔水边框（MapRendererBorder），不带天气和光照特效，在世界边界上齐齐收住（2026-11-20）。
+	// 各种场按地图坐标取样、地图外夹到边缘的值：边上是岩浆、沼泽时，熔岩红光、热浪、瘴气会铺满整片绫
+	float2 beyondWorld = max(-world, world - max(P.misc.zw, float2(1.0)));
+	float inWorld = 1.0 - step(0.0, max(beyondWorld.x, beyondWorld.y));
+
 	// 地形场的天气通道（按地图坐标线性取样）：G 热浪、B 瘴气、A 熔岩红光
-	float4 weatherField = terrainTex.sample(terrainSmp, world / max(P.terrain.zw, float2(1.0)));
+	float4 weatherField = terrainTex.sample(terrainSmp, world / max(P.terrain.zw, float2(1.0))) * inWorld;
 
 	// 大块云影与阵雨（2026-11-18）。云影里直射阳光只剩一小半：地面、物件压暗偏冷，长投影、朝向明暗、水面波光都淡下去
 	float cloudShade = 0.0;
@@ -751,6 +756,8 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 		// 约三成地面在云影里；边缘收得比较利落，一眼看得出是云的影子，不是一片模糊的暗斑
 		cloudShade = smoothstep(0.47, 0.55, shape) * P.weather.x * P.misc.y;
 		rain = showerAt(world, t, shape, noiseTex, noiseSmp) * P.weather.y * P.misc.y;
+		cloudShade *= inWorld;
+		rain *= inWorld;
 	}
 	float sunlit = 1.0 - 0.7 * cloudShade;
 
@@ -1278,7 +1285,7 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	// 局部光（2026-11-18）：灯笼、营火、法光、英雄火把照亮周围的地面和物件，熔岩的红光照亮岩浆地和它旁边的地面。
 	// 按上面算好的颜色（调色之前）乘光，天越暗越显眼；物件表面按它的离地高度挪回脚下再算距离，朝着光的一面更亮
 	// 正午局部光显出来不到一成、几乎看不出，整段跳过（平滑地淡出，不会一下子灭掉）
-	float lamps = P.night.y * smoothstep(0.08, 0.2, P.night.y) * P.misc.y;
+	float lamps = P.night.y * smoothstep(0.08, 0.2, P.night.y) * P.misc.y * inWorld;
 	float cover = saturate(objects.a);
 
 	// 岩浆地上发红的裂缝：白天也算自发光（辉光不论早晚都有），夜里还照亮自己（见下）
