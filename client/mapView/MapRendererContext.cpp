@@ -551,9 +551,11 @@ size_t MapRendererAdventureMovingContext::objectImageIndex(ObjectInstanceID obje
 	if(target != objectID)
 		return MapRendererAdventureContext::objectImageIndex(objectID, groupSize);
 
-	int32_t baseFrameTime = 50;
-	size_t frameCounter = animationTime / baseFrameTime;
-	size_t frameIndex = frameCounter % groupSize;
+	// 一个移动循环固定 400 毫秒（原版 8 帧 × 50 毫秒），帧数多的动画在这 400 毫秒里均分：
+	// 原版 8 帧的英雄、船和旗帜完全不变；模组可以给更多帧让走路更顺，而迈步节奏仍和每格 150 毫秒的移动对得上，脚不打滑
+	// （2026-11-22，修仙大地图步行英雄每个方向 16 帧）
+	constexpr uint64_t cycleTime = 8 * 50;
+	size_t frameIndex = static_cast<uint64_t>(animationTime) * groupSize / cycleTime % groupSize;
 	return frameIndex;
 }
 
