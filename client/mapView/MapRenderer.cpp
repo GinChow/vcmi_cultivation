@@ -646,6 +646,24 @@ std::shared_ptr<CAnimation> MapRendererObjects::getFlagAnimation(const CGObjectI
 	{
 		assert(dynamic_cast<const CGHeroInstance *>(obj) != nullptr);
 		assert(obj->tempOwner.isValidPlayer());
+
+		// 模组给某个英雄地图动画配的专用旗帜（2026-11-22，修仙步行英雄的背旗）：<地图动画名>_FLAG<玩家序号>，
+		// 如 AH02__FLAG0。原版 AF 旗按骑马英雄长矛顶的位置画，换成步行英雄会盖住头；
+		// 专用旗各组帧数与英雄动画相同时逐帧对齐（引擎按同一时钟、同样的帧数取帧），旗杆能跟着走路起伏。
+		// 没有专用旗时照旧用按玩家颜色的 AF00~AF07
+		const std::string name = spriteName(obj);
+		if(!name.empty())
+		{
+			const AnimationPath custom = AnimationPath::builtin("SPRITES/" + name + "_FLAG" + std::to_string(obj->tempOwner.getNum()));
+			auto it = heroFlagOverrides.find(custom.getName());
+			if(it == heroFlagOverrides.end())
+			{
+				const bool exists = CResourceHandler::get()->existsResource(custom) || CResourceHandler::get()->existsResource(custom.toType<EResType::JSON>());
+				it = heroFlagOverrides.emplace(custom.getName(), exists).first;
+			}
+			if(it->second)
+				return getAnimation(custom, true, EImageBlitMode::WITH_SHADOW);
+		}
 		return getAnimation(AnimationPath::builtin(heroFlags[obj->tempOwner.getNum()]), true, EImageBlitMode::WITH_SHADOW);
 	}
 
