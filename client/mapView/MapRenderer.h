@@ -227,6 +227,10 @@ class MapRendererObjects
 	/// 英雄专用旗帜（<地图动画名>_FLAG<玩家序号>）是否存在，按完整路径记下，免得每帧查资源
 	std::map<std::string, bool> heroFlagOverrides;
 
+	/// 已整套预载过的英雄本体、旗帜动画（preloadHeroAnimations）
+	std::set<const CAnimation *> preloadedHeroAnimations;
+	void preloadHeroAnimations(const CGObjectInstance * hero);
+
 	/// 各物件动画的雾、云参数，按动画名记下
 	std::map<std::string, MapAtmosphere> atmosphereConfigs;
 

@@ -1143,6 +1143,22 @@ void MapRendererObjects::prepareFrame()
 	effectKindCache.clear();
 }
 
+void MapRendererObjects::preloadHeroAnimations(const CGObjectInstance * hero)
+{
+	// 英雄的站立、行走（含引擎镜像出的西边三个方向）和旗帜动画，第一次画这个英雄时整套读进来（2026-11-22）。
+	// 动画帧原本用到才读：一个方向第一次迈步时要现场读 PNG、放大、生成投影，修仙步行英雄每方向 16 帧、
+	// 外加同样帧数的背旗，用户实机走路时帧率比原版骑马英雄多掉约 20%（走过一次的方向就不掉）。
+	// 按动画文件记下已预载的，原版 AH*、AF* 也一样处理（它们帧少，读一次的开销可以忽略）
+	for(const auto & animation : {getBodyAnimation(hero), getFlagAnimation(hero)})
+	{
+		if(!animation || !preloadedHeroAnimations.insert(animation.get()).second)
+			continue;
+		for(size_t group = 0; group <= 15; ++group)
+			for(size_t frame = 0; frame < animation->size(group); ++frame)
+				animation->getImage(frame, group, false);
+	}
+}
+
 const MapRendererObjects::ObjectImages & MapRendererObjects::getObjectImages(IMapRendererContext & context, const CGObjectInstance * object)
 {
 	auto it = renderImageCache.find(object->id.getNum());
@@ -1152,6 +1168,8 @@ const MapRendererObjects::ObjectImages & MapRendererObjects::getObjectImages(IMa
 	// Which image each layer resolves to is fixed for the whole pass: the animation clock
 	// does not advance inside one, and no object can change while it runs under the lock.
 	ObjectImages objectImages;
+	if(object->ID == Obj::HERO)
+		preloadHeroAnimations(object);
 	// 开启风场时摇摆物件停在第 0 帧（风场参数图与它对齐），摇摆全交给着色器
 	const bool firstFrame = isSwaying(object);
 	// 分层时有起伏图的物件只画接触阴影（起伏图第 1 组），朝某一方向的长投影由着色器按起伏层统一算，
