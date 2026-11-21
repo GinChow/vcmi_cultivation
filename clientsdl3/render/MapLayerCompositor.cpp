@@ -434,6 +434,42 @@ static inline float2 specialGroundField(float2 world, constant Params & P, textu
 	return result;
 }
 
+// ---- 图块边上材质对不上时的软过渡（2026-11-21）----
+// 有的地图图块之间没按 H3 规则放过渡帧（如“H3海贼王（直播版）”：一格雪地、泥地、草地直接放在沙地中间，地面层约 3.5% 的
+// 图块边两侧对不上；按规则拼的“世界”“寻找圣杯”等为 0），两边的地形分布在图块边上不连续，材质沿格线切成一个个方块
+// （用户 2026-11-21 截图）。这里在图块边两侧对不上时，沿一条按噪声左右摆动的交界线把两边的材质组成软软地混过去；
+// 两边对得上（正常的地图）时不起作用
+constant float seamBand = 0.07;   // 软边半宽（图块）：与正常过渡帧里的交界差不多软，宽了像一团糊
+constant float seamWobble = 0.24; // 交界线按噪声左右摆动的幅度（图块）；seamBand + seamWobble 要小于半个图块
+constant float seamProbe = 0.03;  // 在图块边两侧贴边取样的距离（图块），要大于缓存的半个像素
+
+// 一点的材质组成：10 个材质组各占多少，归一到和为 1。own 是这一点所在图块的本地形（地形场 R 的低四位），
+// 分布图 R 是它的比重、G 泥地、B 沙地，1 − A 是特殊地面（specialSplit 分到阴煞地、灵气草甸）。总比重不到 minSum 时返回 false
+static inline bool splatComposition(float4 s, int own, float2 specialSplit, float minSum, thread float * w)
+{
+	for(int k = 0; k < 10; ++k)
+		w[k] = 0.0;
+	float2 special = saturate(1.0 - s.a) * specialSplit;
+	float r = own <= 7 ? s.r : 0.0;
+	float sum = r + s.g + s.b + special.x + special.y;
+	if(sum < minSum)
+		return false;
+	if(own <= 7)
+		w[own] += r / sum;
+	w[0] += s.g / sum;
+	w[1] += s.b / sum;
+	w[8] += special.x / sum;
+	w[9] += special.y / sum;
+	return true;
+}
+
+// 地图坐标 pos 所在图块的本地形（地形场 R 的低四位）
+static inline int terrainOwnAt(float2 pos, constant Params & P, texture2d<float> terrainTex)
+{
+	uint2 tile = uint2(clamp(floor(pos), float2(0.0), P.terrain.zw - 1.0));
+	return int(terrainTex.read(tile).r * 255.0 + 0.5) & 15;
+}
+
 static inline float2 hash22(float2 p)
 {
 	float3 p3 = fract(float3(p.xyx) * float3(0.1031, 0.1030, 0.0973));
@@ -819,6 +855,57 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	float2 specialWeights = saturate(1.0 - splatFull.a) * specialSplit; // x 阴煞地、y 灵气草甸
 	float specialCover = specialWeights.x + specialWeights.y;
 	float materialShare = saturate(splat.r + splat.g + splat.b + specialCover) * P.terrain.x * land;
+	int own = terrainCode & 15;
+
+	// 材质组成（2026-11-21）：先按本图块的分布图；图块边两侧对不上时（地图没按 H3 规则放过渡帧），沿按噪声摆动的交界线
+	// 混入邻格的组成（见 seamBand）。t 是一条跨边连续的过渡场（0 全取边左/上侧、1 全取右/下侧），两侧各自取“自己 + 镜像点上的邻格”，
+	// 对不上得多（gate = 1）时两侧在边上完全一致；对得上时 gate = 0，什么都不改。墨线也按混过的组成画，不再沿格线勾一道
+	float comp[10];
+	splatComposition(splatFull, own, specialSplit, 0.003, comp);
+	if(materialShare > 0.003)
+	{
+		for(int axis = 0; axis < 2; ++axis)
+		{
+			float2 dir = axis == 0 ? float2(1.0, 0.0) : float2(0.0, 1.0);
+			float coord = axis == 0 ? world.x : world.y;
+			float sd = coord - round(coord); // 离最近的图块边多远：负在边的左（上）侧
+			if(abs(sd) > seamBand + seamWobble)
+				continue;
+			// 边两侧贴边的组成差多少：两侧像素取的是同一对点，gate 在边上两侧相同
+			float2 lowPos = world - dir * (sd + seamProbe);
+			float2 highPos = world - dir * (sd - seamProbe);
+			float lowComp[10];
+			float highComp[10];
+			if(!splatComposition(splatTex.sample(splatSmp, windowToUV(rel + lowPos - world, slots, slotOrigin)), terrainOwnAt(lowPos, P, terrainTex), specialSplit, 0.3, lowComp)
+				|| !splatComposition(splatTex.sample(splatSmp, windowToUV(rel + highPos - world, slots, slotOrigin)), terrainOwnAt(highPos, P, terrainTex), specialSplit, 0.3, highComp))
+				continue; // 边那边是水、岩石、道路这类没有材质的：不混
+			float diff = 0.0;
+			for(int k = 0; k < 10; ++k)
+				diff += abs(lowComp[k] - highComp[k]);
+			float gate = smoothstep(0.3, 0.9, diff); // diff 在 0~2 之间
+			if(gate < 0.01)
+				continue;
+			// 交界线的摆动：约一个图块的大弯、半个图块的弯、再加零碎的小凸起（只有大弯时一条边只是斜成一条直线）
+			float2 wobbleSalt = axis == 0 ? float2(0.17, 0.53) : float2(0.61, 0.29);
+			float wobble = (noiseTex.sample(noiseSmp, world * 1.1 + wobbleSalt).r * 0.45
+				+ noiseTex.sample(noiseSmp, world * 2.6 + wobbleSalt.yx).g * 0.35
+				+ noiseTex.sample(noiseSmp, world * 5.3 + wobbleSalt * 1.7).b * 0.2 - 0.5) * 2.0 * seamWobble;
+			float across = smoothstep(-seamBand, seamBand, sd + wobble);
+			float share = (sd < 0.0 ? across : 1.0 - across) * gate; // 邻格占多少
+			if(share < 0.005)
+				continue;
+			float2 mirrorPos = world - dir * (2.0 * sd);
+			float neighbor[10];
+			if(!splatComposition(splatTex.sample(splatSmp, windowToUV(rel + mirrorPos - world, slots, slotOrigin)), terrainOwnAt(mirrorPos, P, terrainTex), specialSplit, 0.3, neighbor))
+				continue;
+			for(int k = 0; k < 10; ++k)
+				comp[k] = mix(comp[k], neighbor[k], share);
+		}
+	}
+	// 墨线用的三个比重：本地形（泥地、沙地、特殊地面以外的组）、泥地、沙地
+	float inkOther = comp[2] + comp[3] + comp[4] + comp[5] + comp[6] + comp[7];
+	float inkDirt = comp[0];
+	float inkSand = comp[1];
 
 	// 大尺度缓坡：两层低频噪声，起伏约一个图块（与材质无关，所有像素都算，导数才连续）
 	float macro = noiseTex.sample(noiseSmp, world * 0.03 + float2(0.71, 0.29)).r * 0.75
@@ -829,8 +916,6 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 
 	if(materialShare > 0.003)
 	{
-		int own = terrainCode & 15;
-
 		// 离山多近（雾云场的云量）、离水多近（1/16 水面遮罩在半个图块外的四点）
 		float mountain = smoothstep(0.15, 0.7, fieldHere.b);
 		float near = maskLow.sample(maskLowSmp, windowToUV(rel + float2(0.5, 0.0), slots, slotOrigin)).g
@@ -839,22 +924,21 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 			+ maskLow.sample(maskLowSmp, windowToUV(rel - float2(0.0, 0.5), slots, slotOrigin)).g;
 		float shore = smoothstep(0.05, 0.6, near * 0.25);
 
-		// 本地形、泥地、沙地、两种特殊地面按分布图的比重混合；比重很小的组不算。水面、岩石、模组新增的地形没有材质
-		float weights[5] = {splat.r, splat.g, splat.b, specialWeights.x, specialWeights.y};
-		int sets[5] = {own <= 7 ? own : -1, 0, 1, 8, 9};
+		// 各材质组按上面算好的组成（本地形、泥地、沙地、两种特殊地面，图块边上可能混入了邻格的本地形）混合；比重很小的组不算。
+		// 水面、岩石、模组新增的地形没有材质（splatComposition 不给它们比重）
 		float4 sum = float4(0.0);
 		float total = 0.0;
 		float detail = 0.0;
-		for(int k = 0; k < 5; ++k)
+		for(int k = 0; k < 10; ++k)
 		{
-			if(weights[k] < 0.02 || sets[k] < 0)
+			if(comp[k] < 0.02)
 				continue;
-			float4 m = terrainMaterial(sets[k], world, mountain, shore, P, atlasTex, atlasSmp, noiseTex, noiseSmp);
-			sum += m * weights[k];
-			total += weights[k];
-			detail += (m.a - 0.5) * setCoverage[sets[k]].w * weights[k];
-			if(sets[k] == 3)
-				snowShare += weights[k];
+			float4 m = terrainMaterial(k, world, mountain, shore, P, atlasTex, atlasSmp, noiseTex, noiseSmp);
+			sum += m * comp[k];
+			total += comp[k];
+			detail += (m.a - 0.5) * setCoverage[k].w * comp[k];
+			if(k == 3)
+				snowShare += comp[k];
 		}
 		if(total > 0.001)
 		{
@@ -884,8 +968,8 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 	// 起伏打光：屏幕空间的高度导数（每 2×2 像素一组）换成地面坡度，再换到屏幕坐标里算朝向太阳的程度。导数要在分支外取
 	float2 dWorld = float2(length(dfdx(world)), length(dfdy(world)));
 	float2 slope = float2(dfdx(terrainHeight), dfdy(terrainHeight)) / max(dWorld, float2(1e-5));
-	float splatEdgeWidth = fwidth(splat.r);
-	float sandEdgeWidth = fwidth(splat.g - splat.b);
+	float splatEdgeWidth = fwidth(inkOther);
+	float sandEdgeWidth = fwidth(inkDirt - inkSand);
 	float specialEdgeWidth = fwidth(specialCover);
 	float3 groundN = groundNormal; // 地面的法线（屏幕坐标），局部光也按它照
 
@@ -905,11 +989,11 @@ fragment main0_out main0(main0_in in [[stage_in]], constant Params & P [[buffer(
 
 		// 地形交界的淡墨线：本地形与泥地、沙地之间，泥地与沙地之间；按噪声断续，像干笔
 		float breakup = smoothstep(0.25, 0.65, noiseTex.sample(noiseSmp, world * 0.9 + float2(0.7, 0.4)).b);
-		float inkOwn = 1.0 - smoothstep(0.0, max(splatEdgeWidth * 1.4, 1e-4), abs(splat.r - 0.5));
-		float inkSand = (1.0 - smoothstep(0.0, max(sandEdgeWidth * 1.4, 1e-4), abs(splat.g - splat.b))) * smoothstep(0.3, 0.6, splat.g + splat.b);
+		float inkOwn = 1.0 - smoothstep(0.0, max(splatEdgeWidth * 1.4, 1e-4), abs(inkOther - 0.5));
+		float inkDirtSand = (1.0 - smoothstep(0.0, max(sandEdgeWidth * 1.4, 1e-4), abs(inkDirt - inkSand))) * smoothstep(0.3, 0.6, inkDirt + inkSand);
 		// 特殊地面的边界也勾一道（阴煞地重些，灵气草甸淡些）
 		float inkSpecial = (1.0 - smoothstep(0.0, max(specialEdgeWidth * 1.4, 1e-4), abs(specialCover - 0.5))) * mix(0.5, 1.0, specialSplit.x);
-		float ink = max(max(inkOwn * step(0.05, splat.g + splat.b), inkSand * 0.6), inkSpecial) * (0.35 + 0.65 * breakup) * 0.32;
+		float ink = max(max(inkOwn * step(0.05, inkDirt + inkSand), inkDirtSand * 0.6), inkSpecial) * (0.35 + 0.65 * breakup) * 0.32;
 		lit = mix(lit, float3(0.15, 0.17, 0.18), ink);
 
 		color = mix(color, lit, materialShare);
