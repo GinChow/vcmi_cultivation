@@ -34,10 +34,10 @@ CArtifactsSelling::CArtifactsSelling(const IMarket * market, const CGHeroInstanc
 {
 	OBJECT_CONSTRUCTION;
 
-	labels.emplace_back(std::make_shared<CLabel>(titlePos.x, titlePos.y, FONT_BIG, ETextAlignment::CENTER, Colors::YELLOW, title));
+	labels.emplace_back(std::make_shared<CLabel>(titlePos.x, titlePos.y, FONT_BIG, ETextAlignment::CENTER, marketTitleColor(), title));
 	MetaString heroArtifacts = MetaString::createFromTextID("core.genrltxt.271"); // %s's Artifacts
 	heroArtifacts.replaceTextID(hero->getNameTextID());
-	labels.push_back(std::make_shared<CLabel>(155, 56, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, heroArtifacts.toString(&GAME->translator())));
+	labels.push_back(std::make_shared<CLabel>(155, 56, FONT_SMALL, ETextAlignment::CENTER, marketColor(Colors::WHITE), heroArtifacts.toString(&GAME->translator())));
 	deal = std::make_shared<CButton>(dealButtonPos, AnimationPath::builtin("TPMRKB.DEF"),
 		LIBRARY->generaltexth->zelp[595], [this](){CArtifactsSelling::makeDeal();}, EShortcut::MARKET_DEAL);
 	bidSelectedSlot = std::make_shared<CTradeableItem>(Rect(Point(123, 470), Point(69, 66)), EType::ARTIFACT_TYPE, 0, 0);

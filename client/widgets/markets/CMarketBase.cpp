@@ -18,6 +18,8 @@
 #include "../../gui/Shortcut.h"
 #include "../Buttons.h"
 #include "../TextControls.h"
+#include "../WidgetLayout.h"
+#include "../Slider.h"
 
 #include "../../CPlayerInterface.h"
 
@@ -27,6 +29,22 @@
 #include "../../../lib/mapObjects/CGHeroInstance.h"
 #include "../../../lib/mapObjects/CGMarket.h"
 #include "../../../lib/texts/CGeneralTextHandler.h"
+#include "../../../lib/json/JsonNode.h"
+
+const JsonNode & marketLayout()
+{
+	return WidgetLayout::cached("config/widgets/townWindows.json")["market"];
+}
+
+ColorRGBA marketColor(const ColorRGBA & original)
+{
+	return WidgetLayout::remapColor(marketLayout()["colors"], original);
+}
+
+ColorRGBA marketTitleColor()
+{
+	return WidgetLayout::color(marketLayout()["titleColor"], Colors::YELLOW);
+}
 
 CMarketBase::CMarketBase(const IMarket * market, const CGHeroInstance * hero)
 	: market(market)
@@ -139,7 +157,7 @@ CExperienceAltar::CExperienceAltar()
 	// Experience needed to reach next level
 	texts.emplace_back(std::make_shared<CTextBox>(LIBRARY->generaltexth->allTexts[475], Rect(15, 415, 125, 50), 0, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW));
 	// Total experience on the Altar
-	texts.emplace_back(std::make_shared<CTextBox>(LIBRARY->generaltexth->allTexts[476], Rect(15, 495, 125, 40), 0, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW));
+	texts.emplace_back(std::make_shared<CTextBox>(LIBRARY->generaltexth->allTexts[476], Rect(15, 495, 125, 40), 0, FONT_SMALL, ETextAlignment::CENTER, marketColor(Colors::YELLOW)));
 	expToLevel = std::make_shared<CLabel>(76, 477, FONT_SMALL, ETextAlignment::CENTER);
 	expForHero = std::make_shared<CLabel>(76, 545, FONT_SMALL, ETextAlignment::CENTER);
 }
@@ -203,7 +221,7 @@ CResourcesBuying::CResourcesBuying(const CTradeableItem::ClickPressedFunctor & c
 
 	offerTradePanel = std::make_shared<ResourcesPanel>(clickPressedCallback, updSlotsCallback, getTradeableResources(market));
 	offerTradePanel->moveTo(pos.topLeft() + Point(327, 182));
-	labels.emplace_back(std::make_shared<CLabel>(445, 148, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[168]));
+	labels.emplace_back(std::make_shared<CLabel>(445, 148, FONT_SMALL, ETextAlignment::CENTER, marketColor(Colors::WHITE), LIBRARY->generaltexth->allTexts[168]));
 }
 
 CResourcesSelling::CResourcesSelling(const CTradeableItem::ClickPressedFunctor & clickPressedCallback, CPlayerInterface * tradeInterface)
@@ -213,7 +231,7 @@ CResourcesSelling::CResourcesSelling(const CTradeableItem::ClickPressedFunctor &
 	assert(this->tradeInterface);
 
 	bidTradePanel = std::make_shared<ResourcesPanel>(clickPressedCallback, std::bind(&CResourcesSelling::updateSubtitles, this), getTradeableResources(market));
-	labels.emplace_back(std::make_shared<CLabel>(156, 148, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[270]));
+	labels.emplace_back(std::make_shared<CLabel>(156, 148, FONT_SMALL, ETextAlignment::CENTER, marketColor(Colors::WHITE), LIBRARY->generaltexth->allTexts[270]));
 }
 
 void CResourcesSelling::updateSubtitles() const
@@ -229,11 +247,13 @@ CMarketSlider::CMarketSlider(const CSlider::SliderMovingFunctor & movingCallback
 
 	offerSlider = std::make_shared<CSlider>(Point(230, 489), 137, movingCallback, 0, 0, 0, Orientation::HORIZONTAL);
 	offerSlider->setScrollBounds(Rect(-215, -50, 575, 120));
+	WidgetLayout::applySliderSkin(offerSlider, marketLayout()["sliderSkin"]);
 	maxAmount = std::make_shared<CButton>(Point(228, 520), AnimationPath::builtin("IRCBTNS.DEF"), LIBRARY->generaltexth->zelp[596],
 		[this]()
 		{
 			offerSlider->scrollToMax();
 		}, EShortcut::MARKET_MAX_AMOUNT);
+	WidgetLayout::applyButton(maxAmount, marketLayout()["max"]);
 }
 
 void CMarketSlider::deselect()
@@ -258,7 +278,7 @@ CMarketTraderText::CMarketTraderText(const Point & pos, const EFonts & font, con
 {
 	OBJECT_CONSTRUCTION;
 
-	traderText = std::make_shared<CTextBox>("", Rect(pos, traderTextDimensions), 0, font, ETextAlignment::CENTER, color);
+	traderText = std::make_shared<CTextBox>("", Rect(pos, traderTextDimensions), 0, font, ETextAlignment::CENTER, marketColor(color));
 }
 
 void CMarketTraderText::deselect()

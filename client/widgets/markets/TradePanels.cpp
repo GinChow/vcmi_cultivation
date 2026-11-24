@@ -9,6 +9,9 @@
  */
 #include "StdInc.h"
 #include "TradePanels.h"
+#include "CMarketBase.h"
+#include "../WidgetLayout.h"
+#include "../../../lib/json/JsonNode.h"
 
 #include "../../GameEngine.h"
 #include "../../GameInstance.h"
@@ -38,7 +41,9 @@ CTradeableItem::CTradeableItem(const Rect & area, EType Type, int32_t ID, int32_
 	addUsedEvents(HOVER);
 	addUsedEvents(SHOW_POPUP);
 	
-	subtitle = std::make_shared<CLabel>(0, 0, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE);
+	subtitle = std::make_shared<CLabel>(0, 0, FONT_SMALL, ETextAlignment::CENTER, marketColor(Colors::WHITE));
+	if(!marketLayout()["selectionColor"].isNull())
+		setSelectionColor(WidgetLayout::color(marketLayout()["selectionColor"], Colors::YELLOW));
 	setType(Type);
 
 	this->pos.w = area.w;
@@ -296,6 +301,7 @@ ResourcesPanel::ResourcesPanel(const CTradeableItem::ClickPressedFunctor & click
 
 	updateSlots(0);
 	showcaseSlot = std::make_shared<CTradeableItem>(Rect(selectedPos, slotDimension), EType::RESOURCE, 0, 0);
+	showcaseSlot->subtitle->setColor(WidgetLayout::color(marketLayout()["showcaseTextColor"], Colors::WHITE));
 }
 
 void ResourcesPanel::updateSlots(int line)
@@ -342,6 +348,7 @@ ArtifactsPanel::ArtifactsPanel(const CTradeableItem::ClickPressedFunctor & click
 	}
 	updateSlotsCallback = updateSubtitles;
 	showcaseSlot = std::make_shared<CTradeableItem>(Rect(selectedPos, slotDimension), EType::ARTIFACT_TYPE, 0, 0);
+	showcaseSlot->subtitle->setColor(WidgetLayout::color(marketLayout()["showcaseTextColor"], Colors::WHITE));
 	showcaseSlot->subtitle->moveBy(Point(0, 1));
 }
 
@@ -368,6 +375,7 @@ PlayersPanel::PlayersPanel(const CTradeableItem::ClickPressedFunctor & clickPres
 		slotNum++;
 	}
 	showcaseSlot = std::make_shared<CTradeableItem>(Rect(selectedPos, slotDimension), EType::PLAYER, 0, 0);
+	showcaseSlot->subtitle->setColor(WidgetLayout::color(marketLayout()["showcaseTextColor"], Colors::WHITE));
 }
 
 CreaturesPanel::CreaturesPanel(const CTradeableItem::ClickPressedFunctor & clickPressedCallback, const slotsData & initialSlots)
@@ -386,6 +394,7 @@ CreaturesPanel::CreaturesPanel(const CTradeableItem::ClickPressedFunctor & click
 		slot->setSelectionWidth(selectionWidth);
 	}
 	showcaseSlot = std::make_shared<CTradeableItem>(Rect(selectedPos, slotDimension), EType::CREATURE, 0, 0);
+	showcaseSlot->subtitle->setColor(WidgetLayout::color(marketLayout()["showcaseTextColor"], Colors::WHITE));
 }
 
 CreaturesPanel::CreaturesPanel(const CTradeableItem::ClickPressedFunctor & clickPressedCallback,
@@ -403,6 +412,7 @@ CreaturesPanel::CreaturesPanel(const CTradeableItem::ClickPressedFunctor & click
 		slot->setSelectionWidth(selectionWidth);
 	}
 	showcaseSlot = std::make_shared<CTradeableItem>(Rect(selectedPos, slotDimension), EType::CREATURE, 0, 0);
+	showcaseSlot->subtitle->setColor(WidgetLayout::color(marketLayout()["showcaseTextColor"], Colors::WHITE));
 }
 
 ArtifactsAltarPanel::ArtifactsAltarPanel(const CTradeableItem::ClickPressedFunctor & clickPressedCallback)
@@ -419,5 +429,6 @@ ArtifactsAltarPanel::ArtifactsAltarPanel(const CTradeableItem::ClickPressedFunct
 		slotNum++;
 	}
 	showcaseSlot = std::make_shared<CTradeableItem>(Rect(selectedPos, slotDimension), EType::ARTIFACT_TYPE, 0, 0);
+	showcaseSlot->subtitle->setColor(WidgetLayout::color(marketLayout()["showcaseTextColor"], Colors::WHITE));
 	showcaseSlot->subtitle->moveBy(Point(0, 3));
 }

@@ -36,10 +36,10 @@ CAltarCreatures::CAltarCreatures(const IMarket * market, const CGHeroInstance * 
 		LIBRARY->generaltexth->zelp[585], [this]() {CAltarCreatures::makeDeal();}, EShortcut::MARKET_DEAL);
 	MetaString heroCreatures = MetaString::createFromTextID("core.genrltxt.272"); // %s's Creatures
 	heroCreatures.replaceTextID(hero->getNameTextID());
-	labels.emplace_back(std::make_shared<CLabel>(155, 30, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW,
+	labels.emplace_back(std::make_shared<CLabel>(155, 30, FONT_SMALL, ETextAlignment::CENTER, marketColor(Colors::YELLOW),
 		heroCreatures.toString(&GAME->translator())));
-	labels.emplace_back(std::make_shared<CLabel>(450, 30, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW, LIBRARY->generaltexth->allTexts[479]));
-	texts.emplace_back(std::make_unique<CTextBox>(LIBRARY->generaltexth->allTexts[480], Rect(320, 56, 256, 40), 0, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW));
+	labels.emplace_back(std::make_shared<CLabel>(450, 30, FONT_SMALL, ETextAlignment::CENTER, marketColor(Colors::YELLOW), LIBRARY->generaltexth->allTexts[479]));
+	texts.emplace_back(std::make_unique<CTextBox>(LIBRARY->generaltexth->allTexts[480], Rect(320, 56, 256, 40), 0, FONT_SMALL, ETextAlignment::CENTER, marketColor(Colors::YELLOW)));
 	offerSlider->moveTo(pos.topLeft() + Point(231, 481));
 	maxAmount->setHelp(LIBRARY->generaltexth->zelp[578]);
 

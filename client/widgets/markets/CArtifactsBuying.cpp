@@ -31,10 +31,10 @@ CArtifactsBuying::CArtifactsBuying(const IMarket * market, const CGHeroInstance 
 {
 	OBJECT_CONSTRUCTION;
 
-	labels.emplace_back(std::make_shared<CLabel>(titlePos.x, titlePos.y, FONT_BIG, ETextAlignment::CENTER, Colors::YELLOW, title));
+	labels.emplace_back(std::make_shared<CLabel>(titlePos.x, titlePos.y, FONT_BIG, ETextAlignment::CENTER, marketTitleColor(), title));
 	deal = std::make_shared<CButton>(dealButtonPos, AnimationPath::builtin("TPMRKB.DEF"),
 		LIBRARY->generaltexth->zelp[595], [this](){CArtifactsBuying::makeDeal();}, EShortcut::MARKET_DEAL);
-	labels.emplace_back(std::make_shared<CLabel>(445, 148, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[168]));
+	labels.emplace_back(std::make_shared<CLabel>(445, 148, FONT_SMALL, ETextAlignment::CENTER, marketColor(Colors::WHITE), LIBRARY->generaltexth->allTexts[168]));
 
 	// Player's resources
 	assert(bidTradePanel);

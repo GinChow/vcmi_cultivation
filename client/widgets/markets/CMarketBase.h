@@ -9,6 +9,19 @@
  */
 #pragma once
 
+#include "../../render/Colors.h"
+
+VCMI_LIB_NAMESPACE_BEGIN
+class JsonNode;
+VCMI_LIB_NAMESPACE_END
+
+/// 坊市布局（模组换皮用）：config/widgets/townWindows.json 的 "market" 节，没有时返回空节点
+const JsonNode & marketLayout();
+/// 原版写死的字色按 "market"."colors" 换色（white / yellow → 布局色），没写时原样返回
+ColorRGBA marketColor(const ColorRGBA & original);
+/// 各页大标题色（"market"."titleColor"，原版黄色）
+ColorRGBA marketTitleColor();
+
 #include "TradePanels.h"
 #include "../Slider.h"
 #include "render/EFont.h"

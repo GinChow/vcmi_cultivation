@@ -10,6 +10,9 @@
 
 #include "StdInc.h"
 #include "CMarketWindow.h"
+#include "../widgets/WidgetLayout.h"
+#include "../widgets/markets/CMarketBase.h"
+#include "../../lib/json/JsonNode.h"
 
 #include "../GameEngine.h"
 #include "../GameInstance.h"
@@ -64,6 +67,7 @@ CMarketWindow::CMarketWindow(const IMarket * market, const CGHeroInstance * hero
 		createAltarCreatures(market, hero);
 
 	statusbar = CGStatusBar::create(std::make_shared<CPicture>(background->getSurface(), Rect(8, pos.h - 26, pos.w - 16, 19), 8, pos.h - 26));
+	statusbar->setTextColor(WidgetLayout::color(marketLayout()["statusColor"], Colors::WHITE));
 }
 
 void CMarketWindow::updateArtifacts()
@@ -187,6 +191,9 @@ void CMarketWindow::initWidgetInternals(const EMarketMode mode, const std::pair<
 	createChangeModeButtons(mode, marketWidget->market, marketWidget->hero);
 	quitButton = std::make_shared<CButton>(quitButtonPos, AnimationPath::builtin("IOK6432.DEF"),
 		quitButtonHelpContainer, [this](){close();}, EShortcut::GLOBAL_RETURN);
+	WidgetLayout::applyButton(quitButton, marketLayout()["quit"]);
+	if(statusbar)
+		statusbar->setTextColor(WidgetLayout::color(marketLayout()["statusColor"], Colors::WHITE));
 	redraw();
 }
 
