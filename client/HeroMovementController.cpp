@@ -32,6 +32,8 @@
 #include "../lib/networkPacks/PacksForClient.h"
 #include "../lib/RoadHandler.h"
 #include "../lib/TerrainHandler.h"
+#include "../lib/filesystem/Filesystem.h"
+#include "../lib/mapObjects/ObjectTemplate.h"
 
 bool HeroMovementController::isHeroMovingThroughGarrison(const CGHeroInstance * hero, const CArmedInstance * garrison) const
 {
@@ -303,11 +305,38 @@ AudioPath HeroMovementController::getMovementSoundFor(const CGHeroInstance * her
 
 	bool movingOnRoad = prevTile->hasRoad() && nextTile->hasRoad();
 
-	if(movingOnRoad)
-		return nextTile->getTerrain()->horseSound;
-	else
-		return nextTile->getTerrain()->horseSoundPenalty;
+	const AudioPath terrainSound = movingOnRoad ? nextTile->getTerrain()->horseSound : nextTile->getTerrain()->horseSoundPenalty;
+	if(hero->inBoat() || terrainSound.empty())
+		return terrainSound;
+	return heroMovementSoundOverride(hero, terrainSound);
 };
+
+AudioPath HeroMovementController::heroMovementSoundOverride(const CGHeroInstance * hero, const AudioPath & terrainSound)
+{
+	// 模组给英雄地图动画配的专用行走音效（2026-11-23，修仙步行英雄的脚步声）：
+	// 先找 <地图动画名>_<地形原音效名>（如 AH02__HORSE22，剑修在草地无路处），再找 <地图动画名>_MOVE（各地形通用），
+	// 都没有就用地形原来的 HORSExx。原版按地形配的是骑马声，换成步行英雄后要换成脚步声（用户 2026-11-23）。
+	// 坐船、飞行不走这里，仍用原版的船声、飞行声
+	if(!hero->appearance || hero->appearance->animationFile.empty())
+		return terrainSound;
+
+	std::string anim = hero->appearance->animationFile.getName();
+	if(boost::starts_with(anim, "SPRITES/"))
+		anim = anim.substr(std::string("SPRITES/").length());
+
+	for(const auto & candidate : {AudioPath::builtin(anim + "_" + terrainSound.getName()), AudioPath::builtin(anim + "_MOVE")})
+	{
+		auto it = heroMovementSoundOverrides.find(candidate.getName());
+		if(it == heroMovementSoundOverrides.end())
+		{
+			const bool exists = CResourceHandler::get()->existsResource(candidate.addPrefix("SOUNDS/"));
+			it = heroMovementSoundOverrides.emplace(candidate.getName(), exists).first;
+		}
+		if(it->second)
+			return candidate;
+	}
+	return terrainSound;
+}
 
 void HeroMovementController::updateMovementSound(const CGHeroInstance * h, int3 posPrev, int3 nextCoord, EPathNodeAction moveType)
 {
@@ -317,6 +346,7 @@ void HeroMovementController::updateMovementSound(const CGHeroInstance * h, int3 
 	if(newSoundName != currentMovementSoundName)
 	{
 		currentMovementSoundName = newSoundName;
+		logGlobal->trace("Hero %s movement sound: %s", h->getNameTextID(), newSoundName.getOriginalName());
 
 		if(currentMovementSoundChannel != -1)
 			ENGINE->sound().stopSound(currentMovementSoundChannel);

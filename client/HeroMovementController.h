@@ -46,6 +46,10 @@ class HeroMovementController
 
 	void endMove(const CGHeroInstance * h);
 
+	/// 模组给英雄地图动画配的专用行走音效是否存在（按完整音效名记下，不每步查资源）
+	std::map<std::string, bool> heroMovementSoundOverrides;
+	AudioPath heroMovementSoundOverride(const CGHeroInstance * hero, const AudioPath & terrainSound);
+
 	AudioPath getMovementSoundFor(const CGHeroInstance * hero, int3 posPrev, int3 posNext, EPathNodeAction moveType);
 	void updateMovementSound(const CGHeroInstance * hero, int3 posPrev, int3 posNext, EPathNodeAction moveType);
 	void stopMovementSound();
