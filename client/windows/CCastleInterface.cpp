@@ -1661,7 +1661,11 @@ void CTownInfo::showPopupWindow(const Point & cursorPosition)
 
 namespace
 {
-	// 建筑列表的配色：与水墨画面搭配的暗底暖金
+	// 建筑列表的配色：与水墨画面搭配的暗底暖金；布局 townWindows.json 的 "buildingList"."colors" 可逐项改
+	ColorRGBA listColor(const char * key, const ColorRGBA & fallback)
+	{
+		return WidgetLayout::color(townLayout("buildingList")["colors"][key], fallback);
+	}
 	const ColorRGBA LIST_BACKGROUND(26, 24, 22, 255);
 	const ColorRGBA LIST_FRAME(150, 122, 64, 255);
 	const ColorRGBA LIST_TITLE(240, 220, 160, 255);
@@ -1692,9 +1696,9 @@ namespace
 	{
 		switch(entryGroup(entry))
 		{
-			case 0: return LIST_BUILT;
-			case 1: return LIST_AVAILABLE;
-			default: return LIST_LOCKED;
+			case 0: return listColor("built", LIST_BUILT);
+			case 1: return listColor("available", LIST_AVAILABLE);
+			default: return listColor("locked", LIST_LOCKED);
 		}
 	}
 
@@ -1762,11 +1766,11 @@ void CTownBuildingList::CItem::showAll(Canvas & to)
 {
 	if(owner->selected == static_cast<int>(index))
 	{
-		to.drawColor(pos, LIST_SELECTED);
-		to.drawBorder(pos, LIST_SELECTED_FRAME);
+		to.drawColor(pos, listColor("selected", LIST_SELECTED));
+		to.drawBorder(pos, listColor("selectedFrame", LIST_SELECTED_FRAME));
 	}
 	else
-		to.drawColor(pos, isHovered() ? LIST_HOVER : LIST_BACKGROUND);
+		to.drawColor(pos, isHovered() ? listColor("hover", LIST_HOVER) : listColor("background", LIST_BACKGROUND));
 	CIntObject::showAll(to);
 }
 
@@ -1777,7 +1781,7 @@ CTownBuildingList::CToggle::CToggle(CTownBuildingList * owner, const Rect & posi
 	OBJECT_CONSTRUCTION;
 	pos.w = position.w;
 	pos.h = position.h;
-	label = std::make_shared<CLabel>(pos.w / 2, pos.h / 2, FONT_SMALL, ETextAlignment::CENTER, LIST_TITLE, listText("toggle.open"));
+	label = std::make_shared<CLabel>(pos.w / 2, pos.h / 2, FONT_SMALL, ETextAlignment::CENTER, listColor("title", LIST_TITLE), listText("toggle.open"));
 }
 
 void CTownBuildingList::CToggle::clickPressed(const Point & cursorPosition)
@@ -1796,8 +1800,8 @@ void CTownBuildingList::CToggle::hover(bool on)
 
 void CTownBuildingList::CToggle::showAll(Canvas & to)
 {
-	to.drawColor(pos, LIST_BACKGROUND);
-	to.drawBorder(pos, LIST_FRAME);
+	to.drawColor(pos, listColor("background", LIST_BACKGROUND));
+	to.drawBorder(pos, listColor("frame", LIST_FRAME));
 	CIntObject::showAll(to);
 }
 
@@ -1903,7 +1907,7 @@ void CTownBuildingList::rebuildItems()
 	int rowHeight = entries.empty() ? 20 : std::clamp(available / static_cast<int>(entries.size()), 14, 20);
 
 	if(!overlayMode)
-		title = std::make_shared<CLabel>(pos.w / 2, 16, FONT_MEDIUM, ETextAlignment::CENTER, LIST_TITLE, listText("title"));
+		title = std::make_shared<CLabel>(pos.w / 2, 16, FONT_MEDIUM, ETextAlignment::CENTER, listColor("title", LIST_TITLE), listText("title"));
 
 	static const std::array<std::string, 3> headerKeys = { "built", "available", "locked" };
 	int y = titleHeight;
@@ -1915,7 +1919,7 @@ void CTownBuildingList::rebuildItems()
 		{
 			if(lastGroup != -1)
 				y += groupGap;
-			headers.push_back(std::make_shared<CLabel>(8, y + headerHeight / 2, FONT_TINY, ETextAlignment::CENTERLEFT, LIST_HEADER, listText(headerKeys[group])));
+			headers.push_back(std::make_shared<CLabel>(8, y + headerHeight / 2, FONT_TINY, ETextAlignment::CENTERLEFT, listColor("header", LIST_HEADER), listText(headerKeys[group])));
 			y += headerHeight;
 			lastGroup = group;
 		}
@@ -2017,8 +2021,8 @@ void CTownBuildingList::showAll(Canvas & to)
 {
 	if(expanded)
 	{
-		to.drawColor(pos, LIST_BACKGROUND);
-		to.drawBorder(pos, LIST_FRAME);
+		to.drawColor(pos, listColor("background", LIST_BACKGROUND));
+		to.drawBorder(pos, listColor("frame", LIST_FRAME));
 	}
 	CIntObject::showAll(to);
 }
@@ -2033,7 +2037,7 @@ void CTownBuildingList::show(Canvas & to)
 }
 
 CCastleInterface::CCastleInterface(const CGTownInstance * Town, const CGTownInstance * from):
-	CWindowObject(PLAYER_COLORED | BORDERED),
+	CWindowObject(WidgetLayout::windowOptions(townLayout("screen"), PLAYER_COLORED | BORDERED)),
 	town(Town)
 {
 	OBJECT_CONSTRUCTION;
@@ -2054,6 +2058,15 @@ CCastleInterface::CCastleInterface(const CGTownInstance * Town, const CGTownInst
 	if(listBesideWindow)
 		moveBy(Point(listOutside / 2, 0));
 	updateShadow();
+
+	// 四周底纹：铺满整屏、排在最先画（child 的坐标按窗口原点算，所以用负偏移落到屏幕左上角）
+	if(townLayout("screen")["around"].isString())
+	{
+		around = std::make_shared<CFilledTexture>(ImagePath::fromJson(townLayout("screen")["around"]),
+			Rect(-pos.x, -pos.y, ENGINE->screenDimensions().x, ENGINE->screenDimensions().y));
+		vstd::erase(children, around.get());
+		children.insert(children.begin(), around.get());
+	}
 
 	garr = std::make_shared<CGarrisonInt>(Point(305, 387), 4, Point(0,96), town->getUpperArmy(), town->getVisitingHero());
 	garr->setRedrawParent(true);

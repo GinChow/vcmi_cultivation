@@ -26,6 +26,7 @@ class CGStatusBar;
 class CLabel;
 class CMinorResDataBar;
 class CPicture;
+class CFilledTexture;
 class CResDataBar;
 class CTextBox;
 class CTownList;
@@ -327,6 +328,7 @@ class CCastleInterface final : public CStatusbarWindow, public IGarrisonHolder, 
 	std::shared_ptr<CAnimImage> icon;
 
 	std::shared_ptr<CPicture> panel;
+	std::shared_ptr<CFilledTexture> around; ///< 布局 "screen"."around"：窗口四周铺满的底纹（不画原版金边时盖住下面的大地图）
 	std::shared_ptr<CResDataBar> resdatabar;
 
 	std::shared_ptr<CTownInfo> hall;
