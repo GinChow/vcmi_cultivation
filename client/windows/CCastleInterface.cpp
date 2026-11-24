@@ -2068,11 +2068,14 @@ CCastleInterface::CCastleInterface(const CGTownInstance * Town, const CGTownInst
 		children.insert(children.begin(), around.get());
 	}
 
-	garr = std::make_shared<CGarrisonInt>(Point(305, 387), 4, Point(0,96), town->getUpperArmy(), town->getVisitingHero());
+	// 底部面板各控件的位置可由布局 "screen" 改（窗口坐标；不写时为原版位置）。
+	// "garrisonOffset" 是下排（来访修士的兵）相对上排（驻守）的偏移，给负值即可把来访排到驻守上面
+	const JsonNode & screenLayout = townLayout("screen");
+	garr = std::make_shared<CGarrisonInt>(WidgetLayout::point(screenLayout["garrison"], Point(305, 387)), 4, WidgetLayout::point(screenLayout["garrisonOffset"], Point(0,96)), town->getUpperArmy(), town->getVisitingHero());
 	garr->setRedrawParent(true);
 
-	heroes = std::make_shared<HeroSlots>(town, Point(241, 387), Point(241, 483), garr, true);
-	title = std::make_shared<CTextInputWithConfirm>(Rect(83, 386, 140, 20), FONT_MEDIUM, ETextAlignment::TOPLEFT, GAME->translator().translate(town->getNameTextID()), true, [this](){ 
+	heroes = std::make_shared<HeroSlots>(town, WidgetLayout::point(screenLayout["garrisonHero"], Point(241, 387)), WidgetLayout::point(screenLayout["visitingHero"], Point(241, 483)), garr, true);
+	title = std::make_shared<CTextInputWithConfirm>(WidgetLayout::rect(screenLayout["title"], Rect(83, 386, 140, 20)), FONT_MEDIUM, ETextAlignment::TOPLEFT, GAME->translator().translate(town->getNameTextID()), true, [this](){ 
 		std::string name = title->getText();
 		std::string originalName = LIBRARY->generaltexth->translate(town->getNameTextID());
 		if(name == originalName)
@@ -2081,8 +2084,10 @@ CCastleInterface::CCastleInterface(const CGTownInstance * Town, const CGTownInst
 	});
 	if(town->tempOwner != GAME->interface()->playerID) // disable changing for allied towns
 		title->deactivate();
-	income = std::make_shared<CLabel>(195, 443, FONT_SMALL, ETextAlignment::CENTER);
-	icon = std::make_shared<CAnimImage>(AnimationPath::builtin("ITPT"), 0, 0, 15, 387);
+	const Point incomePos = WidgetLayout::point(screenLayout["income"], Point(195, 443));
+	income = std::make_shared<CLabel>(incomePos.x, incomePos.y, FONT_SMALL, ETextAlignment::CENTER);
+	const Point portraitPos = WidgetLayout::point(screenLayout["portrait"], Point(15, 387));
+	icon = std::make_shared<CAnimImage>(AnimationPath::builtin("ITPT"), 0, 0, portraitPos.x, portraitPos.y);
 
 	exit = std::make_shared<CButton>(Point(744, 544), AnimationPath::builtin("TSBTNS"), CButton::tooltip(LIBRARY->generaltexth->translate("core.tcommand.8")), [&](){close();}, EShortcut::GLOBAL_RETURN);
 	exit->setImageOrder(4, 5, 6, 7);
@@ -2264,20 +2269,23 @@ void CCastleInterface::recreateIcons()
 	TResources townIncome = town->dailyIncome();
 	income->setText(std::to_string(townIncome[EGameResID::GOLD]));
 
-	hall = std::make_shared<CTownInfo>(80, 413, town, true);
-	fort = std::make_shared<CTownInfo>(122, 413, town, false);
+	const JsonNode & screenLayout = townLayout("screen");
+	const Point hallPos = WidgetLayout::point(screenLayout["hall"], Point(80, 413));
+	const Point fortPos = WidgetLayout::point(screenLayout["fort"], Point(122, 413));
+	hall = std::make_shared<CTownInfo>(hallPos.x, hallPos.y, town, true);
+	fort = std::make_shared<CTownInfo>(fortPos.x, fortPos.y, town, false);
 
-	fastTownHall = std::make_shared<CButton>(Point(80, 413), AnimationPath::builtin("castleInterfaceQuickAccess"), CButton::tooltip(), [this](){ builds->enterTownHall(); }, EShortcut::TOWN_OPEN_HALL);
+	fastTownHall = std::make_shared<CButton>(hallPos, AnimationPath::builtin("castleInterfaceQuickAccess"), CButton::tooltip(), [this](){ builds->enterTownHall(); }, EShortcut::TOWN_OPEN_HALL);
 	fastTownHall->setOverlay(std::make_shared<CAnimImage>(AnimationPath::builtin("ITMTL"), town->hallLevel()));
 
 	int imageIndex = town->fortLevel() == CGTownInstance::EFortLevel::NONE ? 3 : town->fortLevel() - 1;
-	fastArmyPurchase = std::make_shared<CButton>(Point(122, 413), AnimationPath::builtin("castleInterfaceQuickAccess"), CButton::tooltip(), [this](){ builds->enterToTheQuickRecruitmentWindow(); }, EShortcut::TOWN_OPEN_RECRUITMENT);
+	fastArmyPurchase = std::make_shared<CButton>(fortPos, AnimationPath::builtin("castleInterfaceQuickAccess"), CButton::tooltip(), [this](){ builds->enterToTheQuickRecruitmentWindow(); }, EShortcut::TOWN_OPEN_RECRUITMENT);
 	fastArmyPurchase->setOverlay(std::make_shared<CAnimImage>(AnimationPath::builtin("itmcl"), imageIndex));
 
-	fastMarket = std::make_shared<LRClickableArea>(Rect(163, 410, 64, 42), [this]() { builds->enterAnyMarket(); });
+	fastMarket = std::make_shared<LRClickableArea>(WidgetLayout::rect(screenLayout["market"], Rect(163, 410, 64, 42)), [this]() { builds->enterAnyMarket(); });
 	{
 		const std::string factionKey = town->getTown()->faction->getJsonKey();
-		fastWiki = std::make_shared<LRClickableArea>(Rect(15, 387, 58, 64), [factionKey]()
+		fastWiki = std::make_shared<LRClickableArea>(Rect(WidgetLayout::point(screenLayout["portrait"], Point(15, 387)), Point(58, 64)), [factionKey]()
 		{
 			ENGINE->windows().createAndPushWindow<WikiWindow>(
 				WikiWindow::Style::BROWN,
@@ -2288,19 +2296,21 @@ void CCastleInterface::recreateIcons()
 		});
 	}
 
-	townRadialArea = std::make_shared<TownRadialArea>(Rect(15, 387, 213, 66), town, builds.get(), this);
+	townRadialArea = std::make_shared<TownRadialArea>(WidgetLayout::rect(screenLayout["radialArea"], Rect(15, 387, 213, 66)), town, builds.get(), this);
 
 	creainfo.clear();
 
 	bool compactCreatureInfo = useCompactCreatureBox();
 	bool useAvailableCreaturesForLabel = useAvailableAmountAsCreatureLabel();
 
-	for(size_t i=0; i<4; i++)
-		creainfo.push_back(std::make_shared<CCreaInfo>(Point(14 + 55 * (int)i, 459), town, (int)i, compactCreatureInfo, useAvailableCreaturesForLabel));
-
-
-	for(size_t i=0; i<4; i++)
-		creainfo.push_back(std::make_shared<CCreaInfo>(Point(14 + 55 * (int)i, 507), town, (int)i + 4, compactCreatureInfo, useAvailableCreaturesForLabel));
+	// 八格兵种增长：{"x","y"} 第一格，"step" 同排相邻格的间距，"rowStep" 两排的间距，每排 4 格
+	const JsonNode & creaLayout = screenLayout["creatures"];
+	const Point creaOrigin = WidgetLayout::point(creaLayout, Point(14, 459));
+	const Point creaStep = WidgetLayout::point(creaLayout["step"], Point(55, 0));
+	const Point creaRowStep = WidgetLayout::point(creaLayout["rowStep"], Point(0, 48));
+	for(int row = 0; row < 2; row++)
+		for(int i = 0; i < 4; i++)
+			creainfo.push_back(std::make_shared<CCreaInfo>(creaOrigin + creaStep * i + creaRowStep * row, town, i + 4 * row, compactCreatureInfo, useAvailableCreaturesForLabel));
 }
 
 void CCastleInterface::keyPressed(EShortcut key)
