@@ -10,6 +10,8 @@
 #include "StdInc.h"
 
 #include "CSavingScreen.h"
+#include "../widgets/WidgetLayout.h"
+#include "../../lib/json/JsonNode.h"
 #include "SelectionTab.h"
 
 #include "../CPlayerInterface.h"
@@ -45,6 +47,7 @@ CSavingScreen::CSavingScreen()
 	curTab = tabSel;
 		
 	buttonStart = std::make_shared<CButton>(Point(411, 535), AnimationPath::builtin("SCNRSAV.DEF"), LIBRARY->generaltexth->zelp[103], std::bind(&CSavingScreen::saveGame, this), EShortcut::LOBBY_SAVE_GAME);
+	WidgetLayout::applyButton(buttonStart, lobbyLayout()["buttons"]["save"]);
 	
 	GAME->interface()->gamePause(true);
 }

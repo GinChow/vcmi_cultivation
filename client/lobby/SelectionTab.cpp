@@ -31,6 +31,7 @@
 #include "../widgets/ObjectLists.h"
 #include "../widgets/Slider.h"
 #include "../widgets/TextControls.h"
+#include "../widgets/WidgetLayout.h"
 #include "../windows/GUIClasses.h"
 #include "../windows/InfoWindows.h"
 #include "../windows/CMapOverview.h"
@@ -292,20 +293,36 @@ SelectionTab::SelectionTab(ESelectionScreen Type)
 
 	if(enableUiEnhancements)
 	{
-		auto sortByDate = std::make_shared<CButton>(Point(371 - (ENGINE->isRoeData() ? 36 : 0), 85), AnimationPath::builtin("selectionTabSortDate"), CButton::tooltip("", LIBRARY->generaltexth->translate("vcmi.lobby.sortDate")), std::bind(&SelectionTab::sortBy, this, ESortBy::_changeDate), EShortcut::MAPS_SORT_CHANGEDATE);
-		sortByDate->setOverlay(std::make_shared<CPicture>(ImagePath::builtin("lobby/selectionTabSortDate")));
+		// 按日期排序按钮可换图（"selectionTab"."sortDate": {"image", "overlay"}，overlay 为 false 时不叠日历图标）
+		const JsonNode & sortDateLayout = lobbyLayout()["selectionTab"]["sortDate"];
+		auto sortByDate = std::make_shared<CButton>(Point(371 - (ENGINE->isRoeData() ? 36 : 0), 85), WidgetLayout::animation(sortDateLayout["image"], AnimationPath::builtin("selectionTabSortDate")), CButton::tooltip("", LIBRARY->generaltexth->translate("vcmi.lobby.sortDate")), std::bind(&SelectionTab::sortBy, this, ESortBy::_changeDate), EShortcut::MAPS_SORT_CHANGEDATE);
+		if(sortDateLayout["overlay"].isNull())
+			sortByDate->setOverlay(std::make_shared<CPicture>(ImagePath::builtin("lobby/selectionTabSortDate")));
+		else if(sortDateLayout["overlay"].isString())
+			sortByDate->setOverlay(std::make_shared<CPicture>(ImagePath::fromJson(sortDateLayout["overlay"])));
 		buttonsSortBy.push_back(sortByDate);
 
 		Rect searchWidgetArea(22, 115, 366, 26);
 		Rect searchTextInputArea(87, 115, 301, 26);
 
-		searchWidgetBackground = std::make_shared<FilledTexturePlayerColored>(searchWidgetArea);
-		searchWidgetBackground->setPlayerColor(PlayerColor(1));
+		// 搜索行（大厅布局 "selectionTab"."search"）：底纹 "background" 为图片路径时贴图、为 false 时不画；
+		// 标签 "label" 可换字、换色；输入区底色 "inputColor"；输入字色 "textColor"
+		const JsonNode & searchLayout = lobbyLayout()["selectionTab"]["search"];
+		if(searchLayout["background"].isString())
+			searchWidgetPicture = std::make_shared<CPicture>(ImagePath::fromJson(searchLayout["background"]), searchWidgetArea.topLeft());
+		else if(searchLayout["background"].isNull() || searchLayout["background"].Bool())
+		{
+			searchWidgetBackground = std::make_shared<FilledTexturePlayerColored>(searchWidgetArea);
+			searchWidgetBackground->setPlayerColor(PlayerColor(1));
+		}
 
-		searchBoxLabel = std::make_shared<CLabel>(55, 128, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, "Filter:");
-		searchInputRectangle = std::make_shared<TransparentFilledRectangle>(searchTextInputArea, ColorRGBA(0, 0, 0, 128));
+		searchBoxLabel = WidgetLayout::label(searchLayout["label"], Point(55, 128), FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW,
+			searchLayout["label"]["text"].isString() ? searchLayout["label"]["text"].String() : "Filter:");
+		searchInputRectangle = std::make_shared<TransparentFilledRectangle>(searchTextInputArea, WidgetLayout::color(searchLayout["inputColor"], ColorRGBA(0, 0, 0, 128)));
 
 		searchInput = std::make_shared<CTextInput>(searchTextInputArea, FONT_SMALL, ETextAlignment::CENTER, true);
+		if(searchLayout["textColor"].isVector() || searchLayout["textColor"].isString())
+			searchInput->setColor(WidgetLayout::color(searchLayout["textColor"], Colors::WHITE));
 		searchInput->setCallback([this](const std::string & text) {
 									 std::shared_ptr<ElementInfo> selectedMap = getSelectedMapInfo();
 									 bool hideSelectedElement = !selectedMap || !checkNameFilter(getSelectedMapInfo()->name);
@@ -375,8 +392,9 @@ SelectionTab::SelectionTab(ESelectionScreen Type)
 	for(int i = 0; i < positionsToShow; i++)
 		listItems.push_back(std::make_shared<ListItem>(Point(30, (enableUiEnhancements ? 154 : 129) + i * 25)));
 
-	labelTabTitle = std::make_shared<CLabel>(205 - (ENGINE->isRoeData() ? 18 : 0), 28, FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE, tabTitle);
+	labelTabTitle = WidgetLayout::label(lobbyLayout()["selectionTab"]["title"], Point(205 - (ENGINE->isRoeData() ? 18 : 0), 28), FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE, tabTitle);
 	slider = std::make_shared<CSlider>(Point(372 - (ENGINE->isRoeData() ? 36 : 0), 86 + (enableUiEnhancements ? 54 : 0)), (tabType != ESelectionScreen::saveGame ? 480 : 430) - (enableUiEnhancements ? 54 : 0), std::bind(&SelectionTab::sliderMove, this, _1), positionsToShow, (int)curItems.size(), 0, Orientation::VERTICAL, CSlider::BLUE);
+	WidgetLayout::applySliderSkin(slider, lobbyLayout()["selectionTab"]["sliderSkin"]);
 	slider->setPanningStep(24);
 	slider->setInertiaEnabled(true);
 
@@ -1520,7 +1538,7 @@ SelectionTab::ListItem::ListItem(Point position)
 	: CIntObject(LCLICK, position)
 {
 	OBJECT_CONSTRUCTION;
-	if(!ENGINE->isDemoData())
+	if(!ENGINE->isDemoData() && !lobbyLayout()["selectionTab"]["hideFolderLine"].Bool())
 		pictureEmptyLine = std::make_shared<CPicture>(ImagePath::builtin("camcust"), Rect(25, 121, 349, 26), -8, -14);
 	labelName = std::make_shared<CLabel>(LABEL_POS_X - (ENGINE->isRoeData() ? 36 : 0), 0, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, "", 185);
 	labelName->setAutoRedraw(false);
@@ -1556,7 +1574,8 @@ void SelectionTab::ListItem::updateItem(std::shared_ptr<ElementInfo> info, bool 
 		return;
 	}
 
-	auto color = selected ? Colors::YELLOW : Colors::WHITE;
+	const JsonNode & listLayout = lobbyLayout()["selectionTab"];
+	auto color = selected ? WidgetLayout::color(listLayout["selectedColor"], Colors::YELLOW) : WidgetLayout::color(listLayout["textColor"], Colors::WHITE);
 	if(info->isFolder)
 	{
 		labelAmountOfPlayers->disable();

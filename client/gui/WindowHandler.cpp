@@ -56,6 +56,19 @@ bool WindowHandler::isTopWindowPopup() const
 	return windowsStack.back()->isPopupWindow();
 }
 
+bool WindowHandler::isCoveredByWindow(const IShowActivatable * window) const
+{
+	bool above = false;
+	for(const auto & elem : windowsStack)
+	{
+		if(elem.get() == window)
+			above = true;
+		else if(above && !elem->isPopupWindow())
+			return true;
+	}
+	return false;
+}
+
 void WindowHandler::popWindows(int howMany)
 {
 	if(!howMany)

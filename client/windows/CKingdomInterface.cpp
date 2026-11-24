@@ -82,19 +82,6 @@ Point layoutRow(const JsonNode & node, size_t i, const Point & origin, const Poi
 	return WidgetLayout::point(node, origin) + WidgetLayout::point(node["step"], step) * static_cast<int>(i);
 }
 
-/// 名录列表的滑条换皮：{"skin": {"track","fill","knob","left","right"}}
-void applySliderSkin(const std::shared_ptr<CSlider> & slider, const JsonNode & skin)
-{
-	if(!slider || !skin.isStruct())
-		return;
-	CSlider::Skin result;
-	result.track = WidgetLayout::image(skin["track"], ImagePath());
-	result.fill = WidgetLayout::image(skin["fill"], ImagePath());
-	result.knob = WidgetLayout::animation(skin["knob"], AnimationPath());
-	result.left = WidgetLayout::animation(skin["left"], AnimationPath());
-	result.right = WidgetLayout::animation(skin["right"], AnimationPath());
-	slider->setSkin(result);
-}
 }
 
 InfoBox::InfoBox(Point position, InfoPos Pos, InfoSize Size, std::shared_ptr<IInfoBoxData> Data):
@@ -891,7 +878,7 @@ CKingdHeroList::CKingdHeroList(size_t maxSize, const CreateHeroItemFunctor & onC
 			}
 		}, listPos, WidgetLayout::point(listLayout["step"], Point(0,116)), maxSize, townCount, 0, 1, Rect(sliderPos - listPos, Point(sliderLength, sliderLength)));
 	heroes->getSlider()->setScrollBounds(WidgetLayout::rect(listLayout["scrollBounds"], Rect(0, 0, 725, 483)));
-	applySliderSkin(heroes->getSlider(), listLayout["slider"]["skin"]);
+	WidgetLayout::applySliderSkin(heroes->getSlider(), listLayout["slider"]["skin"]);
 }
 
 void CKingdHeroList::updateGarrisons()
@@ -933,7 +920,7 @@ CKingdTownList::CKingdTownList(size_t maxSize)
 	towns = std::make_shared<CListBox>(std::bind(&CKingdTownList::createTownItem, this, _1),
 		listPos, WidgetLayout::point(listLayout["step"], Point(0,116)), maxSize, townCount, 0, 1, Rect(sliderPos - listPos, Point(sliderLength, sliderLength)));
 	towns->getSlider()->setScrollBounds(WidgetLayout::rect(listLayout["scrollBounds"], Rect(0, 0, 725, 483)));
-	applySliderSkin(towns->getSlider(), listLayout["slider"]["skin"]);
+	WidgetLayout::applySliderSkin(towns->getSlider(), listLayout["slider"]["skin"]);
 }
 
 void CKingdTownList::townChanged(const CGTownInstance * town)

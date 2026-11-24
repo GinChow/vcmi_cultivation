@@ -20,6 +20,8 @@ class JsonNode;
 VCMI_LIB_NAMESPACE_END
 
 class CLabel;
+class CSlider;
+class CButton;
 enum class ETextAlignment;
 
 /// 读窗口布局 JSON（模组换皮用，如 config/widgets/heroWindow.json）的小工具。
@@ -42,7 +44,13 @@ ColorRGBA color(const JsonNode & node, const ColorRGBA & fallback);
 AnimationPath animation(const JsonNode & node, const AnimationPath & fallback);
 ImagePath image(const JsonNode & node, const ImagePath & fallback);
 
-/// 按 {"x", "y", "font", "alignment", "color", "maxWidth"} 建标签，各项缺省时用给定的原版值
+/// 滑条换皮：{"track","fill","knob","left","right"}，见 CSlider::Skin；node 不是对象时什么都不做
+void applySliderSkin(const std::shared_ptr<CSlider> & slider, const JsonNode & node);
+
+/// 按钮换位置、换图：{"x", "y", "image"}，各项缺省时保持按钮原样；"hidden": true 时隐藏按钮
+void applyButton(const std::shared_ptr<CButton> & button, const JsonNode & node);
+
+/// 按 {"x", "y", "font", "alignment", "color", "highlightColor", "maxWidth"} 建标签，各项缺省时用给定的原版值
 std::shared_ptr<CLabel> label(const JsonNode & node, const Point & position, EFonts font, ETextAlignment alignment,
 	const ColorRGBA & color, const std::string & text = "", int maxWidth = 0);
 }

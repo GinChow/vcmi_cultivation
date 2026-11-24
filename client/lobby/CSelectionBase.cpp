@@ -34,6 +34,7 @@
 #include "../widgets/ObjectLists.h"
 #include "../widgets/Slider.h"
 #include "../widgets/TextControls.h"
+#include "../widgets/WidgetLayout.h"
 #include "../windows/wiki/WikiWindow.h"
 #include "../windows/GUIClasses.h"
 #include "../windows/InfoWindows.h"
@@ -53,6 +54,13 @@
 #include "../../lib/entities/faction/CTown.h"
 #include "../../lib/entities/faction/CTownHandler.h"
 #include "../../lib/GameLibrary.h"
+#include "../../lib/json/JsonNode.h"
+
+const JsonNode & lobbyLayout()
+{
+	static const JsonNode layout = WidgetLayout::load(JsonPath::builtin("config/widgets/lobby.json"));
+	return layout;
+}
 
 ISelectionScreenInfo::ISelectionScreenInfo(ESelectionScreen ScreenType)
 	: screenType(ScreenType)
@@ -85,7 +93,8 @@ PlayerInfo ISelectionScreenInfo::getPlayerInfo(PlayerColor color)
 }
 
 CSelectionBase::CSelectionBase(ESelectionScreen type)
-	: CWindowObject(BORDERED | SHADOW_DISABLED), ISelectionScreenInfo(type)
+	// 布局 "drawBorder": false 时不画原版的玩家色金边（换皮后的窗口底自带边缘）
+	: CWindowObject(lobbyLayout()["drawBorder"].isNull() || lobbyLayout()["drawBorder"].Bool() ? BORDERED | SHADOW_DISABLED : SHADOW_DISABLED), ISelectionScreenInfo(type)
 {
 	OBJECT_CONSTRUCTION;
 	addUsedEvents(KEYBOARD);
@@ -120,6 +129,7 @@ CSelectionBase::CSelectionBase(ESelectionScreen type)
 	
 	card = std::make_shared<InfoCard>();
 	buttonBack = std::make_shared<CButton>(Point(581, 535), AnimationPath::builtin("SCNRBACK.DEF"), LIBRARY->generaltexth->zelp[105], [this](){ close();}, EShortcut::GLOBAL_CANCEL);
+	WidgetLayout::applyButton(buttonBack, lobbyLayout()["buttons"]["back"]);
 }
 
 void CSelectionBase::keyPressed(EShortcut key)
@@ -160,14 +170,20 @@ InfoCard::InfoCard()
 {
 	OBJECT_CONSTRUCTION;
 	setRedrawParent(true);
-	pos.x += 393;
-	pos.y += 6;
+	const JsonNode & cardLayout = lobbyLayout()["card"];
+	const Point cardOffset = WidgetLayout::point(cardLayout, Point(393, 6));
+	pos.x += cardOffset.x;
+	pos.y += cardOffset.y;
+	// 原版信息卡上黄字是小标题和场景名、白字是正文；宣纸底要换成墨色，由布局给
+	const ColorRGBA headingColor = WidgetLayout::color(cardLayout["headingColor"], Colors::YELLOW);
+	const ColorRGBA textColor = WidgetLayout::color(cardLayout["textColor"], Colors::WHITE);
+	const ColorRGBA nameColor = WidgetLayout::color(cardLayout["nameColor"], Colors::YELLOW);
 
-	labelSaveDate = std::make_shared<CLabel>(305, 38, FONT_SMALL, ETextAlignment::BOTTOMRIGHT, Colors::WHITE);
-	labelMapSize = std::make_shared<CLabel>(327, 57, FONT_TINY, ETextAlignment::CENTER, Colors::WHITE);
-	mapName = std::make_shared<CLabel>(26, 39, FONT_BIG, ETextAlignment::TOPLEFT, Colors::YELLOW, "", SEL->screenType == ESelectionScreen::campaignList ? 325 : 280);
+	labelSaveDate = std::make_shared<CLabel>(305, 38, FONT_SMALL, ETextAlignment::BOTTOMRIGHT, textColor);
+	labelMapSize = std::make_shared<CLabel>(327, 57, FONT_TINY, ETextAlignment::CENTER, textColor);
+	mapName = std::make_shared<CLabel>(26, 39, FONT_BIG, ETextAlignment::TOPLEFT, nameColor, "", SEL->screenType == ESelectionScreen::campaignList ? 325 : 280);
 	Rect descriptionRect(26, 149, 320, 115);
-	mapDescription = std::make_shared<CTextBox>("", descriptionRect, 1);
+	mapDescription = std::make_shared<CTextBox>("", descriptionRect, 1, FONT_SMALL, ETextAlignment::TOPLEFT, textColor);
 	if(!ENGINE->isRoeData())
 		playerListBg = std::make_shared<CPicture>(ImagePath::builtin("CHATPLUG.bmp"), 16, 276);
 	chat = std::make_shared<CChatBox>(Rect(18, 126, 335, 143));
@@ -181,7 +197,7 @@ InfoCard::InfoCard()
 
 	if(SEL->screenType == ESelectionScreen::campaignList)
 	{
-		labelCampaignDescription = std::make_shared<CLabel>(26, 132, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, LIBRARY->generaltexth->allTexts[38]);
+		labelCampaignDescription = std::make_shared<CLabel>(26, 132, FONT_SMALL, ETextAlignment::TOPLEFT, headingColor, LIBRARY->generaltexth->allTexts[38]);
 	}
 	else
 	{
@@ -210,23 +226,23 @@ InfoCard::InfoCard()
 		}
 
 		flagbox = std::make_shared<CFlagBox>(Rect(24, 400, 335, 23));
-		labelMapDiff = std::make_shared<CLabel>(33, 430, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, LIBRARY->generaltexth->allTexts[494]);
-		labelPlayerDifficulty = std::make_shared<CLabel>(133, 430, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, LIBRARY->generaltexth->allTexts[492] + ":");
-		labelRating = std::make_shared<CLabel>(290, 430, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, LIBRARY->generaltexth->allTexts[218] + ":");
-		labelScenarioName = std::make_shared<CLabel>(26, 22, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, LIBRARY->generaltexth->allTexts[495]);
-		labelScenarioDescription = std::make_shared<CLabel>(26, 132, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, LIBRARY->generaltexth->allTexts[496]);
-		labelVictoryCondition = std::make_shared<CLabel>(26, 283, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, LIBRARY->generaltexth->allTexts[497]);
-		labelLossCondition = std::make_shared<CLabel>(26, 339, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::YELLOW, LIBRARY->generaltexth->allTexts[498]);
+		labelMapDiff = std::make_shared<CLabel>(33, 430, FONT_SMALL, ETextAlignment::TOPLEFT, headingColor, LIBRARY->generaltexth->allTexts[494]);
+		labelPlayerDifficulty = std::make_shared<CLabel>(133, 430, FONT_SMALL, ETextAlignment::TOPLEFT, headingColor, LIBRARY->generaltexth->allTexts[492] + ":");
+		labelRating = std::make_shared<CLabel>(290, 430, FONT_SMALL, ETextAlignment::TOPLEFT, headingColor, LIBRARY->generaltexth->allTexts[218] + ":");
+		labelScenarioName = std::make_shared<CLabel>(26, 22, FONT_SMALL, ETextAlignment::TOPLEFT, headingColor, LIBRARY->generaltexth->allTexts[495]);
+		labelScenarioDescription = std::make_shared<CLabel>(26, 132, FONT_SMALL, ETextAlignment::TOPLEFT, headingColor, LIBRARY->generaltexth->allTexts[496]);
+		labelVictoryCondition = std::make_shared<CLabel>(26, 283, FONT_SMALL, ETextAlignment::TOPLEFT, headingColor, LIBRARY->generaltexth->allTexts[497]);
+		labelLossCondition = std::make_shared<CLabel>(26, 339, FONT_SMALL, ETextAlignment::TOPLEFT, headingColor, LIBRARY->generaltexth->allTexts[498]);
 		iconsVictoryCondition = std::make_shared<CAnimImage>(AnimationPath::builtin("SCNRVICT"), 0, 0, 24, 302);
 		iconsLossCondition = std::make_shared<CAnimImage>(AnimationPath::builtin("SCNRLOSS"), 0, 0, 24, 359);
 
-		labelVictoryConditionText = std::make_shared<CLabel>(60, 307, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, "", 290);
-		labelLossConditionText = std::make_shared<CLabel>(60, 366, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, "", 290);
+		labelVictoryConditionText = std::make_shared<CLabel>(60, 307, FONT_SMALL, ETextAlignment::TOPLEFT, textColor, "", 290);
+		labelLossConditionText = std::make_shared<CLabel>(60, 366, FONT_SMALL, ETextAlignment::TOPLEFT, textColor, "", 290);
 
-		labelDifficulty = std::make_shared<CLabel>(62, 472, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE);
-		labelDifficultyPercent = std::make_shared<CLabel>(311, 472, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE);
+		labelDifficulty = std::make_shared<CLabel>(62, 472, FONT_SMALL, ETextAlignment::CENTER, textColor);
+		labelDifficultyPercent = std::make_shared<CLabel>(311, 472, FONT_SMALL, ETextAlignment::CENTER, textColor);
 
-		labelGroupPlayers = std::make_shared<CLabelGroup>(FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE);
+		labelGroupPlayers = std::make_shared<CLabelGroup>(FONT_SMALL, ETextAlignment::TOPLEFT, textColor);
 		disableLabelRedraws();
 	}
 	setChat(false);
@@ -291,7 +307,7 @@ void InfoCard::changeSelection()
 
 	OBJECT_CONSTRUCTION;
 	// FIXME: We recreate them each time because CLabelGroup don't use smart pointers
-	labelGroupPlayers = std::make_shared<CLabelGroup>(FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE);
+	labelGroupPlayers = std::make_shared<CLabelGroup>(FONT_SMALL, ETextAlignment::TOPLEFT, WidgetLayout::color(lobbyLayout()["card"]["textColor"], Colors::WHITE));
 	if(!showChat)
 		labelGroupPlayers->disable();
 
@@ -581,8 +597,9 @@ CFlagBox::CFlagBox(const Rect & rect)
 	pos.h = rect.h;
 	OBJECT_CONSTRUCTION;
 
-	labelAllies = std::make_shared<CLabel>(0, 0, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, LIBRARY->generaltexth->allTexts[390] + ":");
-	labelEnemies = std::make_shared<CLabel>(133, 0, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, LIBRARY->generaltexth->allTexts[391] + ":");
+	const ColorRGBA textColor = WidgetLayout::color(lobbyLayout()["card"]["textColor"], Colors::WHITE);
+	labelAllies = std::make_shared<CLabel>(0, 0, FONT_SMALL, ETextAlignment::TOPLEFT, textColor, LIBRARY->generaltexth->allTexts[390] + ":");
+	labelEnemies = std::make_shared<CLabel>(133, 0, FONT_SMALL, ETextAlignment::TOPLEFT, textColor, LIBRARY->generaltexth->allTexts[391] + ":");
 }
 
 void CFlagBox::recreate()

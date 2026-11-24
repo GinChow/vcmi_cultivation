@@ -138,6 +138,7 @@ private:
 	std::shared_ptr<CTextInput> searchInput;
 	std::shared_ptr<CLabel> searchBoxLabel;
 	std::shared_ptr<FilledTexturePlayerColored> searchWidgetBackground;
+	std::shared_ptr<CPicture> searchWidgetPicture; ///< 布局给了搜索行底图时用它代替玩家色底纹
 	std::shared_ptr<TransparentFilledRectangle> searchInputRectangle;
 	ESelectionScreen tabType;
 	Rect inputNameRect;

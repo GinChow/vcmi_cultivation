@@ -24,6 +24,7 @@
 #include "../GameInstance.h"
 #include "../gui/Shortcut.h"
 #include "../widgets/Buttons.h"
+#include "../widgets/WidgetLayout.h"
 #include "../widgets/GraphicalPrimitiveCanvas.h"
 #include "../widgets/Images.h"
 #include "../windows/InfoWindows.h"
@@ -37,6 +38,7 @@
 #include "../../lib/networkPacks/PacksForLobby.h"
 #include "../../lib/rmg/CMapGenOptions.h"
 #include "../../lib/GameLibrary.h"
+#include "../../lib/json/JsonNode.h"
 
 CLobbyScreen::CLobbyScreen(ESelectionScreen screenType, bool hideScreen)
 	: CSelectionBase(screenType), bonusSel(nullptr)
@@ -134,12 +136,26 @@ CLobbyScreen::CLobbyScreen(ESelectionScreen screenType, bool hideScreen)
 			GAME->server().getGlobalLobby().activateInterface();
 	}, EShortcut::GLOBAL_CANCEL);
 
+	// 按钮换位置、换图（大厅布局 lobby.json 的 "buttons"，没写的保持原版）
+	const JsonNode & buttonsLayout = lobbyLayout()["buttons"];
+	WidgetLayout::applyButton(buttonSelect, buttonsLayout["select"]);
+	WidgetLayout::applyButton(buttonRMG, buttonsLayout["randomMap"]);
+	WidgetLayout::applyButton(buttonOptions, buttonsLayout["options"]);
+	WidgetLayout::applyButton(buttonExtraOptions, buttonsLayout["extraOptions"]);
+	WidgetLayout::applyButton(buttonBattleMode, buttonsLayout["battleMode"]);
+	WidgetLayout::applyButton(buttonChat, buttonsLayout["chat"]);
+	const char * startKey = screenType == ESelectionScreen::newGame ? "startNewGame" : (screenType == ESelectionScreen::loadGame ? "startLoadGame" : "startCampaign");
+	WidgetLayout::applyButton(buttonStart, buttonsLayout[startKey]);
+	WidgetLayout::applyButton(buttonBack, buttonsLayout["back"]);
+
 	// Make sure scenario selection is centered
-	if(settings["general"]["enableUiEnhancements"].Bool())
+	// 布局写了 "contentOffset" 时不论界面增强开没开都按它平移（底图按固定位置画）；没写时保持原版
+	const JsonNode & offsetLayout = lobbyLayout()["contentOffset"];
+	if(offsetLayout.isStruct() || settings["general"]["enableUiEnhancements"].Bool())
 	{
 		if((screenType == ESelectionScreen::newGame || screenType == ESelectionScreen::loadGame) && !ENGINE->isDemoData())
 		{
-			const Point contentOffset(19, 0);
+			const Point contentOffset = WidgetLayout::point(offsetLayout, Point(19, 0));
 			for(CIntObject * child : children)
 			{
 				if(!child || child == background.get())
@@ -345,21 +361,25 @@ void CLobbyScreen::toggleMode(bool host)
 		return;
 	}
 
+	// 布局的按钮图自带字时（"buttons"."bakedLabels"）不再叠原版说明字
+	const bool bakedLabels = lobbyLayout()["buttons"]["bakedLabels"].Bool();
 	auto buttonColor = host ? Colors::WHITE : Colors::ORANGE;
-	buttonSelect->setTextOverlay("  " + LIBRARY->generaltexth->allTexts[500], FONT_SMALL, buttonColor);
-	buttonOptions->setTextOverlay(LIBRARY->generaltexth->allTexts[501], FONT_SMALL, buttonColor);
-
-	if (buttonBattleMode)
-		buttonBattleMode->setTextOverlay(LIBRARY->generaltexth->translate("vcmi.lobby.battleOnlyMode"), FONT_SMALL, buttonColor);
-
-	if (buttonExtraOptions)
-		buttonExtraOptions->setTextOverlay(LIBRARY->generaltexth->translate("vcmi.optionsTab.extraOptions.hover"), FONT_SMALL, buttonColor);
-
-	if(buttonRMG)
+	if(!bakedLabels)
 	{
-		buttonRMG->setTextOverlay("  " + LIBRARY->generaltexth->allTexts[740], FONT_SMALL, buttonColor);
-		buttonRMG->block(!host);
+		buttonSelect->setTextOverlay("  " + LIBRARY->generaltexth->allTexts[500], FONT_SMALL, buttonColor);
+		buttonOptions->setTextOverlay(LIBRARY->generaltexth->allTexts[501], FONT_SMALL, buttonColor);
+
+		if (buttonBattleMode)
+			buttonBattleMode->setTextOverlay(LIBRARY->generaltexth->translate("vcmi.lobby.battleOnlyMode"), FONT_SMALL, buttonColor);
+
+		if (buttonExtraOptions)
+			buttonExtraOptions->setTextOverlay(LIBRARY->generaltexth->translate("vcmi.optionsTab.extraOptions.hover"), FONT_SMALL, buttonColor);
+
+		if(buttonRMG)
+			buttonRMG->setTextOverlay("  " + LIBRARY->generaltexth->allTexts[740], FONT_SMALL, buttonColor);
 	}
+	if(buttonRMG)
+		buttonRMG->block(!host);
 	buttonSelect->block(!host);
 	buttonOptions->block(!host);
 

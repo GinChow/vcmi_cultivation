@@ -77,6 +77,10 @@ public:
 	/// removes given windows from the top and activates next
 	void popWindow(std::shared_ptr<IShowActivatable> top);
 
+	/// returns true if a window that is not a right-click popup lies above the given one in the stack
+	/// （铺满全屏的主菜单被大厅等窗口盖住时据此改画法；只有右键说明压在上面不算）
+	bool isCoveredByWindow(const IShowActivatable * window) const;
+
 	/// returns true if selected interface is on top
 	bool isTopWindow(std::shared_ptr<IShowActivatable> window) const;
 	bool isTopWindow(IShowActivatable * window) const;

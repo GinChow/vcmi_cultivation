@@ -11,6 +11,8 @@
 #include "WidgetLayout.h"
 
 #include "TextControls.h"
+#include "Slider.h"
+#include "Buttons.h"
 
 #include "../../lib/filesystem/Filesystem.h"
 #include "../../lib/json/JsonNode.h"
@@ -93,7 +95,39 @@ std::shared_ptr<CLabel> label(const JsonNode & node, const Point & position, EFo
 {
 	const Point at = point(node, position);
 	const int width = node["maxWidth"].isNull() ? maxWidth : node["maxWidth"].Integer();
-	return std::make_shared<CLabel>(at.x, at.y, font(node["font"], fontValue), alignment(node["alignment"], alignmentValue),
+	auto result = std::make_shared<CLabel>(at.x, at.y, font(node["font"], fontValue), alignment(node["alignment"], alignmentValue),
 		color(node["color"], colorValue), text, width);
+	// "{}" 括起来的字的颜色（原版写死黄色）
+	if(!node["highlightColor"].isNull())
+		result->highlightColor = color(node["highlightColor"], result->highlightColor);
+	return result;
+}
+
+void applySliderSkin(const std::shared_ptr<CSlider> & slider, const JsonNode & node)
+{
+	if(!slider || !node.isStruct())
+		return;
+	CSlider::Skin result;
+	result.track = image(node["track"], ImagePath());
+	result.fill = image(node["fill"], ImagePath());
+	result.knob = animation(node["knob"], AnimationPath());
+	result.left = animation(node["left"], AnimationPath());
+	result.right = animation(node["right"], AnimationPath());
+	slider->setSkin(result);
+}
+
+void applyButton(const std::shared_ptr<CButton> & button, const JsonNode & node)
+{
+	if(!button || !node.isStruct())
+		return;
+	if(node["image"].isString())
+		button->setImage(AnimationPath::fromJson(node["image"]));
+	if(!node["x"].isNull() || !node["y"].isNull())
+	{
+		const Point origin = button->parent ? button->parent->pos.topLeft() : Point();
+		button->moveTo(origin + point(node, button->pos.topLeft() - origin));
+	}
+	if(node["hidden"].Bool())
+		button->disable();
 }
 }

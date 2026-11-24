@@ -30,6 +30,7 @@
 #include "../widgets/ObjectLists.h"
 #include "../widgets/Slider.h"
 #include "../widgets/TextControls.h"
+#include "../widgets/WidgetLayout.h"
 #include "../widgets/GraphicalPrimitiveCanvas.h"
 #include "../windows/GUIClasses.h"
 #include "../windows/InfoWindows.h"
@@ -941,7 +942,8 @@ OptionsTab::SelectedBox::SelectedBox(Point position, PlayerSettings & playerSett
 	OBJECT_CONSTRUCTION;
 
 	image = std::make_shared<CAnimImage>(getImageName(), getImageIndex());
-	subtitle = std::make_shared<CLabel>(24, 39, FONT_TINY, ETextAlignment::CENTER, Colors::WHITE, getName(), 71);
+	// 玩家行上的字色（大厅布局 "optionsTab"."textColor"；宣纸行底要墨字）
+	subtitle = std::make_shared<CLabel>(24, 39, FONT_TINY, ETextAlignment::CENTER, WidgetLayout::color(lobbyLayout()["optionsTab"]["textColor"], Colors::WHITE), getName(), 71);
 
 	pos = image->pos;
 
@@ -1057,16 +1059,21 @@ OptionsTab::PlayerOptionsEntry::PlayerOptionsEntry(const PlayerSettings & S, con
 	}};
 
 	background = std::make_shared<CPicture>(ImagePath::builtin(bgs[s->color]), 0, 0);
+	const ColorRGBA textColor = WidgetLayout::color(lobbyLayout()["optionsTab"]["textColor"], Colors::WHITE);
 	if(s->isControlledByAI() || GAME->server().isGuest())
-		labelPlayerName = std::make_shared<CLabel>(55, 10, EFonts::FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, name, 95);
+		labelPlayerName = std::make_shared<CLabel>(55, 10, EFonts::FONT_SMALL, ETextAlignment::CENTER, textColor, name, 95);
 	else
+	{
 		labelPlayerNameEdit = std::make_shared<CTextInputWithConfirm>(Rect(6, 3, 95, 15), EFonts::FONT_SMALL, ETextAlignment::CENTER, name, false, [this](){ updateName(); });
+		if(!lobbyLayout()["optionsTab"]["textColor"].isNull())
+			labelPlayerNameEdit->setColor(textColor);
+	}
 
-	labelWhoCanPlay = std::make_shared<CMultiLineLabel>(Rect(6, 21, 45, 26), EFonts::FONT_TINY, ETextAlignment::CENTER, Colors::WHITE, GAME->translator().translate("core.arraytxt", 206 + whoCanPlay));
+	labelWhoCanPlay = std::make_shared<CMultiLineLabel>(Rect(6, 21, 45, 26), EFonts::FONT_TINY, ETextAlignment::CENTER, textColor, GAME->translator().translate("core.arraytxt", 206 + whoCanPlay));
 
 	auto hasHandicap = [this](){ return s->handicap.startBonus.empty() && s->handicap.percentIncome == 100 && s->handicap.percentGrowth == 100; };
 	std::string labelHandicapText = hasHandicap() ? LIBRARY->generaltexth->translate("core.arraytxt.210") : MetaString::createFromTextID("vcmi.lobby.handicap").toString(&GAME->translator());
-	labelHandicap = std::make_shared<CMultiLineLabel>(Rect(55, 23, 46, 24), EFonts::FONT_TINY, ETextAlignment::CENTER, Colors::WHITE, labelHandicapText);
+	labelHandicap = std::make_shared<CMultiLineLabel>(Rect(55, 23, 46, 24), EFonts::FONT_TINY, ETextAlignment::CENTER, textColor, labelHandicapText);
 	handicap = std::make_shared<LRClickableArea>(Rect(53, 23, 50, 24), [](){
 		if(!GAME->server().isHost())
 			return;

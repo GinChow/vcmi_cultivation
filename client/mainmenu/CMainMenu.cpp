@@ -110,6 +110,16 @@ void CMenuScreen::buildMenu()
 	tabs = std::make_shared<CTabbedInt>(std::bind(&CMenuScreen::createTab, this, _1));
 	if(config["video"].isNull())
 		tabs->setRedrawParent(true);
+
+	// 被别的窗口盖住时的压暗图：不作为子控件（平时不画），铺满菜单窗口
+	coveredOverlay.reset();
+	if(config["covered"]["overlay"].isString())
+	{
+		coveredOverlay = std::make_shared<CPicture>(ImagePath::fromJson(config["covered"]["overlay"]), Point(0, 0));
+		removeChild(coveredOverlay.get());
+		coveredOverlay->scaleTo(Point(pos.w, pos.h));
+		coveredOverlay->moveTo(pos.topLeft());
+	}
 }
 
 void CMenuScreen::onScreenResize()
@@ -144,6 +154,19 @@ std::shared_ptr<CIntObject> CMenuScreen::createTab(size_t index)
 void CMenuScreen::show(Canvas & to)
 {
 	// TODO: avoid excessive redraws
+	showAll(to);
+}
+
+void CMenuScreen::showAll(Canvas & to)
+{
+	// 大厅、征途选择、英名录等 800×600 窗口叠在铺满全屏的菜单上时，四周露出来的只应是压暗的画，
+	// 不能露出半截菜单按钮和题签
+	if(coveredOverlay && background && ENGINE->windows().isCoveredByWindow(this))
+	{
+		background->showAll(to);
+		coveredOverlay->showAll(to);
+		return;
+	}
 	CIntObject::showAll(to);
 }
 

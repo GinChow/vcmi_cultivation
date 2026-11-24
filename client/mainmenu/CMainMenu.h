@@ -45,6 +45,8 @@ class CMenuScreen : public CWindowObject
 
 	std::shared_ptr<VideoWidget> videoPlayer;
 	std::vector<std::shared_ptr<CPicture>> images;
+	/// 配置 "covered"：被大厅、征途等窗口盖住时只画背景再叠这张压暗图，不画菜单项和装饰图（为空时保持原版）
+	std::shared_ptr<CPicture> coveredOverlay;
 
 	std::shared_ptr<CIntObject> createTab(size_t index);
 	void buildMenu();
@@ -57,6 +59,7 @@ public:
 	void activate() override;
 	void onScreenResize() override;
 	void show(Canvas & to) override;
+	void showAll(Canvas & to) override;
 	void keyPressed(EShortcut key) override;
 
 	void switchToTab(size_t index);

@@ -11,6 +11,10 @@
 
 #include "../mainmenu/CMainMenu.h"
 
+VCMI_LIB_NAMESPACE_BEGIN
+class JsonNode;
+VCMI_LIB_NAMESPACE_END
+
 class CMapInfo;
 struct StartInfo;
 struct PlayerInfo;
@@ -37,6 +41,10 @@ class CLabelGroup;
 class TransparentFilledRectangle;
 class FilledTexturePlayerColored;
 class LRClickableArea;
+
+/// 大厅布局（模组换皮用）：config/widgets/lobby.json，没有这个文件时返回空节点，大厅保持原版排布。
+/// 只读一次；字段见各处 WidgetLayout 调用的默认值（信息卡位置与字色、各按钮位置与图、场景列表字色与滑条等）。
+const JsonNode & lobbyLayout();
 
 class ISelectionScreenInfo
 {
