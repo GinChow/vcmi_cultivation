@@ -21,6 +21,22 @@
 #include "../../lib/ResourceSet.h"
 #include "../../lib/CCreatureHandler.h"
 #include "CreaturePurchaseCard.h"
+#include "CMessage.h"
+#include "../widgets/Images.h"
+#include "../widgets/WidgetLayout.h"
+#include "../../lib/json/JsonNode.h"
+
+/// 快速招募的布局（townWindows.json 的 "quickRecruit"）："scroll": true 时用信息弹窗的卷轴边框和底纹（infoWindow.json），
+/// 不画原版玩家色金边；"buy"、"cancel"、"max" 换按钮图；"colors" 换卡片上的字色；"costTextColor" 价格字色；"sliderSkin" 卡片滑条
+const JsonNode & quickRecruitLayout()
+{
+	return WidgetLayout::cached("config/widgets/townWindows.json")["quickRecruit"];
+}
+
+static bool useScrollStyle()
+{
+	return quickRecruitLayout()["scroll"].Bool() && CMessage::infoWindowStyle().custom;
+}
 
 
 void QuickRecruitmentWindow::setButtons()
@@ -34,18 +50,24 @@ void QuickRecruitmentWindow::setCancelButton()
 {
 	cancelButton = std::make_shared<CButton>(Point((pos.w / 2) + 48, 418), AnimationPath::builtin("ICN6432.DEF"), CButton::tooltip(), [&](){ close(); }, EShortcut::GLOBAL_CANCEL);
 	cancelButton->setImageOrder(0, 1, 2, 3);
+	if(quickRecruitLayout()["cancel"]["image"].isString())
+		cancelButton->setImage(AnimationPath::fromJson(quickRecruitLayout()["cancel"]["image"]));
 }
 
 void QuickRecruitmentWindow::setBuyButton()
 {
 	buyButton = std::make_shared<CButton>(Point((pos.w / 2) - 32, 418), AnimationPath::builtin("IBY6432.DEF"), CButton::tooltip(), [&](){ purchaseUnits(); }, EShortcut::GLOBAL_ACCEPT);
 	buyButton->setImageOrder(0, 1, 2, 3);
+	if(quickRecruitLayout()["buy"]["image"].isString())
+		buyButton->setImage(AnimationPath::fromJson(quickRecruitLayout()["buy"]["image"]));
 }
 
 void QuickRecruitmentWindow::setMaxButton()
 {
 	maxButton = std::make_shared<CButton>(Point((pos.w/2)-112, 418), AnimationPath::builtin("IRCBTNS.DEF"), CButton::tooltip(), [&](){ maxAllCards(cards); }, EShortcut::RECRUITMENT_MAX);
 	maxButton->setImageOrder(0, 1, 2, 3);
+	if(quickRecruitLayout()["max"]["image"].isString())
+		maxButton->setImage(AnimationPath::fromJson(quickRecruitLayout()["max"]["image"]));
 }
 
 void QuickRecruitmentWindow::setCreaturePurchaseCards()
@@ -61,6 +83,7 @@ void QuickRecruitmentWindow::setCreaturePurchaseCards()
 		}
 	}
 	totalCost = std::make_shared<CreatureCostBox>(Rect((this->pos.w/2)-45, position.y+260, 97, 74), "");
+	totalCost->setTextColor(WidgetLayout::color(quickRecruitLayout()["costTextColor"], Colors::WHITE));
 }
 
 void QuickRecruitmentWindow::initWindow(Rect startupPosition)
@@ -75,7 +98,7 @@ void QuickRecruitmentWindow::initWindow(Rect startupPosition)
 		pos.w += 108 * (creaturesAmount - 3);
 		pos.x -= 55 * (creaturesAmount - 3);
 	}
-	backgroundTexture = std::make_shared<CFilledTexture>(ImagePath::builtin("DIBOXBCK.pcx"), Rect(0, 0, pos.w, pos.h));
+	backgroundTexture = std::make_shared<CFilledTexture>(useScrollStyle() ? CMessage::infoWindowStyle().background : ImagePath::builtin("DIBOXBCK.pcx"), Rect(0, 0, pos.w, pos.h));
 	costBackground = std::make_shared<CPicture>(ImagePath::builtin("QuickRecruitmentWindow/costBackground.png"), pos.w/2-113, 335);
 }
 
@@ -167,7 +190,7 @@ void QuickRecruitmentWindow::updateAllSliders()
 }
 
 QuickRecruitmentWindow::QuickRecruitmentWindow(const CGTownInstance * townd, Rect startupPosition)
-	: CWindowObject(PLAYER_COLORED | BORDERED),
+	: CWindowObject(useScrollStyle() ? SHADOW_DISABLED : (PLAYER_COLORED | BORDERED)),
 	town(townd)
 {
 	OBJECT_CONSTRUCTION;
@@ -178,4 +201,11 @@ QuickRecruitmentWindow::QuickRecruitmentWindow(const CGTownInstance * townd, Rec
 	maxAllCards(cards);
 
 	center();
+}
+
+void QuickRecruitmentWindow::showAll(Canvas & to)
+{
+	CWindowObject::showAll(to);
+	if(useScrollStyle())
+		CMessage::drawInfoWindowBorder(GAME->interface()->playerID, to, pos.x, pos.y, pos.w, pos.h);
 }

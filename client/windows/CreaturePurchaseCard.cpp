@@ -24,6 +24,10 @@
 #include "../widgets/CreatureCostBox.h"
 
 #include "../../lib/CCreatureHandler.h"
+#include "../widgets/WidgetLayout.h"
+#include "../../lib/json/JsonNode.h"
+
+const JsonNode & quickRecruitLayout(); // QuickRecruitmentWindow.cpp
 
 void CreaturePurchaseCard::initButtons()
 {
@@ -61,8 +65,9 @@ void CreaturePurchaseCard::switchCreatureLevel()
 
 void CreaturePurchaseCard::initAmountInfo()
 {
-	availableAmount = std::make_shared<CLabel>(pos.x + 25, pos.y + 146, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW);
-	purchaseAmount = std::make_shared<CLabel>(pos.x + 76, pos.y + 146, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE);
+	const JsonNode & colors = quickRecruitLayout()["colors"];
+	availableAmount = std::make_shared<CLabel>(pos.x + 25, pos.y + 146, FONT_SMALL, ETextAlignment::CENTER, WidgetLayout::remapColor(colors, Colors::YELLOW));
+	purchaseAmount = std::make_shared<CLabel>(pos.x + 76, pos.y + 146, FONT_SMALL, ETextAlignment::CENTER, WidgetLayout::remapColor(colors, Colors::WHITE));
 	updateAmountInfo(0);
 }
 
@@ -75,11 +80,13 @@ void CreaturePurchaseCard::updateAmountInfo(int value)
 void CreaturePurchaseCard::initSlider()
 {
 	slider = std::make_shared<CSlider>(Point(pos.x, pos.y + 158), 102, std::bind(&CreaturePurchaseCard::sliderMoved, this, _1), 0, maxAmount, 0, Orientation::HORIZONTAL);
+	WidgetLayout::applySliderSkin(slider, quickRecruitLayout()["sliderSkin"]);
 }
 
 void CreaturePurchaseCard::initCostBox()
 {
 	cost = std::make_shared<CreatureCostBox>(Rect(pos.x+2, pos.y + 194, 97, 74), "");
+	cost->setTextColor(WidgetLayout::color(quickRecruitLayout()["costTextColor"], Colors::WHITE));
 	cost->createItems(creatureOnTheCard->getFullRecruitCost());
 }
 

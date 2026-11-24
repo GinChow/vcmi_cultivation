@@ -24,6 +24,7 @@ public:
 	int getAvailableCreatures();
 	void updateAllSliders();
 	QuickRecruitmentWindow(const CGTownInstance * townd, Rect startupPosition);
+	void showAll(Canvas & to) override;
 
 private:
 	void initWindow(Rect startupPosition);
