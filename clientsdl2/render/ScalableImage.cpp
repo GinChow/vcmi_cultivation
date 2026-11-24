@@ -520,6 +520,16 @@ std::shared_ptr<const ISharedImage> ScalableImageShared::loadOrGenerateImage(EIm
 		}
 	}
 
+	// 真彩色图没有调色板，没法从本体里分出影子、玩家旗、选中描边：哪个倍数都没有这一层的文件（-SHADOW、-OVERLAY），
+	// 就是没有这一层。不能退回去放大本体，否则本体会被当成影子再画一遍，或整张按占领方颜色染色
+	const bool separateLayerOnly =
+		mode == EImageBlitMode::ONLY_SHADOW_HIDE_FLAG_COLOR ||
+		mode == EImageBlitMode::ONLY_SHADOW_HIDE_SELECTION ||
+		mode == EImageBlitMode::ONLY_FLAG_COLOR ||
+		mode == EImageBlitMode::ONLY_SELECTION;
+	if (separateLayerOnly && !getPalette())
+		return nullptr;
+
 	ScalableImageParameters parameters(getPalette(), mode);
 	// if all else fails - use base (presumably, indexed) image and convert it to desired form
 	if (color != PlayerColor::CANNOT_DETERMINE && parameters.palette)

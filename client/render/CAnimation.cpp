@@ -211,6 +211,12 @@ void CAnimation::createFlippedGroup(const size_t sourceGroup, const size_t targe
 	}
 }
 
+/// 选取多层精灵其中一层（本体、影子、玩家旗、选中描边）的模式；OPAQUE、COLORKEY、SIMPLE 只说明像素格式，不选层
+static bool selectsSpriteLayer(EImageBlitMode mode)
+{
+	return mode != EImageBlitMode::OPAQUE && mode != EImageBlitMode::COLORKEY && mode != EImageBlitMode::SIMPLE;
+}
+
 ImageLocator CAnimation::getImageLocator(size_t frame, size_t group) const
 {
 	try
@@ -218,7 +224,15 @@ ImageLocator CAnimation::getImageLocator(size_t frame, size_t group) const
 		const ImageLocator & locator = source.at(group).at(frame);
 
 		if (!locator.empty())
-			return locator;
+		{
+			// 动画布局按文件路径缓存（RenderHandler::getAnimationLayout），模组 JSON 帧的定位里记的是第一次加载这个动画时的模式。
+			// 大地图物件会按本体、影子、玩家旗三种模式分别加载同一个动画，这里要换成本次请求的层，
+			// 否则影子层、旗帜层拿到的都是本体：真彩色图的 -SHADOW、-OVERLAY 从不读取，被占领的建筑不显示旗帜
+			ImageLocator result = locator;
+			if(selectsSpriteLayer(mode))
+				result.layer = mode;
+			return result;
+		}
 	}
 	catch (std::out_of_range &)
 	{
