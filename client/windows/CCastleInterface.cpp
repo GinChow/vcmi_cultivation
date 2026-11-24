@@ -8,6 +8,7 @@
  *
  */
 #include "StdInc.h"
+#include "../../lib/json/JsonNode.h"
 #include "CCastleInterface.h"
 
 #include "CHeroWindow.h"
@@ -33,6 +34,7 @@
 #include "../widgets/CTextInput.h"
 #include "../widgets/Buttons.h"
 #include "../widgets/TextControls.h"
+#include "../widgets/WidgetLayout.h"
 #include "../widgets/RadialMenu.h"
 #include "../widgets/CExchangeController.h"
 #include "render/Canvas.h"
@@ -152,6 +154,17 @@ static void upgradeAllCreatures(const CArmedInstance *obj, const UpgradableSlots
 		for(auto & upgradeInfo : upgradableSlots.upgradeInfos)
 			GAME->interface()->cb->upgradeCreature(obj, upgradeInfo.first, upgradeInfo.second.getUpgrade());
 	}, nullptr, resComps);
+}
+
+/// 宗门各窗口的布局（模组换皮用）：config/widgets/townWindows.json，没有时各窗口保持原版
+static const JsonNode & townLayout(const std::string & window)
+{
+	return WidgetLayout::cached("config/widgets/townWindows.json")[window];
+}
+
+static ColorRGBA townColor(const std::string & window, const ColorRGBA & original)
+{
+	return WidgetLayout::remapColor(townLayout(window)["colors"], original);
 }
 
 CSpellResearchDialog::CSpellResearchDialog(const std::string & textToShow, const std::vector<std::shared_ptr<CComponent>> & comps, const CGTownInstance * town, SpellID oldSpell, bool canAfford)
@@ -2397,11 +2410,14 @@ CHallInterface::CBuildingBox::CBuildingBox(int x, int y, const CGTownInstance * 
 		-1, -1, -1, 0, 0, 1, 2, -1, 1, 1, -1, -1
 	};
 
+	const JsonNode & hallLayout = townLayout("hall");
+	if(hallLayout["boxFrame"].isString())
+		frame = std::make_shared<CPicture>(ImagePath::fromJson(hallLayout["boxFrame"]), WidgetLayout::point(hallLayout["boxFrameOffset"], Point(-6, -6)));
 	icon = std::make_shared<CAnimImage>(town->getTown()->clientInfo.buildingsIcons, building->bid.getNum(), 0, 2, 2);
 	header = std::make_shared<CAnimImage>(AnimationPath::builtin("TPTHBAR"), panelIndex[static_cast<int>(state)], 0, 1, 73);
 	if(iconIndex[static_cast<int>(state)] >=0)
 		mark = std::make_shared<CAnimImage>(AnimationPath::builtin("TPTHCHK"), iconIndex[static_cast<int>(state)], 0, 136, 56);
-	name = std::make_shared<CLabel>(78, 81, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, building->getNameTranslated(), 150);
+	name = std::make_shared<CLabel>(78, 81, FONT_SMALL, ETextAlignment::CENTER, townColor("hall", Colors::WHITE), building->getNameTranslated(), 150);
 
 	//todo: add support for all possible states
 	if(state >= EBuildingState::BUILDING_ERROR)
@@ -2439,7 +2455,8 @@ void CHallInterface::CBuildingBox::showPopupWindow(const Point & cursorPosition)
 }
 
 CHallInterface::CHallInterface(const CGTownInstance * Town):
-	CWindowObject(PLAYER_COLORED | BORDERED, Town->getTown()->clientInfo.hallBackground),
+	// 布局可给统一底图（原版每个阵营一张、格子框画在底图里）
+	CWindowObject(WidgetLayout::windowOptions(townLayout("hall"), PLAYER_COLORED | BORDERED), WidgetLayout::image(townLayout("hall")["background"], Town->getTown()->clientInfo.hallBackground)),
 	town(Town)
 {
 	OBJECT_CONSTRUCTION;
@@ -2451,7 +2468,7 @@ CHallInterface::CHallInterface(const CGTownInstance * Town):
 	auto statusbarBackground = std::make_shared<CPicture>(background->getSurface(), barRect, 5, 556);
 	statusbar = CGStatusBar::create(statusbarBackground);
 
-	title = std::make_shared<CLabel>(399, 12, FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE, town->getTown()->buildings.at(BuildingID(town->hallLevel()+BuildingID::VILLAGE_HALL))->getNameTranslated());
+	title = std::make_shared<CLabel>(399, 12, FONT_MEDIUM, ETextAlignment::CENTER, WidgetLayout::color(townLayout("hall")["titleColor"], Colors::WHITE), town->getTown()->buildings.at(BuildingID(town->hallLevel()+BuildingID::VILLAGE_HALL))->getNameTranslated());
 	exit = std::make_shared<CButton>(Point(748, 556), AnimationPath::builtin("TPMAGE1.DEF"), CButton::tooltip(LIBRARY->generaltexth->translate("core.hallinfo.8")), [&](){close();}, EShortcut::GLOBAL_RETURN);
 
 	auto & boxList = town->getTown()->clientInfo.hallSlots;
@@ -2493,7 +2510,7 @@ CHallInterface::CHallInterface(const CGTownInstance * Town):
 }
 
 CBuildWindow::CBuildWindow(const CGTownInstance *Town, const CBuilding * Building, EBuildingState state, bool rightClick):
-	CWindowObject(PLAYER_COLORED | (rightClick ? RCLICK_POPUP : 0), ImagePath::builtin("TPUBUILD")),
+	CWindowObject(WidgetLayout::windowOptions(townLayout("build"), PLAYER_COLORED | (rightClick ? RCLICK_POPUP : 0)), ImagePath::builtin("TPUBUILD")),
 	town(Town),
 	building(Building)
 {
@@ -2511,9 +2528,11 @@ CBuildWindow::CBuildWindow(const CGTownInstance *Town, const CBuilding * Buildin
 	nameString.appendTextID("core.hallinfo.7");
 	nameString.replaceTextID(building->getNameTextID());
 
-	name = std::make_shared<CLabel>(197, 30, FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE, nameString.toString(&GAME->translator()));
-	description = std::make_shared<CTextBox>(building->getDescriptionTranslated(), Rect(33, 135, 329, 67), 0, FONT_MEDIUM, ETextAlignment::CENTER);
-	stateText = std::make_shared<CTextBox>(getTextForState(state), Rect(33, 216, 329, 67), 0, FONT_SMALL, ETextAlignment::CENTER);
+	const JsonNode & buildLayout = townLayout("build");
+	statusbar->setTextColor(WidgetLayout::color(buildLayout["statusColor"], Colors::WHITE));
+	name = std::make_shared<CLabel>(197, 30, FONT_MEDIUM, ETextAlignment::CENTER, WidgetLayout::color(buildLayout["titleColor"], Colors::WHITE), nameString.toString(&GAME->translator()));
+	description = std::make_shared<CTextBox>(building->getDescriptionTranslated(), Rect(33, 135, 329, 67), 0, FONT_MEDIUM, ETextAlignment::CENTER, townColor("build", Colors::WHITE));
+	stateText = std::make_shared<CTextBox>(getTextForState(state), Rect(33, 216, 329, 67), 0, FONT_SMALL, ETextAlignment::CENTER, townColor("build", Colors::WHITE));
 
 	//Create components for all required resources
 	std::vector<std::shared_ptr<CComponent>> components;
@@ -2540,6 +2559,8 @@ CBuildWindow::CBuildWindow(const CGTownInstance *Town, const CBuilding * Buildin
 	}
 
 	cost = std::make_shared<CComponentBox>(components, Rect(25, 300, pos.w - 50, 130));
+	if(!buildLayout["colors"]["white"].isNull())
+		cost->setTextColor(townColor("build", Colors::WHITE));
 
 	if(!rightClick)
 	{	//normal window
@@ -2552,12 +2573,18 @@ CBuildWindow::CBuildWindow(const CGTownInstance *Town, const CBuilding * Buildin
 		tooltipNo.appendTextID("core.genrltxt.596");
 		tooltipNo.replaceTextID(building->getNameTextID());
 
+		// 布局 "buttonBorder": false 时不画金边；"buy"、"cancel" 可换位置和图
+		const bool buttonBorder = buildLayout["buttonBorder"].isNull() || buildLayout["buttonBorder"].Bool();
 		buy = std::make_shared<CButton>(Point(45, 446), AnimationPath::builtin("IBUY30"), CButton::tooltip(tooltipYes.toString(&GAME->translator())), [&](){ buyFunc(); }, EShortcut::GLOBAL_ACCEPT);
-		buy->setBorderColor(Colors::METALLIC_GOLD);
+		if(buttonBorder)
+			buy->setBorderColor(Colors::METALLIC_GOLD);
 		buy->block(state != EBuildingState::ALLOWED || GAME->interface()->playerID != town->tempOwner || !GAME->interface()->makingTurn);
 
 		cancel = std::make_shared<CButton>(Point(290, 445), AnimationPath::builtin("ICANCEL"), CButton::tooltip(tooltipNo.toString(&GAME->translator())), [&](){ close();}, EShortcut::GLOBAL_CANCEL);
-		cancel->setBorderColor(Colors::METALLIC_GOLD);
+		if(buttonBorder)
+			cancel->setBorderColor(Colors::METALLIC_GOLD);
+		WidgetLayout::applyButton(buy, buildLayout["buy"]);
+		WidgetLayout::applyButton(cancel, buildLayout["cancel"]);
 	}
 }
 
@@ -2636,8 +2663,8 @@ void LabeledValue::init(std::string nameText, std::string descr, int min, int ma
 		if(min != max)
 			valueText += '-' + std::to_string(max);
 	}
-	name = std::make_shared<CLabel>(3, 0, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, nameText);
-	value = std::make_shared<CLabel>(pos.w-3, pos.h-2, FONT_SMALL, ETextAlignment::BOTTOMRIGHT, Colors::WHITE, valueText);
+	name = std::make_shared<CLabel>(3, 0, FONT_SMALL, ETextAlignment::TOPLEFT, townColor("fort", Colors::WHITE), nameText);
+	value = std::make_shared<CLabel>(pos.w-3, pos.h-2, FONT_SMALL, ETextAlignment::BOTTOMRIGHT, townColor("fort", Colors::WHITE), valueText);
 }
 
 void LabeledValue::hover(bool on)
@@ -2653,7 +2680,7 @@ void LabeledValue::hover(bool on)
 }
 
 CFortScreen::CFortScreen(const CGTownInstance * town):
-	CWindowObject(PLAYER_COLORED | BORDERED, getBgName(town))
+	CWindowObject(WidgetLayout::windowOptions(townLayout("fort"), PLAYER_COLORED | BORDERED), getBgName(town))
 {
 	OBJECT_CONSTRUCTION;
 	ui32 fortSize = static_cast<ui32>(town->creatures.size());
@@ -2662,7 +2689,7 @@ CFortScreen::CFortScreen(const CGTownInstance * town):
 	fortSize = std::min(fortSize, static_cast<ui32>(GameConstants::CREATURES_PER_TOWN)); // for 8 creatures + portal of summoning
 
 	const auto & fortBuilding = town->getTown()->buildings.at(BuildingID(town->fortLevel()+6));
-	title = std::make_shared<CLabel>(400, 12, FONT_BIG, ETextAlignment::CENTER, Colors::WHITE, fortBuilding->getNameTranslated());
+	title = std::make_shared<CLabel>(400, 12, FONT_BIG, ETextAlignment::CENTER, WidgetLayout::color(townLayout("fort")["titleColor"], Colors::WHITE), fortBuilding->getNameTranslated());
 
 	MetaString exitText = MetaString::createFromTextID("core.castinfo.6"); // Exit %s
 	exitText.replaceTextID(fortBuilding->getNameTextID());
@@ -2757,13 +2784,13 @@ CFortScreen::RecruitArea::RecruitArea(int posX, int posY, const CGTownInstance *
 	if(getMyBuilding() != nullptr)
 	{
 		buildingIcon = std::make_shared<CAnimImage>(town->getTown()->clientInfo.buildingsIcons, getMyBuilding()->bid, 0, 4, 21);
-		buildingName = std::make_shared<CLabel>(78, 101, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, getMyBuilding()->getNameTranslated(), 152);
+		buildingName = std::make_shared<CLabel>(78, 101, FONT_SMALL, ETextAlignment::CENTER, townColor("fort", Colors::WHITE), getMyBuilding()->getNameTranslated(), 152);
 
 		if(town->hasBuilt(getMyBuilding()->bid))
 		{
 			ui32 available = town->creatures[level].first;
 			std::string availableText = LIBRARY->generaltexth->allTexts[217]+ std::to_string(available);
-			availableCount = std::make_shared<CLabel>(78, 119, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, availableText);
+			availableCount = std::make_shared<CLabel>(78, 119, FONT_SMALL, ETextAlignment::CENTER, townColor("fort", Colors::WHITE), availableText);
 		}
 	}
 
@@ -2773,7 +2800,7 @@ CFortScreen::RecruitArea::RecruitArea(int posX, int posY, const CGTownInstance *
 		hoverTextMessage.replaceNamePlural(getMyCreature()->getId());
 		hoverText = hoverTextMessage.toString(&GAME->translator());
 		new CCreaturePic(159, 4, getMyCreature(), false);
-		new CLabel(78,  11, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, getMyCreature()->getNamePluralTranslated(), 152);
+		new CLabel(78,  11, FONT_SMALL, ETextAlignment::CENTER, townColor("fort", Colors::WHITE), getMyCreature()->getNamePluralTranslated(), 152);
 
 		Rect sizes(287, 4, 96, 18);
 		values.push_back(std::make_shared<LabeledValue>(sizes, LIBRARY->generaltexth->allTexts[190], LIBRARY->generaltexth->translate("core.castinfo.0"), getMyCreature()->getAttack(false)));
@@ -2849,7 +2876,7 @@ void CFortScreen::RecruitArea::showPopupWindow(const Point & cursorPosition)
 }
 
 CMageGuildScreen::CMageGuildScreen(CCastleInterface * owner, const ImagePath & imagename)
-	: CWindowObject(BORDERED, imagename), townId(owner->town->id)
+	: CWindowObject(WidgetLayout::windowOptions(townLayout("mageGuild"), BORDERED), WidgetLayout::image(townLayout("mageGuild")["background"], imagename)), townId(owner->town->id)
 {
 	OBJECT_CONSTRUCTION;
 
@@ -2860,7 +2887,9 @@ CMageGuildScreen::CMageGuildScreen(CCastleInterface * owner, const ImagePath & i
 	auto windowPosition = owner->town->getTown()->clientInfo.guildWindowPosition;
 	if(windowPosition == Point(0, 0)) // TODO: remove legacy for compatibility
 		windowPosition = Point(332, 76);
-	window = std::make_shared<CPicture>(selectedGuildWindow, windowPosition.x, windowPosition.y);
+	// 布局 "hideWindow": true 时不画阵营的行会小图（统一底图自带楼阁）
+	if(!townLayout("mageGuild")["hideWindow"].Bool())
+		window = std::make_shared<CPicture>(selectedGuildWindow, windowPosition.x, windowPosition.y);
 
 	resdatabar = std::make_shared<CMinorResDataBar>();
 	resdatabar->moveBy(pos.topLeft(), true);
@@ -2888,6 +2917,18 @@ void CMageGuildScreen::updateSpells(ObjectInstanceID tID)
 	const CGTownInstance * town = GAME->interface()->cb->getTown(townId);
 
 	auto positions = town->getTown()->clientInfo.guildSpellPositions;
+	// 布局 "spellPositions"：[[{x,y}, ...] 每层一组]，给了就代替阵营配置（统一底图上功法格的位置）
+	const JsonNode & layoutPositions = townLayout("mageGuild")["spellPositions"];
+	if(layoutPositions.isVector())
+	{
+		positions.clear();
+		for(const auto & row : layoutPositions.Vector())
+		{
+			positions.emplace_back();
+			for(const auto & cell : row.Vector())
+				positions.back().push_back(WidgetLayout::point(cell, Point()));
+		}
+	}
 	if(!positions.size()) // TODO: remove legacy for compatibility
 		positions =
 		{

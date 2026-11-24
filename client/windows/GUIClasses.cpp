@@ -8,6 +8,7 @@
  *
  */
 #include "StdInc.h"
+#include "../../lib/json/JsonNode.h"
 #include "GUIClasses.h"
 
 #include "CCastleInterface.h"
@@ -34,6 +35,7 @@
 #include "../widgets/CTextInput.h"
 #include "../widgets/Buttons.h"
 #include "../widgets/Slider.h"
+#include "../widgets/WidgetLayout.h"
 #include "../widgets/TextControls.h"
 #include "../widgets/ObjectLists.h"
 #include "../widgets/VideoWidget.h"
@@ -72,6 +74,17 @@
 #include "../../lib/CSoundBase.h"
 #include "../../lib/constants/EntityIdentifiers.h"
 
+
+/// 宗门窗口布局（与 CCastleInterface.cpp 同一份 townWindows.json）
+static const JsonNode & townLayout(const std::string & window)
+{
+	return WidgetLayout::cached("config/widgets/townWindows.json")[window];
+}
+
+static ColorRGBA townColor(const std::string & window, const ColorRGBA & original)
+{
+	return WidgetLayout::remapColor(townLayout(window)["colors"], original);
+}
 
 ImagePath CRecruitmentWindow::getRecruitmentBackground(const CGDwelling * dwelling, int level)
 {
@@ -147,9 +160,9 @@ void CRecruitmentWindow::CCreatureCard::showAll(Canvas & to)
 {
 	CIntObject::showAll(to);
 	if(selected)
-		to.drawBorder(pos, Colors::RED);
+		to.drawBorder(pos, townColor("recruit", Colors::RED));
 	else
-		to.drawBorder(pos, Colors::YELLOW);
+		to.drawBorder(pos, townColor("recruit", Colors::YELLOW));
 }
 
 void CRecruitmentWindow::select(std::shared_ptr<CCreatureCard> card)
@@ -263,6 +276,9 @@ void CRecruitmentWindow::buy()
 void CRecruitmentWindow::showAll(Canvas & to)
 {
 	CWindowObject::showAll(to);
+	// 布局 "frames": false 时不画数值框和按钮金边（底图自带格子）
+	if(!townLayout("recruit")["frames"].isNull() && !townLayout("recruit")["frames"].Bool())
+		return;
 	const int layoutOffsetX = (pos.w - 484) / 2;
 
 	Rect(172 + layoutOffsetX, 222, 67, 42) + pos.topLeft();
@@ -282,7 +298,7 @@ void CRecruitmentWindow::showAll(Canvas & to)
 }
 
 CRecruitmentWindow::CRecruitmentWindow(const CGDwelling * Dwelling, int Level, const CArmedInstance * Dst, const std::function<void(CreatureID,int)> & Recruit, const std::function<void()> & onClose, int y_offset):
-	CWindowObject(PLAYER_COLORED_BORDERED_STATUSBAR, getRecruitmentBackground(Dwelling, Level)),
+	CWindowObject(WidgetLayout::windowOptions(townLayout("recruit"), PLAYER_COLORED_BORDERED_STATUSBAR), getRecruitmentBackground(Dwelling, Level)),
 	onRecruit(Recruit),
 	onClose(onClose),
 	level(Level),
@@ -295,23 +311,32 @@ CRecruitmentWindow::CRecruitmentWindow(const CGDwelling * Dwelling, int Level, c
 
 	OBJECT_CONSTRUCTION;
 
+	const JsonNode & layout = townLayout("recruit");
 	statusbar = CGStatusBar::create(std::make_shared<CPicture>(background->getSurface(), Rect(8, pos.h - 26, pos.w - 16, 19), 8, pos.h - 26));
+	statusbar->setTextColor(WidgetLayout::color(layout["statusColor"], Colors::WHITE));
 
 	slider = std::make_shared<CSlider>(Point(173 + layoutOffsetX, 280), 138, std::bind(&CRecruitmentWindow::sliderMoved, this, _1), 0, 0, 0, Orientation::HORIZONTAL);
+	WidgetLayout::applySliderSkin(slider, layout["sliderSkin"]);
 
 	maxButton = std::make_shared<CButton>(Point(134 + layoutOffsetX, 313), AnimationPath::builtin("IRCBTNS.DEF"), LIBRARY->generaltexth->zelp[553], std::bind(&CSlider::scrollToMax, slider), EShortcut::RECRUITMENT_MAX);
 	buyButton = std::make_shared<CButton>(Point(212 + layoutOffsetX, 313), AnimationPath::builtin("IBY6432.DEF"), LIBRARY->generaltexth->zelp[554], std::bind(&CRecruitmentWindow::buy, this), EShortcut::GLOBAL_ACCEPT);
 	cancelButton = std::make_shared<CButton>(Point(290 + layoutOffsetX, 313), AnimationPath::builtin("ICN6432.DEF"), LIBRARY->generaltexth->zelp[555], std::bind(&CRecruitmentWindow::close, this), EShortcut::GLOBAL_CANCEL);
 
-	title = std::make_shared<CLabel>(243 + layoutOffsetX, 32, FONT_BIG, ETextAlignment::CENTER, Colors::YELLOW);
-	availableValue = std::make_shared<CLabel>(204 + layoutOffsetX, 253, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE);
-	toRecruitValue = std::make_shared<CLabel>(279 + layoutOffsetX, 253, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE);
+	title = std::make_shared<CLabel>(243 + layoutOffsetX, 32, FONT_BIG, ETextAlignment::CENTER, townColor("recruit", Colors::YELLOW));
+	availableValue = std::make_shared<CLabel>(204 + layoutOffsetX, 253, FONT_SMALL, ETextAlignment::CENTER, townColor("recruit", Colors::WHITE));
+	toRecruitValue = std::make_shared<CLabel>(279 + layoutOffsetX, 253, FONT_SMALL, ETextAlignment::CENTER, townColor("recruit", Colors::WHITE));
 
 	costPerTroopValue = std::make_shared<CreatureCostBox>(Rect(64 + layoutOffsetX, 222, 97, 74), LIBRARY->generaltexth->allTexts[346]);
 	totalCostValue = std::make_shared<CreatureCostBox>(Rect(323 + layoutOffsetX, 222, 97, 74), LIBRARY->generaltexth->allTexts[466]);
 
-	availableTitle = std::make_shared<CLabel>(204 + layoutOffsetX, 233, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[465]);
-	toRecruitTitle = std::make_shared<CLabel>(279 + layoutOffsetX, 233, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[16]);
+	availableTitle = std::make_shared<CLabel>(204 + layoutOffsetX, 233, FONT_SMALL, ETextAlignment::CENTER, townColor("recruit", Colors::WHITE), LIBRARY->generaltexth->allTexts[465]);
+	toRecruitTitle = std::make_shared<CLabel>(279 + layoutOffsetX, 233, FONT_SMALL, ETextAlignment::CENTER, townColor("recruit", Colors::WHITE), LIBRARY->generaltexth->allTexts[16]);
+
+	WidgetLayout::applyButton(maxButton, layout["max"]);
+	WidgetLayout::applyButton(buyButton, layout["buy"]);
+	WidgetLayout::applyButton(cancelButton, layout["cancel"]);
+	costPerTroopValue->setTextColor(townColor("recruit", Colors::WHITE));
+	totalCostValue->setTextColor(townColor("recruit", Colors::WHITE));
 
 	availableCreaturesChanged();
 }
@@ -675,7 +700,7 @@ void CLevelWindow::close()
 }
 
 CTavernWindow::CTavernWindow(const CGObjectInstance * TavernObj, const std::function<void()> & onWindowClosed)
-	: CWindowObject(PLAYER_COLORED, ImagePath::builtin("TPTAVERN")),
+	: CWindowObject(WidgetLayout::windowOptions(townLayout("tavern"), PLAYER_COLORED), ImagePath::builtin("TPTAVERN")),
 	onWindowClosed(onWindowClosed),
 	tavernObj(TavernObj),
 	heroToInvite(nullptr)
@@ -697,17 +722,22 @@ CTavernWindow::CTavernWindow(const CGObjectInstance * TavernObj, const std::func
 	h1 = std::make_shared<HeroPortrait>(selected, 0, 72, 299, h[0], [this]() { if(!recruit->isBlocked()) recruitb(); });
 	h2 = std::make_shared<HeroPortrait>(selected, 1, 162, 299, h[1], [this]() { if(!recruit->isBlocked()) recruitb(); });
 
-	title = std::make_shared<CLabel>(197, 32, FONT_BIG, ETextAlignment::CENTER, Colors::YELLOW, LIBRARY->generaltexth->translate("core.jktext.37"));
-	cost = std::make_shared<CLabel>(320, 328, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, std::to_string(GameConstants::HERO_GOLD_COST));
-	heroDescription = std::make_shared<CTextBox>("", Rect(30, 373, 233, 35), 0, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE);
-	heroesForHire = std::make_shared<CLabel>(145, 283, FONT_BIG, ETextAlignment::CENTER, Colors::YELLOW, LIBRARY->generaltexth->translate("core.jktext.38"));
+	title = std::make_shared<CLabel>(197, 32, FONT_BIG, ETextAlignment::CENTER, townColor("tavern", Colors::YELLOW), LIBRARY->generaltexth->translate("core.jktext.37"));
+	cost = std::make_shared<CLabel>(320, 328, FONT_SMALL, ETextAlignment::CENTER, townColor("tavern", Colors::WHITE), std::to_string(GameConstants::HERO_GOLD_COST));
+	heroDescription = std::make_shared<CTextBox>("", Rect(30, 373, 233, 35), 0, FONT_SMALL, ETextAlignment::CENTER, townColor("tavern", Colors::WHITE));
+	heroesForHire = std::make_shared<CLabel>(145, 283, FONT_BIG, ETextAlignment::CENTER, townColor("tavern", Colors::YELLOW), LIBRARY->generaltexth->translate("core.jktext.38"));
 
-	rumor = std::make_shared<CTextBox>(GAME->interface()->cb->getTavernRumor(tavernObj, &GAME->translator()), Rect(32, 188, 330, 66), 0, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE);
+	rumor = std::make_shared<CTextBox>(GAME->interface()->cb->getTavernRumor(tavernObj, &GAME->translator()), Rect(32, 188, 330, 66), 0, FONT_SMALL, ETextAlignment::CENTER, townColor("tavern", Colors::WHITE));
 
 	statusbar = CGStatusBar::create(std::make_shared<CPicture>(background->getSurface(), Rect(8, pos.h - 26, pos.w - 16, 19), 8, pos.h - 26));
 	cancel = std::make_shared<CButton>(Point(310, 428), AnimationPath::builtin("ICANCEL.DEF"), CButton::tooltip(LIBRARY->generaltexth->translate("core.tvrninfo.7")), std::bind(&CTavernWindow::close, this), EShortcut::GLOBAL_CANCEL);
 	recruit = std::make_shared<CButton>(Point(272, 355), AnimationPath::builtin("TPTAV01.DEF"), CButton::tooltip(), std::bind(&CTavernWindow::recruitb, this), EShortcut::GLOBAL_ACCEPT);
 	thiefGuild = std::make_shared<CButton>(Point(22, 428), AnimationPath::builtin("TPTAV02.DEF"), CButton::tooltip(LIBRARY->generaltexth->translate("core.tvrninfo.5")), std::bind(&CTavernWindow::thievesguildb, this), EShortcut::ADVENTURE_THIEVES_GUILD);
+	const JsonNode & tavernLayout = townLayout("tavern");
+	statusbar->setTextColor(WidgetLayout::color(tavernLayout["statusColor"], Colors::WHITE));
+	WidgetLayout::applyButton(cancel, tavernLayout["cancel"]);
+	WidgetLayout::applyButton(recruit, tavernLayout["recruit"]);
+	WidgetLayout::applyButton(thiefGuild, tavernLayout["thievesGuild"]);
 
 	if(!GAME->interface()->makingTurn)
 	{
@@ -747,7 +777,10 @@ CTavernWindow::CTavernWindow(const CGObjectInstance * TavernObj, const std::func
 		if(selected == -1)
 			recruit->block(true);
 	}
-	if(GAME->interface()->castleInt)
+	// 布局 "video": false 时不放酒馆视频（底图自带客栈画）
+	if(!tavernLayout["video"].isNull() && !tavernLayout["video"].Bool())
+		;
+	else if(GAME->interface()->castleInt)
 		videoPlayer = std::make_shared<VideoWidget>(Point(70, 56), GAME->interface()->castleInt->town->getTown()->clientInfo.tavernVideo, false);
 	else if(const auto * townObj = dynamic_cast<const CGTownInstance *>(TavernObj))
 		videoPlayer = std::make_shared<VideoWidget>(Point(70, 56), townObj->getTown()->clientInfo.tavernVideo, false);
@@ -906,7 +939,7 @@ void CTavernWindow::show(Canvas & to)
 
 		}
 
-		to.drawBorder(Rect::createAround(sel->pos, 2), Colors::BRIGHT_YELLOW, 2);
+		to.drawBorder(Rect::createAround(sel->pos, 2), townColor("tavern", Colors::BRIGHT_YELLOW), 2);
 	}
 }
 

@@ -164,6 +164,9 @@ public:
 	void activate() override;
 	void deactivate() override;
 
+	/// 状态栏字色（宣纸底窗口换皮时由布局给墨色）
+	void setTextColor(const ColorRGBA & color) { CLabel::setColor(color); }
+
 	// IStatusBar interface
 	void write(const std::string & Text) override;
 	void clearIfMatching(const std::string & Text) override;

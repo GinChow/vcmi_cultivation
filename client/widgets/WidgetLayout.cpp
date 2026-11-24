@@ -16,6 +16,7 @@
 
 #include "../../lib/filesystem/Filesystem.h"
 #include "../../lib/json/JsonNode.h"
+#include "../windows/CWindowObject.h"
 
 namespace WidgetLayout
 {
@@ -24,6 +25,45 @@ JsonNode load(const JsonPath & path)
 	if(!CResourceHandler::get()->existsResource(path))
 		return JsonNode();
 	return JsonNode(path);
+}
+
+const JsonNode & cached(const std::string & path)
+{
+	static std::map<std::string, JsonNode> cache;
+	auto it = cache.find(path);
+	if(it == cache.end())
+		it = cache.emplace(path, load(JsonPath::builtin(path))).first;
+	return it->second;
+}
+
+ColorRGBA remapColor(const JsonNode & colors, const ColorRGBA & original)
+{
+	if(!colors.isStruct())
+		return original;
+	static const std::vector<std::pair<std::string, ColorRGBA>> names = {
+		{"white", Colors::WHITE}, {"yellow", Colors::YELLOW}, {"orange", Colors::ORANGE}, {"red", Colors::RED},
+		{"metallicGold", Colors::METALLIC_GOLD}, {"brightYellow", Colors::BRIGHT_YELLOW}};
+	for(const auto & [name, value] : names)
+		if(original == value && !colors[name].isNull())
+			return color(colors[name], original);
+	return original;
+}
+
+int windowOptions(const JsonNode & node, int options)
+{
+	if(!node.isStruct())
+		return options;
+	if(!node["drawBorder"].isNull() && !node["drawBorder"].Bool())
+		options &= ~CWindowObject::BORDERED;
+	if(!node["playerColored"].isNull() && !node["playerColored"].Bool())
+		options &= ~CWindowObject::PLAYER_COLORED;
+	if(!node["statusbarFrame"].isNull() && !node["statusbarFrame"].Bool())
+		options &= ~CWindowObject::PLAYER_COLORED_BORDERED_STATUSBAR;
+	if(node["alpha"].Bool())
+		options |= CWindowObject::BACKGROUND_ALPHA;
+	if(!node["shadow"].isNull() && !node["shadow"].Bool())
+		options |= CWindowObject::SHADOW_DISABLED;
+	return options;
 }
 
 Point point(const JsonNode & node, const Point & fallback)

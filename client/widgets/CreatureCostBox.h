@@ -9,6 +9,8 @@
  */
 #pragma once
 
+#include "../render/Colors.h"
+
 #include "../../lib/ResourceSet.h"
 #include "../gui/CIntObject.h"
 
@@ -21,7 +23,10 @@ public:
 	void set(TResources res);
 	CreatureCostBox(Rect position, std::string titleText);
 	void createItems(TResources res);
+	/// 标题和数量的字色（宣纸底换皮用；之后新建的资源项也用这个颜色）
+	void setTextColor(const ColorRGBA & color);
 private:
+	ColorRGBA textColor = Colors::WHITE;
 	using LabelPtr = std::shared_ptr<CLabel>;
 	using ImagePtr = std::shared_ptr<CAnimImage>;
 

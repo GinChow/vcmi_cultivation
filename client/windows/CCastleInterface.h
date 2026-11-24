@@ -381,6 +381,7 @@ class CHallInterface : public CStatusbarWindow
 
 		EBuildingState state;
 
+		std::shared_ptr<CPicture> frame; ///< 布局 "hall"."boxFrame"：画在格子后面的框（各阵营格子位置不同，不能画进底图）
 		std::shared_ptr<CAnimImage> header;
 		std::shared_ptr<CAnimImage> icon;
 		std::shared_ptr<CAnimImage> mark;

@@ -31,6 +31,18 @@ namespace WidgetLayout
 /// 模组（或引擎）提供这份布局文件时读出来，否则返回空节点
 JsonNode load(const JsonPath & path);
 
+/// 同 load，但每个路径只读一次（窗口反复打开时不重复解析）
+const JsonNode & cached(const std::string & path);
+
+/// 原版写死的字色按布局换色：colors 形如 {"white": [r,g,b], "yellow": [...], "orange": ..., "red": ...}，
+/// 给的是这几种原版色之一且布局里有对应项时返回布局色，否则原样返回
+ColorRGBA remapColor(const JsonNode & colors, const ColorRGBA & original);
+
+/// 窗口选项按布局去掉：{"drawBorder": false} 去掉 BORDERED，{"playerColored": false} 去掉 PLAYER_COLORED，
+/// {"statusbarFrame": false} 去掉 PLAYER_COLORED_BORDERED_STATUSBAR，{"alpha": true} 加 BACKGROUND_ALPHA，
+/// {"shadow": false} 加 SHADOW_DISABLED（卷轴这类不规则外形不要矩形投影）
+int windowOptions(const JsonNode & node, int options);
+
 /// {"x", "y"}
 Point point(const JsonNode & node, const Point & fallback);
 /// {"x", "y", "w", "h"}

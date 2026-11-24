@@ -24,6 +24,14 @@ CreatureCostBox::CreatureCostBox(Rect position, std::string titleText)
 	title = std::make_shared<CLabel>(pos.w/2, 10, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, titleText);
 }
 
+void CreatureCostBox::setTextColor(const ColorRGBA & color)
+{
+	textColor = color;
+	title->setColor(color);
+	for(auto & item : resources)
+		item.second.first->setColor(color);
+}
+
 void CreatureCostBox::set(TResources res)
 {
 	for(auto & item : resources)
@@ -40,7 +48,7 @@ void CreatureCostBox::createItems(TResources res)
 	while(iter.valid())
 	{
 		auto image = std::make_shared<CAnimImage>(AnimationPath::builtin("RESOURCE"), iter->resType.getNum());
-		auto text = std::make_shared<CLabel>(15, 43, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, "0");
+		auto text = std::make_shared<CLabel>(15, 43, FONT_SMALL, ETextAlignment::CENTER, textColor, "0");
 
 		resources.insert(std::make_pair(iter->resType, std::make_pair(text, image)));
 		iter++;
