@@ -30,13 +30,15 @@ private:
 	BattleInterface & owner;
 	bool jadeTheme = false;
 	bool horizontal = false;
+	/// 竖排时排几列：1 为原版一列十二格，2 为两列六行（战斗窗两侧上下叠放时用）
+	int columns = 1;
 
 	static void changeSelectedSpell(int index, SpellID newSpell);
 
 public:
 	static constexpr int QUICKSPELL_SLOTS = 12;
 
-	QuickSpellPanel(BattleInterface & owner);
+	QuickSpellPanel(BattleInterface & owner, bool twoColumns = false);
 
 	void create();
 

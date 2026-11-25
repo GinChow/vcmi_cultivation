@@ -31,7 +31,16 @@
 #include "../../lib/spells/CSpell.h"
 #include "../GameInstance.h"
 
-UnitActionPanel::UnitActionPanel(BattleInterface & owner)
+/// 选中的动作按钮外框色：主题键 "unitActionSelected"，透明（alpha 为 0）时不画框，由按钮自己的选中帧表示
+static std::optional<ColorRGBA> selectedBorderColor()
+{
+	const ColorRGBA color = BattleTheme::color("unitActionSelected", Colors::WHITE);
+	if(color.a == 0)
+		return std::nullopt;
+	return color;
+}
+
+UnitActionPanel::UnitActionPanel(BattleInterface & owner, int height)
 	: CIntObject(0)
 	, owner(owner)
 {
@@ -39,7 +48,7 @@ UnitActionPanel::UnitActionPanel(BattleInterface & owner)
 
 	addUsedEvents(LCLICK | SHOW_POPUP | MOVE);
 
-	pos = Rect(0, 0, 52, 600);
+	pos = Rect(0, 0, 52, height);
 	const bool jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
 	background = std::make_shared<CFilledTexture>(BattleTheme::image("panelTexture", jadeTheme ? "cultivation/ui/jade/texture" : "DIBOXBCK"), pos);
 	rect = std::make_shared<TransparentFilledRectangle>(Rect(0, 0, pos.w + 1, pos.h + 1), ColorRGBA(0, 0, 0, 0), BattleTheme::color("panelBorder", jadeTheme ? ColorRGBA(201, 205, 190, 0) : ColorRGBA(241, 216, 120, 255)));
@@ -83,7 +92,7 @@ void UnitActionPanel::testAndAddAction(const std::vector<PossiblePlayerBattleAct
 	const bool jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
 	auto button = std::make_shared<CToggleButton>(Point(2, 7 + 50 * index), BattleTheme::animation("unitActionButton", jadeTheme ? "cultivation/ui/jade/action" : "battleUnitAction"), CButton::tooltip(tooltip.toString(&GAME->translator())), callback);
 	button->setOverlay(std::make_shared<CPicture>(iconPath));
-	button->setHighlightedBorderColor(Colors::WHITE);
+	button->setHighlightedBorderColor(selectedBorderColor());
 	button->setAllowDeselection(true);
 	buttons.push_back(button);
 }
@@ -113,7 +122,7 @@ void UnitActionPanel::testAndAddSpell(const std::vector<PossiblePlayerBattleActi
 	const bool jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
 	auto button = std::make_shared<CToggleButton>(Point(2, 7 + 50 * index), BattleTheme::animation("unitActionButton", jadeTheme ? "cultivation/ui/jade/action" : "battleUnitAction"), CButton::tooltip(hoverText, description), callback);
 	button->setOverlay(std::make_shared<CAnimImage>(AnimationPath::builtin("spellint"), spellFilter.getNum() + 1));
-	button->setHighlightedBorderColor(Colors::WHITE);
+	button->setHighlightedBorderColor(selectedBorderColor());
 	buttons.push_back(button);
 }
 

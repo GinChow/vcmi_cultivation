@@ -34,9 +34,10 @@
 #include "../../lib/texts/MetaString.h"
 #include "../GameInstance.h"
 
-QuickSpellPanel::QuickSpellPanel(BattleInterface & owner)
+QuickSpellPanel::QuickSpellPanel(BattleInterface & owner, bool twoColumns)
 	: CIntObject(0)
 	, owner(owner)
+	, columns(twoColumns ? 2 : 1)
 {
 	OBJECT_CONSTRUCTION;
 
@@ -44,7 +45,8 @@ QuickSpellPanel::QuickSpellPanel(BattleInterface & owner)
 
 	jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
 	horizontal = jadeTheme && ENGINE->screenDimensions().y >= 720;
-	pos = horizontal ? Rect(0, 0, 800, 60) : Rect(0, 0, 52, 600);
+	// 两列时 6 行：最后一格顶在 7 + 50×5，格高 40，下留 7
+	pos = horizontal ? Rect(0, 0, 800, 60) : (columns == 2 ? Rect(0, 0, 102, 304) : Rect(0, 0, 52, 600));
 	// 主题键 "panelTexture"（底纹）、"panelBorder"（描边色）
 	background = std::make_shared<CFilledTexture>(BattleTheme::image("panelTexture", jadeTheme ? "cultivation/ui/jade/texture" : "DIBOXBCK"), pos);
 	rect = std::make_shared<TransparentFilledRectangle>(Rect(0, 0, pos.w + 1, pos.h + 1), ColorRGBA(0, 0, 0, 0), BattleTheme::color("panelBorder", jadeTheme ? ColorRGBA(201, 205, 190, 0) : ColorRGBA(241, 216, 120, 255)));
@@ -121,7 +123,7 @@ void QuickSpellPanel::create()
 	for(int i = 0; i < QUICKSPELL_SLOTS; i++)
 	{
 		SpellID id;
-		const Point slot = horizontal ? Point(100 + 50 * i, 2) : Point(2, 7 + 50 * i);
+		const Point slot = horizontal ? Point(100 + 50 * i, 2) : Point(2 + 50 * (i % columns), 7 + 50 * (i / columns));
 		bool fromSettings;
 		std::tie(id, fromSettings) = spells[i];
 

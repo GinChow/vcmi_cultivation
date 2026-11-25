@@ -36,7 +36,8 @@ private:
 public:
 	static constexpr int ACTION_SLOTS = 12;
 
-	UnitActionPanel(BattleInterface & owner);
+	/// height：面板高度，原版 600 占满战斗窗一侧；战斗窗两侧上下叠放时只占修士浮窗下面那一段
+	UnitActionPanel(BattleInterface & owner, int height = 600);
 
 	void setPossibleActions(const std::vector<PossiblePlayerBattleAction> & actions);
 

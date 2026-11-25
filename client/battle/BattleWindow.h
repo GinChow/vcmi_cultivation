@@ -98,6 +98,9 @@ class BattleWindow : public InterfaceObjectConfigurable
 	bool hasSpaceForQuickActions() const;
 	bool quickActionsPanelActive() const;
 	bool placeInfoWindowsOutside() const;
+	/// 逻辑宽 1010～1049：两侧放不下“修士浮窗 + 侧面板”并排，改成上下叠放（见 setPositionCompactSides）
+	bool compactSidePanels() const;
+	void setPositionCompactSides();
 
 public:
 	BattleWindow(BattleInterface & owner );

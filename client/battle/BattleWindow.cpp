@@ -218,10 +218,12 @@ void BattleWindow::createQuickSpellWindow()
 {
 	OBJECT_CONSTRUCTION;
 
-	quickSpellWindow = std::make_shared<QuickSpellPanel>(owner);
-	quickSpellWindow->moveTo(horizontalQuickSpells ? owner.fieldController->pos.topLeft() + Point(0, 600) : Point(pos.x - 52, pos.y));
+	// 两侧上下叠放时：快捷功法排成两列六行，单位动作面板只占修士浮窗下面那一段
+	const bool compact = compactSidePanels();
+	quickSpellWindow = std::make_shared<QuickSpellPanel>(owner, compact);
+	quickSpellWindow->moveTo(horizontalQuickSpells ? owner.fieldController->pos.topLeft() + Point(0, 600) : Point(pos.x - quickSpellWindow->pos.w, pos.y));
 
-	unitActionWindow = std::make_shared<UnitActionPanel>(owner);
+	unitActionWindow = std::make_shared<UnitActionPanel>(owner, compact ? 390 : 600);
 	unitActionWindow->moveTo(Point(pos.x + pos.w, pos.y));
 
 	if(settings["battle"]["enableQuickSpellPanel"].Bool())
@@ -276,8 +278,9 @@ void BattleWindow::createTimerInfoWindows()
 {
 	OBJECT_CONSTRUCTION;
 
-	int xOffsetAttacker = horizontalQuickSpells || quickSpellWindow->isDisabled() ? 0 : -51;
-	int xOffsetDefender = unitActionWindow->isDisabled() ? 0 : 51;
+	// 上下叠放时计时器和修士浮窗一样贴着战场
+	int xOffsetAttacker = horizontalQuickSpells || quickSpellWindow->isDisabled() || compactSidePanels() ? 0 : -51;
+	int xOffsetDefender = unitActionWindow->isDisabled() || compactSidePanels() ? 0 : 51;
 
 	if(GAME->interface()->cb->getStartInfo()->turnTimerInfo.battleTimer != 0 || GAME->interface()->cb->getStartInfo()->turnTimerInfo.unitTimer != 0)
 	{
@@ -411,6 +414,8 @@ void BattleWindow::hideStickyHeroWindows()
 	if(defenderHeroWindow)
 		defenderHeroWindow->disable();
 
+	// 上下叠放时侧面板要顶上去
+	setPositionInfoWindow();
 	ENGINE->windows().totalRedraw();
 }
 
@@ -435,6 +440,12 @@ void BattleWindow::updateQueue()
 
 void BattleWindow::setPositionInfoWindow()
 {
+	if(compactSidePanels() && !unitActionWindow->isDisabled())
+	{
+		setPositionCompactSides();
+		return;
+	}
+
 	int xOffsetAttacker = horizontalQuickSpells || quickSpellWindow->isDisabled() ? 0 : -51;
 	int xOffsetDefender = unitActionWindow->isDisabled() ? 0 : 51;
 
@@ -1045,9 +1056,52 @@ bool BattleWindow::placeInfoWindowsOutside() const
 	constexpr int widthBaseWindow = 800 + 75*2;
 
 	if (quickActionsPanelActive())
-		return ENGINE->screenDimensions().x >= widthWithQuickActions;
+		return ENGINE->screenDimensions().x >= widthWithQuickActions || compactSidePanels();
 	else
 		return ENGINE->screenDimensions().x >= widthBaseWindow;
+}
+
+bool BattleWindow::compactSidePanels() const
+{
+	// 战场两侧各要约 105 像素：修士浮窗 78 宽、两列快捷功法 102 宽。再宽就照原版并排放（800 + 50×2 + 75×2）
+	constexpr int widthCompact = 800 + 105 * 2;
+	constexpr int widthSideBySide = 800 + 50 * 2 + 75 * 2;
+	const int width = ENGINE->screenDimensions().x;
+	return !horizontalQuickSpells && width >= widthCompact && width < widthSideBySide;
+}
+
+void BattleWindow::setPositionCompactSides()
+{
+	// 原版在这个宽度把修士浮窗放进战场里，盖住最外一列格子。改成都放在战场外：
+	// 左列上面攻方修士浮窗、下面快捷功法；右列上面守方修士浮窗、下面单位动作；
+	// 悬停兵种时的兵种浮窗临时盖在本方修士浮窗的位置上
+	const int topAttacker = pos.y - 1 + (attackerTimerWidget ? attackerTimerWidget->pos.h + 9 : 0);
+	const int topDefender = pos.y - 1 + (defenderTimerWidget ? defenderTimerWidget->pos.h + 9 : 0);
+	const Point attackerPosition(pos.x - 77, topAttacker);
+	const Point defenderPosition(pos.x + pos.w - 1, topDefender);
+
+	for(const auto & window : {std::static_pointer_cast<CIntObject>(attackerHeroWindow), std::static_pointer_cast<CIntObject>(attackerStackWindow)})
+		if(window)
+			window->moveTo(attackerPosition);
+	for(const auto & window : {std::static_pointer_cast<CIntObject>(defenderHeroWindow), std::static_pointer_cast<CIntObject>(defenderStackWindow)})
+		if(window)
+			window->moveTo(defenderPosition);
+
+	if(attackerHeroWindow)
+		attackerHeroWindow->setAboveBattlefield(false);
+	if(defenderHeroWindow)
+		defenderHeroWindow->setAboveBattlefield(false);
+	if(attackerStackWindow)
+		attackerStackWindow->setAboveBattlefield(false);
+	if(defenderStackWindow)
+		defenderStackWindow->setAboveBattlefield(false);
+
+	// 修士浮窗没设自己的尺寸（pos 宽高为 0），按底图 CHRPOP 的 78×202 算
+	constexpr int heroWindowHeight = 202;
+	const int attackerBottom = attackerHeroWindow && !attackerHeroWindow->isDisabled() ? attackerPosition.y + heroWindowHeight : topAttacker;
+	const int defenderBottom = defenderHeroWindow && !defenderHeroWindow->isDisabled() ? defenderPosition.y + heroWindowHeight : topDefender;
+	quickSpellWindow->moveTo(Point(pos.x - quickSpellWindow->pos.w, attackerBottom + 6));
+	unitActionWindow->moveTo(Point(pos.x + pos.w, defenderBottom + 6));
 }
 
 bool BattleWindow::quickActionsPanelActive() const
