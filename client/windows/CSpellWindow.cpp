@@ -33,6 +33,7 @@
 #include "../widgets/TextControls.h"
 #include "../widgets/Buttons.h"
 #include "../widgets/VideoWidget.h"
+#include "../widgets/WidgetLayout.h"
 #include "../adventureMap/AdventureMapInterface.h"
 #include "events/InputHandler.h"
 
@@ -59,6 +60,17 @@ static const std::array schoolTabOrder =
 	SpellSchool::EARTH,
 	SpellSchool::ANY
 };
+
+/// 大法术书布局（模组换皮用，如 cultivation-ui 的 config/widgets/gameWindows.json 里的 "spellbook" 节）：
+/// 底部斗法/行旅/灵力/关闭四个可点区与搜索框、状态栏、灵力数字的位置，法术格字色，斗法/行旅标记图。
+/// 只用于大法术书（各位置按 800×600 的大书量的）；小法术书和没有布局文件时都按原版。
+static const JsonNode & spellbookLayout(bool isBigSpellbook)
+{
+	static const JsonNode empty;
+	if(!isBigSpellbook)
+		return empty;
+	return WidgetLayout::cached("config/widgets/gameWindows.json")["spellbook"];
+}
 
 int getAnimFrameFromSchool(SpellSchool school)
 {
@@ -140,7 +152,8 @@ public:
 };
 
 CSpellWindow::CSpellWindow(const CGHeroInstance * _myHero, CPlayerInterface * _myInt, bool openOnBattleSpells, const std::function<void(SpellID)> & onSpellSelect):
-	CWindowObject(PLAYER_COLORED | (settings["gameTweaks"]["enableLargeSpellbook"].Bool() ? BORDERED : 0)),
+	CWindowObject(WidgetLayout::windowOptions(spellbookLayout(settings["gameTweaks"]["enableLargeSpellbook"].Bool())["window"],
+		PLAYER_COLORED | (settings["gameTweaks"]["enableLargeSpellbook"].Bool() ? BORDERED : 0))),
 	battleSpellsOnly(openOnBattleSpells),
 	selectedTab(SpellSchool::ANY),
 	currentPage(0),
@@ -201,24 +214,34 @@ CSpellWindow::CSpellWindow(const CGHeroInstance * _myHero, CPlayerInterface * _m
 
 	pos = background->center(Point(pos.w/2 + pos.x, pos.h/2 + pos.y));
 
-	Rect r(90, isBigSpellbook ? 480 : 420, isBigSpellbook ? 160 : 110, 16);
+	const auto & layout = spellbookLayout(isBigSpellbook);
+	const auto & colors = layout["colors"];
+	spellNameColor = WidgetLayout::color(colors["name"], jadeTheme ? ColorRGBA(201, 210, 194) : Colors::YELLOW);
+	spellDetailColor = WidgetLayout::color(colors["detail"], Colors::WHITE);
+	spellNameColorUnavailable = WidgetLayout::color(colors["nameUnavailable"], Colors::WHITE);
+	spellDetailColorUnavailable = WidgetLayout::color(colors["detailUnavailable"], Colors::ORANGE);
+
+	Rect r = WidgetLayout::rect(layout["search"], Rect(90, isBigSpellbook ? 480 : 420, isBigSpellbook ? 160 : 110, 16));
 	if(settings["general"]["enableUiEnhancements"].Bool())
 	{
-		const ColorRGBA rectangleColor = ColorRGBA(0, 0, 0, 75);
-		const ColorRGBA borderColor = jadeTheme ? ColorRGBA(100, 132, 119) : ColorRGBA(128, 100, 75);
-		const ColorRGBA grayedColor = jadeTheme ? ColorRGBA(178, 190, 176) : ColorRGBA(158, 130, 105);
+		const auto & search = layout["search"];
+		const ColorRGBA rectangleColor = WidgetLayout::color(search["fill"], ColorRGBA(0, 0, 0, 75));
+		const ColorRGBA borderColor = WidgetLayout::color(search["border"], jadeTheme ? ColorRGBA(100, 132, 119) : ColorRGBA(128, 100, 75));
+		const ColorRGBA grayedColor = WidgetLayout::color(search["hintColor"], jadeTheme ? ColorRGBA(178, 190, 176) : ColorRGBA(158, 130, 105));
 		searchBoxRectangle = std::make_shared<TransparentFilledRectangle>(r.resize(1), rectangleColor, borderColor);
 		searchBoxDescription = std::make_shared<CLabel>(r.center().x, r.center().y, FONT_SMALL, ETextAlignment::CENTER, grayedColor, LIBRARY->generaltexth->translate("vcmi.spellBook.search"));
 
 		searchBox = std::make_shared<CTextInput>(r, FONT_SMALL, ETextAlignment::CENTER, false);
 		searchBox->setCallback(std::bind(&CSpellWindow::searchInput, this));
+		if(!search["textColor"].isNull())
+			searchBox->setColor(WidgetLayout::color(search["textColor"], Colors::WHITE));
 	}
 
 	if(onSpellSelect)
 	{
 		Point boxPos = r.bottomLeft() + Point(-2, 5);
 		showAllSpells = std::make_shared<CToggleButton>(boxPos, AnimationPath::builtin("sysopchk.def"), CButton::tooltip(LIBRARY->generaltexth->translate("core.help.458.hover"), LIBRARY->generaltexth->translate("core.help.458.hover")), [this](bool state){ searchInput(); });
-		showAllSpellsDescription = std::make_shared<CLabel>(boxPos.x + 40, boxPos.y + 12, FONT_SMALL, ETextAlignment::CENTERLEFT, Colors::WHITE, LIBRARY->generaltexth->translate("core.help.458.hover"));
+		showAllSpellsDescription = std::make_shared<CLabel>(boxPos.x + 40, boxPos.y + 12, FONT_SMALL, ETextAlignment::CENTERLEFT, WidgetLayout::color(layout["showAllColor"], Colors::WHITE), LIBRARY->generaltexth->translate("core.help.458.hover"));
 	}
 
 	processSpells();
@@ -237,18 +260,27 @@ CSpellWindow::CSpellWindow(const CGHeroInstance * _myHero, CPlayerInterface * _m
 		schoolTabCustom.push_back(std::make_shared<CAnimImage>(LIBRARY->spellSchoolHandler->getById(customSpellSchools[i])->getSchoolBookmarkPath(), i == 0 ? 0 : 1, 0, isBigSpellbook ? 0 : 15, yStart + ((yEnd - yStart) * i) / denom));
 	schoolPicture = std::make_shared<CAnimImage>(AnimationPath::builtin("Schools"), 0, 0, 117 + offL, 74 + offT);
 
-	mana = std::make_shared<CLabel>(435 + (isBigSpellbook ? 159 : 0), 426 + offB, FONT_SMALL, ETextAlignment::CENTER, jadeTheme ? ColorRGBA(243, 240, 231) : Colors::YELLOW, std::to_string(myHero->mana));
+	mana = WidgetLayout::label(layout["mana"], Point(435 + (isBigSpellbook ? 159 : 0), 426 + offB), FONT_SMALL, ETextAlignment::CENTER, jadeTheme ? ColorRGBA(243, 240, 231) : Colors::YELLOW, std::to_string(myHero->mana));
 
 	if(isBigSpellbook)
-		statusBar = CGStatusBar::create(400, 587);
+	{
+		const Point statusPos = WidgetLayout::point(layout["status"], Point(400, 587));
+		statusBar = CGStatusBar::create(statusPos.x, statusPos.y);
+		if(!layout["status"]["color"].isNull())
+			statusBar->setTextColor(WidgetLayout::color(layout["status"]["color"], Colors::WHITE));
+	}
 	else
 		statusBar = CGStatusBar::create(7, 569, ImagePath::builtin("Spelroll.bmp"));
 
+	// 底部四个可点区（原版画在底图上的丝带）：布局可挪位置、改大小
+	const auto & areas = layout["areas"];
+	auto areaRect = [&](const std::string & key, const Rect & fallback){ return WidgetLayout::rect(areas[key], fallback) + pos.topLeft(); };
+
 	Rect schoolRect( 549 + pos.x + offR, 94 + pos.y, 45, 35);
-	interactiveAreas.push_back(std::make_shared<InteractiveArea>( Rect( 479 + pos.x + (isBigSpellbook ? 175 : 0), 405 + pos.y + offB, isBigSpellbook ? 60 : 36, 56), std::bind(&CSpellWindow::fexitb,         this),    460, this));
-	interactiveAreas.push_back(std::make_shared<InteractiveArea>( Rect( 221 + pos.x + (isBigSpellbook ? 43 : 0), 405 + pos.y + offB, isBigSpellbook ? 60 : 36, 56), std::bind(&CSpellWindow::fbattleSpellsb, this),    453, this));
-	interactiveAreas.push_back(std::make_shared<InteractiveArea>( Rect( 355 + pos.x + (isBigSpellbook ? 110 : 0), 405 + pos.y + offB, isBigSpellbook ? 60 : 36, 56), std::bind(&CSpellWindow::fadvSpellsb,    this),    452, this));
-	interactiveAreas.push_back(std::make_shared<InteractiveArea>( Rect( 418 + pos.x + (isBigSpellbook ? 142 : 0), 405 + pos.y + offB, isBigSpellbook ? 60 : 36, 56), std::bind(&CSpellWindow::fmanaPtsb,      this),    459, this));
+	interactiveAreas.push_back(std::make_shared<InteractiveArea>( areaRect("exit", Rect( 479 + (isBigSpellbook ? 175 : 0), 405 + offB, isBigSpellbook ? 60 : 36, 56)), std::bind(&CSpellWindow::fexitb,         this),    460, this));
+	interactiveAreas.push_back(std::make_shared<InteractiveArea>( areaRect("battle", Rect( 221 + (isBigSpellbook ? 43 : 0), 405 + offB, isBigSpellbook ? 60 : 36, 56)), std::bind(&CSpellWindow::fbattleSpellsb, this),    453, this));
+	interactiveAreas.push_back(std::make_shared<InteractiveArea>( areaRect("adventure", Rect( 355 + (isBigSpellbook ? 110 : 0), 405 + offB, isBigSpellbook ? 60 : 36, 56)), std::bind(&CSpellWindow::fadvSpellsb,    this),    452, this));
+	interactiveAreas.push_back(std::make_shared<InteractiveArea>( areaRect("mana", Rect( 418 + (isBigSpellbook ? 142 : 0), 405 + offB, isBigSpellbook ? 60 : 36, 56)), std::bind(&CSpellWindow::fmanaPtsb,      this),    459, this));
 	interactiveAreas.push_back(std::make_shared<InteractiveArea>( schoolRect + Point(0, 0),   std::bind(&CSpellWindow::selectSchool,   this, SpellSchool::AIR), 454, this));
 	interactiveAreas.push_back(std::make_shared<InteractiveArea>( schoolRect + Point(0, 57),  std::bind(&CSpellWindow::selectSchool,   this, SpellSchool::EARTH), 457, this));
 	interactiveAreas.push_back(std::make_shared<InteractiveArea>( schoolRect + Point(0, 116), std::bind(&CSpellWindow::selectSchool,   this, SpellSchool::FIRE), 455, this));
@@ -260,6 +292,13 @@ CSpellWindow::CSpellWindow(const CGHeroInstance * _myHero, CPlayerInterface * _m
 
 	leftCornerArea = std::make_shared<InteractiveArea>( Rect(  97 + offL + pos.x, 77 + offT + pos.y, leftCorner->pos.h,  leftCorner->pos.w  ), std::bind(&CSpellWindow::fLcornerb, this), 450, this);
 	rightCornerArea = std::make_shared<InteractiveArea>( Rect( 487 + offR + pos.x, 72 + offT + pos.y, rightCorner->pos.h, rightCorner->pos.w ), std::bind(&CSpellWindow::fRcornerb, this), 451, this);
+
+	// 斗法/行旅标记（布局给了才有）：两张图各自带字，按当前模式只显示一张
+	if(layout["modeMarker"].isStruct())
+	{
+		modeMarker = std::make_shared<CPicture>(WidgetLayout::image(layout["modeMarker"]["battle"]["image"], ImagePath()), 0, 0);
+		updateModeMarker();  // 按当前模式换成对应那张、挪到位
+	}
 
 	//areas for spells
 	int xpos = 117 + offL + pos.x;
@@ -433,6 +472,7 @@ void CSpellWindow::fadvSpellsb()
 		battleSpellsOnly = false;
 		setCurrentPage(0);
 	}
+	updateModeMarker();
 	computeSpellsPerArea();
 }
 
@@ -444,7 +484,20 @@ void CSpellWindow::fbattleSpellsb()
 		battleSpellsOnly = true;
 		setCurrentPage(0);
 	}
+	updateModeMarker();
 	computeSpellsPerArea();
+}
+
+void CSpellWindow::updateModeMarker()
+{
+	if(!modeMarker)
+		return;
+	const auto & node = spellbookLayout(isBigSpellbook)["modeMarker"][battleSpellsOnly ? "battle" : "adventure"];
+	OBJECT_CONSTRUCTION;
+	const Point at = WidgetLayout::point(node, Point());
+	// 标记在底部按钮条上，不和法术格重叠，重建后排在最上层也无妨
+	modeMarker = std::make_shared<CPicture>(WidgetLayout::image(node["image"], ImagePath()), at.x, at.y);
+	redraw();
 }
 
 void CSpellWindow::toggleSearchBoxFocus()
@@ -879,13 +932,13 @@ void CSpellWindow::SpellArea::setSpell(const CSpell * spell)
 		ColorRGBA firstLineColor, secondLineColor;
 		if(spellCost > owner->myHero->mana && !owner->onSpellSelect) //hero cannot cast this spell
 		{
-			firstLineColor = Colors::WHITE;
-			secondLineColor = Colors::ORANGE;
+			firstLineColor = owner->spellNameColorUnavailable;
+			secondLineColor = owner->spellDetailColorUnavailable;
 		}
 		else
 		{
-			firstLineColor = owner->jadeTheme ? ColorRGBA(201, 210, 194) : Colors::YELLOW;
-			secondLineColor = Colors::WHITE;
+			firstLineColor = owner->spellNameColor;
+			secondLineColor = owner->spellDetailColor;
 		}
 
 		name->color = firstLineColor;

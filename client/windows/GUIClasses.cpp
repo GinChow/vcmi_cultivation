@@ -504,8 +504,16 @@ void CSplitWindow::sliderMoved(int to)
 	setAmount(rightMin + to, false);
 }
 
+/// 修为精进（升级选技能）布局：gameWindows.json 的 "levelUp" 节（模组换皮用）。
+/// 标题、头像、升级说明、主属性图标与加点、技能三选一框、左右翻看、确定按钮的位置，字色与选中框色。
+/// 没有布局文件时返回空节点，各项按原版。
+static const JsonNode & levelUpLayout()
+{
+	return WidgetLayout::cached("config/widgets/gameWindows.json")["levelUp"];
+}
+
 CLevelWindow::CLevelWindow(CPlayerInterface * askedInterface, const CGHeroInstance * hero, PrimarySkill pskill, const std::vector<SecondarySkill> & skills, bool moreLevels, QuestionID question)
-	: CWindowObject(PLAYER_COLORED, ImagePath::builtin("LVLUPBKG")),
+	: CWindowObject(WidgetLayout::windowOptions(levelUpLayout()["window"], PLAYER_COLORED), ImagePath::builtin("LVLUPBKG")),
 	skillViewOffset(0)
 {
 	OBJECT_CONSTRUCTION;
@@ -547,6 +555,7 @@ void CLevelWindow::createLevelUpControls(PrimarySkill pskill)
 
 	createSkillBox();
 
+	const auto & layout = levelUpLayout();
 	if(skills.size() > 3)
 	{
 		buttonLeft = std::make_shared<CButton>(Point(23, 309), AnimationPath::builtin("HSBTNS3"), CButton::tooltip(), [this](){
@@ -563,19 +572,23 @@ void CLevelWindow::createLevelUpControls(PrimarySkill pskill)
 				skillViewOffset = 0;
 			createSkillBox();
 		}, EShortcut::MOVE_RIGHT);
+		WidgetLayout::applyButton(buttonLeft, layout["buttonLeft"]);
+		WidgetLayout::applyButton(buttonRight, layout["buttonRight"]);
 	}
 
-	portrait = std::make_shared<CHeroArea>(170, 66, hero);
+	const Point portraitPos = WidgetLayout::point(layout["portrait"], Point(170, 66));
+	portrait = std::make_shared<CHeroArea>(portraitPos.x, portraitPos.y, hero);
 	portrait->addClickCallback(nullptr);
 	portrait->addRClickCallback([hero = hero](){ ENGINE->windows().createAndPushWindow<CRClickPopupInt>(std::make_shared<CHeroWindow>(hero)); });
 	ok = std::make_shared<CButton>(Point(296, 413), AnimationPath::builtin("IOKAY"), CButton::tooltip(), std::bind(&CLevelWindow::submitSelection, this), EShortcut::GLOBAL_ACCEPT);
+	WidgetLayout::applyButton(ok, layout["ok"]);
 
 	//%s has gained a level.
 	MetaString mainTitleText;
 	mainTitleText.appendTextID("core.genrltxt.444");
 	mainTitleText.replaceTextID(hero->getNameTextID());
 
-	mainTitle = std::make_shared<CLabel>(192, 33, FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE, mainTitleText.toString(&GAME->translator()));
+	mainTitle = WidgetLayout::label(layout["mainTitle"], Point(192, 33), FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE, mainTitleText.toString(&GAME->translator()));
 
 	//%s is now a level %d %s.
 	MetaString levelTitleText;
@@ -588,9 +601,10 @@ void CLevelWindow::createLevelUpControls(PrimarySkill pskill)
 	skillValueText.appendTextID("core.priskill", pskill.getNum());
 	skillValueText.appendRawString(" +1");
 
-	levelTitle = std::make_shared<CLabel>(192, 162, FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE, levelTitleText.toString(&GAME->translator()));
-	skillIcon = std::make_shared<CAnimImage>(AnimationPath::builtin("PSKIL42"), pskill.getNum(), 0, 174, 190);
-	skillValue = std::make_shared<CLabel>(192, 253, FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE, skillValueText.toString(&GAME->translator()));
+	levelTitle = WidgetLayout::label(layout["levelTitle"], Point(192, 162), FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE, levelTitleText.toString(&GAME->translator()));
+	const Point iconPos = WidgetLayout::point(layout["skillIcon"], Point(174, 190));
+	skillIcon = std::make_shared<CAnimImage>(AnimationPath::builtin("PSKIL42"), pskill.getNum(), 0, iconPos.x, iconPos.y);
+	skillValue = WidgetLayout::label(layout["skillValue"], Point(192, 253), FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE, skillValueText.toString(&GAME->translator()));
 }
 
 void CLevelWindow::updateLevelUpData(CPlayerInterface * askedInterface, const CGHeroInstance * heroInstance, PrimarySkill pskill, const std::vector<SecondarySkill> & availableSkills, bool moreLevels, QuestionID question)
@@ -637,7 +651,12 @@ void CLevelWindow::createSkillBox()
 			comps.push_back(comp);
 		}
 
-		box = std::make_shared<CComponentBox>(comps, Rect(75, 300, pos.w - 150, 100));
+		const auto & layout = levelUpLayout()["skills"];
+		box = std::make_shared<CComponentBox>(comps, WidgetLayout::rect(layout, Rect(75, 300, pos.w - 150, 100)));
+		if(!layout["textColor"].isNull())
+			box->setTextColor(WidgetLayout::color(layout["textColor"], Colors::WHITE));
+		if(!layout["selectionColor"].isNull())
+			box->setSelectionColor(WidgetLayout::color(layout["selectionColor"], Colors::BRIGHT_YELLOW));
 	}
 
 	setRedrawParent(true);
@@ -1649,8 +1668,15 @@ CHillFortWindow::State CHillFortWindow::getState(SlotID slot)
 	return State::MAKE_UPGRADE;
 }
 
+/// 天机阁（盗贼公会）布局：gameWindows.json 的 "thievesGuild" 节——窗口选项与各处字色
+/// （行名、列名“第一……”、性格、最强修士的四维、状态栏）。格子位置仍按原版，底图与列条按原名替换。
+static const JsonNode & thievesGuildLayout()
+{
+	return WidgetLayout::cached("config/widgets/gameWindows.json")["thievesGuild"];
+}
+
 CThievesGuildWindow::CThievesGuildWindow(const CGObjectInstance * _owner):
-	CWindowObject(PLAYER_COLORED | BORDERED, ImagePath::builtin("TpRank")),
+	CWindowObject(WidgetLayout::windowOptions(thievesGuildLayout()["window"], PLAYER_COLORED | BORDERED), ImagePath::builtin("TpRank")),
 	owner(_owner)
 {
 	OBJECT_CONSTRUCTION;
@@ -1660,6 +1686,12 @@ CThievesGuildWindow::CThievesGuildWindow(const CGObjectInstance * _owner):
 
 	exitb = std::make_shared<CButton>(Point(748, 556), AnimationPath::builtin("TPMAGE1"), CButton::tooltip(LIBRARY->generaltexth->allTexts[600]), [&](){ close();}, EShortcut::GLOBAL_RETURN);
 	statusbar = CGStatusBar::create(3, 555, ImagePath::builtin("TStatBar.bmp"), 742);
+	const auto & layout = thievesGuildLayout();
+	if(!layout["statusColor"].isNull())
+		statusbar->setTextColor(WidgetLayout::color(layout["statusColor"], Colors::WHITE));
+	const ColorRGBA rowHeaderColor = WidgetLayout::color(layout["rowHeaderColor"], Colors::YELLOW);
+	const ColorRGBA columnHeaderColor = WidgetLayout::color(layout["columnHeaderColor"], Colors::YELLOW);
+	const ColorRGBA textColor = WidgetLayout::color(layout["textColor"], Colors::WHITE);
 
 	resdatabar = std::make_shared<CMinorResDataBar>();
 	resdatabar->moveBy(pos.topLeft(), true);
@@ -1701,14 +1733,14 @@ CThievesGuildWindow::CThievesGuildWindow(const CGObjectInstance * _owner):
 			}
 		}
 		else
-			rowHeaders.push_back(std::make_shared<CLabel>(135, y, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, text, 220));
+			rowHeaders.push_back(std::make_shared<CLabel>(135, y, FONT_MEDIUM, ETextAlignment::CENTER, rowHeaderColor, text, 220));
 	}
 
 	for(int g=1; g<tgi.playerColors.size(); ++g)
 		columnBackgrounds.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("PRSTRIPS"), g-1, 0, 250 + 66*g, 7));
 
 	for(int g=0; g<tgi.playerColors.size(); ++g)
-		columnHeaders.push_back(std::make_shared<CLabel>(283 + 66*g, 21, FONT_BIG, ETextAlignment::CENTER, Colors::YELLOW, GAME->translator().translate("core.jktext", 16+g)));
+		columnHeaders.push_back(std::make_shared<CLabel>(283 + 66*g, 21, FONT_BIG, ETextAlignment::CENTER, columnHeaderColor, GAME->translator().translate("core.jktext", 16+g)));
 
 	//printing flags
 	for(int g = 0; g < std::size(fields); ++g) //by lines
@@ -1756,11 +1788,11 @@ CThievesGuildWindow::CThievesGuildWindow(const CGObjectInstance * _owner):
 				boost::split(lines, LIBRARY->generaltexth->allTexts[184], boost::is_any_of("\n"));
 				for(int i=0; i<GameConstants::PRIMARY_SKILLS; ++i)
 				{
-					primSkillHeaders.push_back(std::make_shared<CLabel>(260 + 66 * counter, 407 + 11 * i, FONT_TINY, ETextAlignment::BOTTOMLEFT, Colors::WHITE, lines[i]));
+					primSkillHeaders.push_back(std::make_shared<CLabel>(260 + 66 * counter, 407 + 11 * i, FONT_TINY, ETextAlignment::BOTTOMLEFT, textColor, lines[i]));
 					primSkillHeadersArea.push_back(std::make_shared<LRClickableArea>(Rect(primSkillHeaders.back()->pos.x - pos.x, primSkillHeaders.back()->pos.y - pos.y - 11, 50, 11), nullptr, [i]{
 						CRClickPopup::createAndPush(GAME->translator().translate("core.arraytxt", 2 + i));
 					}));
-					primSkillValues.push_back(std::make_shared<CLabel>(310 + 66 * counter, 407 + 11 * i, FONT_TINY, ETextAlignment::BOTTOMRIGHT, Colors::WHITE,
+					primSkillValues.push_back(std::make_shared<CLabel>(310 + 66 * counter, 407 + 11 * i, FONT_TINY, ETextAlignment::BOTTOMRIGHT, textColor,
 							   std::to_string(iter.second.details->primskills[i])));
 				}
 			}
@@ -1791,7 +1823,7 @@ CThievesGuildWindow::CThievesGuildWindow(const CGObjectInstance * _owner):
 			text = GAME->translator().translate("core.arraytxt", 168 + static_cast<int>(it.second));
 		}
 
-		personalities.push_back(std::make_shared<CLabel>(283 + 66*counter, 459, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, text));
+		personalities.push_back(std::make_shared<CLabel>(283 + 66*counter, 459, FONT_SMALL, ETextAlignment::CENTER, textColor, text));
 
 		counter++;
 	}

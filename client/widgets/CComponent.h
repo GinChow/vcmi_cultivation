@@ -69,6 +69,8 @@ class CSelectableComponent : public CComponent, public CKeyShortcut
 	void init();
 public:
 	bool selected; //if true, this component is selected
+	/// 选中框颜色，原版亮黄；换皮窗口可改（见 CComponentBox::setSelectionColor）
+	ColorRGBA selectionColor;
 	std::function<void()> onSelect; //function called on selection change
 	std::function<void()> onChoose; //function called on doubleclick
 
@@ -120,6 +122,8 @@ public:
 	void setTextColor(const ColorRGBA & color);
 	/// 组件状态变化时（选中、悬停）连同本框一起交给上层窗口重画
 	void setRedrawParentAll(bool on);
+	/// 改所有可选组件选中框的颜色（宣纸底上原版亮黄框太刺眼）
+	void setSelectionColor(const ColorRGBA & color);
 
 	/// constructors for non-selectable components
 	CComponentBox(std::vector<std::shared_ptr<CComponent>> components, Rect position);

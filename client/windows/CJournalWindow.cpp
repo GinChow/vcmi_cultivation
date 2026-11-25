@@ -10,6 +10,7 @@
 #include "StdInc.h"
 #include "CJournalWindow.h"
 
+#include "../widgets/WidgetLayout.h"
 #include "../CPlayerInterface.h"
 #include "../GameEngine.h"
 #include "../GameInstance.h"
@@ -41,18 +42,30 @@ void JournalLabel::showAll(Canvas & to)
 	CMultiLineLabel::showAll(to);
 }
 
+/// 行旅札记（任务日志与事件日志共用）布局：gameWindows.json 的 "journal" 节——窗口选项、正文与条目字色、
+/// 当前条目框色、两个页签与确定按钮的图和字色、条目滑条皮肤。底图 questDialog 按原名替换。没有布局文件时按原版。
+static const JsonNode & journalLayout()
+{
+	return WidgetLayout::cached("config/widgets/gameWindows.json")["journal"];
+}
+
 JournalWindow::JournalWindow(EJournalMode mode)
-	: CWindowObject(PLAYER_COLORED | BORDERED, ImagePath::builtin("questDialog"))
+	: CWindowObject(WidgetLayout::windowOptions(journalLayout()["window"], PLAYER_COLORED | BORDERED), ImagePath::builtin("questDialog"))
 	, mode(mode)
 {
 	OBJECT_CONSTRUCTION;
 
-	description = std::make_shared<CTextBox>("", Rect(205, DESCRIPTION_TOP, 385, DESCRIPTION_HEIGHT), CSlider::BROWN, FONT_MEDIUM, ETextAlignment::TOPLEFT, Colors::WHITE);
+	const auto & layout = journalLayout();
+	description = std::make_shared<CTextBox>("", Rect(205, DESCRIPTION_TOP, 385, DESCRIPTION_HEIGHT), CSlider::BROWN, FONT_MEDIUM, ETextAlignment::TOPLEFT, WidgetLayout::color(layout["textColor"], Colors::WHITE));
 	ok = std::make_shared<CButton>(Point(539, 398), AnimationPath::builtin("IOKAY.DEF"), LIBRARY->generaltexth->zelp[445], std::bind(&JournalWindow::close, this), EShortcut::GLOBAL_RETURN);
 	auto questsTab = std::make_shared<CToggleButton>(Point(193, 18), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(), nullptr);
 	auto eventsTab = std::make_shared<CToggleButton>(Point(411, 18), AnimationPath::builtin("settingsWindow/button190"), CButton::tooltip(), nullptr);
-	questsTab->setTextOverlay(LIBRARY->generaltexth->translate("vcmi.adventureMap.journal.quests"), FONT_SMALL, Colors::YELLOW);
-	eventsTab->setTextOverlay(LIBRARY->generaltexth->translate("vcmi.adventureMap.journal.events"), FONT_SMALL, Colors::YELLOW);
+	const ColorRGBA tabTextColor = WidgetLayout::color(layout["tabs"]["textColor"], Colors::YELLOW);
+	questsTab->setTextOverlay(LIBRARY->generaltexth->translate("vcmi.adventureMap.journal.quests"), FONT_SMALL, tabTextColor);
+	eventsTab->setTextOverlay(LIBRARY->generaltexth->translate("vcmi.adventureMap.journal.events"), FONT_SMALL, tabTextColor);
+	WidgetLayout::applyButton(questsTab, layout["tabs"]["quests"]);
+	WidgetLayout::applyButton(eventsTab, layout["tabs"]["events"]);
+	WidgetLayout::applyButton(ok, layout["ok"]);
 
 	questsTab->block(!GAME->interface()->hasDisplayableQuests());
 	eventsTab->block(!GAME->interface()->hasScenarioEventJournalEntries());
@@ -74,6 +87,7 @@ JournalWindow::JournalWindow(EJournalMode mode)
 
 	slider = std::make_shared<CSlider>(Point(166, 195), 191, std::bind(&JournalWindow::sliderMoved, this, _1), VISIBLE_ITEM_COUNT, 0, 0, Orientation::VERTICAL, CSlider::BROWN);
 	slider->setPanningStep(32);
+	WidgetLayout::applySliderSkin(slider, layout["sliderSkin"]);
 }
 
 void JournalWindow::initializeItems()
@@ -83,6 +97,8 @@ void JournalWindow::initializeItems()
 	for(size_t i = 0; i < getItemCount(); ++i)
 	{
 		auto label = std::make_shared<JournalLabel>(Rect(13, 195, 149, 31), getItemText(i));
+		if(!journalLayout()["listColor"].isNull())
+			label->setColor(WidgetLayout::color(journalLayout()["listColor"], Colors::WHITE));
 		label->callback = [this, i]()
 		{
 			selectItem(i);
@@ -127,6 +143,8 @@ void JournalWindow::setContent(const std::string & text, std::vector<std::shared
 		descriptionHeight -= componentAreaHeight;
 		OBJECT_CONSTRUCTION;
 		componentsBox = std::make_shared<CComponentBox>(std::move(components), Rect(205, DESCRIPTION_TOP + descriptionHeight + 15, 385, 115));
+		if(!journalLayout()["textColor"].isNull())
+			componentsBox->setTextColor(WidgetLayout::color(journalLayout()["textColor"], Colors::WHITE));
 	}
 	description->resize(Point(385, descriptionHeight));
 }
@@ -164,5 +182,5 @@ void JournalWindow::showAll(Canvas & to)
 	Rect selection = Rect::createAround(labels[selectedLabel]->pos, 1);
 	selection.x -= 2;
 	selection.w += 2;
-	to.drawBorder(selection, Colors::METALLIC_GOLD);
+	to.drawBorder(selection, WidgetLayout::color(journalLayout()["selectionColor"], Colors::METALLIC_GOLD));
 }

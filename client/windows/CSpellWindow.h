@@ -94,8 +94,16 @@ class CSpellWindow : public CWindowObject, public IVideoHolder
 
 	std::shared_ptr<VideoWidgetOnce> video;
 
+	/// 换皮用：当前是斗法还是行旅功法的标记图（布局 "modeMarker" 给两张图与位置），没有布局时为空
+	std::shared_ptr<CPicture> modeMarker;
+
 	bool isBigSpellbook;
 	bool jadeTheme;
+	/// 法术格两行字的颜色（可施放 / 灵力不足），原版黄白、玉色主题浅色，模组布局可改
+	ColorRGBA spellNameColor;
+	ColorRGBA spellDetailColor;
+	ColorRGBA spellNameColorUnavailable;
+	ColorRGBA spellDetailColorUnavailable;
 	int spellsPerPage;
 	int offL;
 	int offR;
@@ -138,6 +146,8 @@ public:
 	~CSpellWindow();
 
 	void fexitb();
+	/// 把斗法/行旅标记图挪到当前模式上（布局没给时什么都不做）
+	void updateModeMarker();
 	void fadvSpellsb();
 	void fbattleSpellsb();
 	void toggleSearchBoxFocus();

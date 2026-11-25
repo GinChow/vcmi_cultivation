@@ -404,6 +404,7 @@ void CSelectableComponent::clickDouble(const Point & cursorPosition)
 void CSelectableComponent::init()
 {
 	selected = false;
+	selectionColor = Colors::BRIGHT_YELLOW;
 }
 
 CSelectableComponent::CSelectableComponent(const Component &c, std::function<void()> OnSelect):
@@ -436,7 +437,7 @@ void CSelectableComponent::showAll(Canvas & to)
 	CComponent::showAll(to);
 	if(selected)
 	{
-		to.drawBorder(Rect::createAround(image->pos, 1), Colors::BRIGHT_YELLOW);
+		to.drawBorder(Rect::createAround(image->pos, 1), selectionColor);
 	}
 }
 
@@ -635,6 +636,13 @@ void CComponentBox::setTextColor(const ColorRGBA & color)
 		comp->setTextColor(color);
 	for(auto & label : orLabels)
 		label->setColor(color);
+}
+
+void CComponentBox::setSelectionColor(const ColorRGBA & color)
+{
+	for(auto & comp : components)
+		if(auto selectable = std::dynamic_pointer_cast<CSelectableComponent>(comp))
+			selectable->selectionColor = color;
 }
 
 void CComponentBox::setRedrawParentAll(bool on)

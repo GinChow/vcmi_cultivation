@@ -106,6 +106,14 @@ void ButtonBase::setImage(const AnimationPath & defName, bool playerColoredButto
 
 	if (playerColoredButton)
 		image->setPlayerColor(GAME->interface()->playerID);
+
+	// 先设了文字叠层再换图（模组布局给按钮换图）时，新图排在文字之上会把字盖住：把文字层提回最上并按新尺寸居中
+	if (overlay)
+	{
+		removeChild(overlay.get());
+		addChild(overlay.get());
+		update();
+	}
 }
 
 const JsonNode & ButtonBase::getCurrentConfig() const
