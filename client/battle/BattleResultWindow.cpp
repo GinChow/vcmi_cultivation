@@ -42,7 +42,8 @@
 /// "background" 底图（给了就不再按玩家色染）；"exit"/"repeat" 按钮 {x, y, image}，"buttonBorder": false 不描边；
 /// "applyLabel"、"sideResult": [左, 右]、"names": [左, 右]、"casualtiesTitle"、"attackerLabel"、"defenderLabel" 标签（"hidden": true 不显示）；
 /// "winColor"/"loseColor" 胜负字色；"portraits": [左, 右]；"casualties": [{x 中心, y, w 最宽}, …]，"casualtyFrame" 每个兵头像下的框图与
-/// "casualtyFrameOffset"，"countColor"、"emptyColor"；"description": {x, y, w, h, color}；"video": false 不放原版胜负动画；
+/// "casualtyFrameOffset"，"countColor"、"emptyColor"；"description": {x, y, w, h, color, "compact": true 合并空行, "slider": 滑条换皮}；
+/// "video": false 不放原版胜负动画；
 /// "artwork": {"victory", "defeat", x, y} 按本方胜负换题图
 static const JsonNode & resultLayout()
 {
@@ -223,7 +224,17 @@ BattleResultWindow::BattleResultWindow(const BattleResult & br, CPlayerInterface
 
 	// 说明文字建在题图之后，题图里留了放说明的空当时字压在题图上面
 	const JsonNode & descLayout = layout["description"];
-	description = std::make_shared<CTextBox>(resources.resultText.toString(&GAME->translator()), WidgetLayout::rect(descLayout, Rect(69, 203, 330, 68)), 0, FONT_SMALL, ETextAlignment::CENTER, WidgetLayout::color(descLayout["color"], Colors::WHITE));
+	std::string resultText = resources.resultText.toString(&GAME->translator());
+	// 原版说明在“辉煌的胜利！”和经验值之间空一行；模组题图里放说明的纸带窄，"compact" 时合并空行，免得两行字就要滑条
+	if(descLayout["compact"].Bool())
+	{
+		while(boost::algorithm::contains(resultText, "\n\n"))
+			boost::algorithm::replace_all(resultText, "\n\n", "\n");
+		boost::algorithm::trim_if(resultText, boost::algorithm::is_any_of("\n"));
+	}
+	description = std::make_shared<CTextBox>(resultText, WidgetLayout::rect(descLayout, Rect(69, 203, 330, 68)), 0, FONT_SMALL, ETextAlignment::CENTER, WidgetLayout::color(descLayout["color"], Colors::WHITE));
+	// 字太多放不下时出的滑条换皮（没有滑条时不起作用）
+	WidgetLayout::applySliderSkin(description->slider, descLayout["slider"]);
 
 
 	if(!resources.musicSet.empty())
