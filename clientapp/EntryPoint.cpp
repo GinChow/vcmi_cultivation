@@ -180,6 +180,7 @@ int main(int argc, char * argv[])
 		("version,v", "display version information and exit")
 		("testmap", po::value<std::string>(), "")
 		("battle-scenario", po::value<std::string>(), "open a cultivation JSON scenario for manual hotseat combat")
+		("battle-mods", po::value<std::string>(), "comma-separated mods loaded with --battle-scenario (default: vcmi,cultivation,cultivation-audio)")
 		("testsave", po::value<std::string>(), "")
 		("logLocation", po::value<std::string>(), "new location for log files")
 		("spectate,s", "enable spectator interface for AI-only games")
@@ -268,8 +269,15 @@ int main(int argc, char * argv[])
 		LIBRARY = new GameLibrary;
 		if(vm.count("battle-scenario"))
 		{
-			// cultivation 为修仙玩法，cultivation-audio 为独立的音乐与开场音效模组
+			// cultivation 为修仙玩法，cultivation-audio 为独立的音乐与开场音效模组。
+			// --battle-mods 可换成别的模组组合，比如用游戏的美术模组看战斗：vcmi,cultivation-battle,cultivation-ui
 			std::vector<std::string> mods = {"vcmi", "cultivation", "cultivation-audio"};
+			if(vm.count("battle-mods"))
+			{
+				mods.clear();
+				boost::split(mods, vm["battle-mods"].as<std::string>(), boost::is_any_of(","));
+				vstd::erase_if(mods, [](const std::string & mod){ return mod.empty(); });
+			}
 			if(boost::filesystem::exists(VCMIDirs::get().userDataPath() / "Mods/chinese-translation/mods/ChineseTrueTypeFonts/mod.json"))
 			{
 				mods.push_back("chinese-translation");

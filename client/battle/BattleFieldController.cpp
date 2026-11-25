@@ -37,6 +37,7 @@
 #include "../../lib/BattleFieldHandler.h"
 #include "../../lib/CConfigHandler.h"
 #include "../../lib/CStack.h"
+#include "../../lib/filesystem/Filesystem.h"
 #include "../../lib/battle/CPlayerBattleCallback.h"
 #include "../../lib/spells/ISpellMechanics.h"
 #include "../../lib/spells/Problem.h"
@@ -139,12 +140,23 @@ BattleFieldController::BattleFieldController(BattleInterface & owner):
 	//preparing cells and hexes
 	cellBorder = ENGINE->renderHandler().loadImage(ImagePath::builtin("CCELLGRD.BMP"), EImageBlitMode::COLORKEY);
 	cellShade = ENGINE->renderHandler().loadImage(ImagePath::builtin("CCELLSHD.BMP"), EImageBlitMode::SIMPLE);
-	const bool jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
-	if(jadeTheme)
-		cellActiveBorder = ENGINE->renderHandler().loadImage(ImagePath::builtin("cultivation/ui/jade/hex-active-border"), EImageBlitMode::SIMPLE);
+	// 移动范围的描边、点选遮罩、悬停底色（模拟器那套青玉格子）：模组里有这几张图就用，没有就按原版。
+	// 战斗模拟器的 cultivation 与游戏里的 cultivation-battle 都提供，不再要求 jadeTheme
+	const auto optionalCellImage = [](const std::string & name) -> std::shared_ptr<IImage>
+	{
+		const auto path = ImagePath::builtin(name);
+		if(!CResourceHandler::get()->existsResource(path.addPrefix("DATA/")) && !CResourceHandler::get()->existsResource(path.addPrefix("SPRITES/")))
+			return nullptr;
+		return ENGINE->renderHandler().loadImage(path, EImageBlitMode::SIMPLE);
+	};
+	cellActiveBorder = optionalCellImage("cultivation/ui/jade/hex-active-border");
 	// Picking uses an opaque mask independently of the translucent range overlay.
-	cellHitMask = jadeTheme ? ENGINE->renderHandler().loadImage(ImagePath::builtin("cultivation/ui/jade/hex-hit"), EImageBlitMode::SIMPLE) : cellShade;
-	cellHoverShade = jadeTheme ? ENGINE->renderHandler().loadImage(ImagePath::builtin("cultivation/ui/jade/hex-hover"), EImageBlitMode::SIMPLE) : cellShade;
+	cellHitMask = optionalCellImage("cultivation/ui/jade/hex-hit");
+	if(!cellHitMask)
+		cellHitMask = cellShade;
+	cellHoverShade = optionalCellImage("cultivation/ui/jade/hex-hover");
+	if(!cellHoverShade)
+		cellHoverShade = cellShade;
 	cellUnitMovementHighlight = ENGINE->renderHandler().loadImage(ImagePath::builtin("UnitMovementHighlight.PNG"), EImageBlitMode::COLORKEY);
 	cellUnitMaxMovementHighlight = ENGINE->renderHandler().loadImage(ImagePath::builtin("UnitMaxMovementHighlight.PNG"), EImageBlitMode::COLORKEY);
 

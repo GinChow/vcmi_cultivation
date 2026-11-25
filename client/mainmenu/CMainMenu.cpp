@@ -116,7 +116,10 @@ void CMenuScreen::buildMenu()
 	if(config["covered"]["overlay"].isString())
 	{
 		coveredOverlay = std::make_shared<CPicture>(ImagePath::fromJson(config["covered"]["overlay"]), Point(0, 0));
-		removeChild(coveredOverlay.get());
+		// 从挂上的父控件摘下来。战斗模拟器（--battle-scenario）启动时主菜单在网络线程上构建，
+		// 新建控件挂到哪个父控件看的是全局的 createdObj 栈，可能挂到别处：按 this 摘会抛“Wrong child object”闪退
+		if(coveredOverlay->parent)
+			coveredOverlay->parent->removeChild(coveredOverlay.get());
 		coveredOverlay->scaleTo(Point(pos.w, pos.h));
 		coveredOverlay->moveTo(pos.topLeft());
 	}
