@@ -9,6 +9,7 @@
  */
 #include "StdInc.h"
 #include "BattleWindow.h"
+#include "BattleTheme.h"
 
 #include "BattleActionsController.h"
 #include "BattleConsole.h"
@@ -984,11 +985,11 @@ void BattleWindow::endWithAutocombat()
 void BattleWindow::showAll(Canvas & to)
 {
 	if(owner.curInt->cb->getMapHeader()->battleOnly)
-		to.fillTexture(ENGINE->renderHandler().loadImage(ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/backdrop" : "DiBoxBck"), EImageBlitMode::OPAQUE));
+		to.fillTexture(ENGINE->renderHandler().loadImage(BattleTheme::image("backdrop", jadeTheme ? "cultivation/ui/jade/backdrop" : "DiBoxBck"), EImageBlitMode::OPAQUE));
 	CIntObject::showAll(to);
 
 	if (ENGINE->screenDimensions().x != 800 || ENGINE->screenDimensions().y !=600)
-		to.drawBorder(Rect(pos.x-1, pos.y - (queue && queue->embedded ? 1 : 0), pos.w+2, pos.h+1 + (queue && queue->embedded ? 1 : 0)), jadeTheme ? ColorRGBA(201, 205, 190, 0) : Colors::BRIGHT_YELLOW);
+		to.drawBorder(Rect(pos.x-1, pos.y - (queue && queue->embedded ? 1 : 0), pos.w+2, pos.h+1 + (queue && queue->embedded ? 1 : 0)), BattleTheme::color("windowBorder", jadeTheme ? ColorRGBA(201, 205, 190, 0) : Colors::BRIGHT_YELLOW));
 }
 
 void BattleWindow::show(Canvas & to)

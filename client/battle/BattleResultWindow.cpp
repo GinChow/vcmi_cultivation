@@ -11,6 +11,7 @@
 #include "BattleResultWindow.h"
 
 #include "BattleWindow.h"
+#include "BattleTheme.h"
 
 #include "../GameInstance.h"
 #include "../Client.h"
@@ -37,18 +38,56 @@
 #include "../../lib/networkPacks/PacksForClientBattle.h"
 #include "../../lib/texts/CGeneralTextHandler.h"
 
+/// 斗法结算窗的模组布局：battleWindow2.json 的 "result" 节，没有时为空节点、一律按原版。
+/// "background" 底图（给了就不再按玩家色染）；"exit"/"repeat" 按钮 {x, y, image}，"buttonBorder": false 不描边；
+/// "applyLabel"、"sideResult": [左, 右]、"names": [左, 右]、"casualtiesTitle"、"attackerLabel"、"defenderLabel" 标签（"hidden": true 不显示）；
+/// "winColor"/"loseColor" 胜负字色；"portraits": [左, 右]；"casualties": [{x 中心, y, w 最宽}, …]，"casualtyFrame" 每个兵头像下的框图与
+/// "casualtyFrameOffset"，"countColor"、"emptyColor"；"description": {x, y, w, h, color}；"video": false 不放原版胜负动画；
+/// "artwork": {"victory", "defeat", x, y} 按本方胜负换题图
+static const JsonNode & resultLayout()
+{
+	return BattleTheme::config()["result"];
+}
+
+/// 按布局建标签：节点 "hidden": true 时不建（返回空）
+static std::shared_ptr<CLabel> resultLabel(const JsonNode & node, const Point & position, EFonts font, ETextAlignment alignment, const ColorRGBA & color, const std::string & text)
+{
+	if(node["hidden"].Bool())
+		return nullptr;
+	return WidgetLayout::label(node, position, font, alignment, WidgetLayout::remapColor(resultLayout()["colors"], color), text);
+}
+
+static const JsonNode & resultSide(const JsonNode & node, int side)
+{
+	static const JsonNode empty;
+	if(node.isVector() && side < node.Vector().size())
+		return node.Vector()[side];
+	return empty;
+}
+
 BattleResultWindow::BattleResultWindow(const BattleResult & br, CPlayerInterface & _owner, bool allowReplay)
 	: owner(_owner)
 {
 	OBJECT_CONSTRUCTION;
 	const bool jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
+	const JsonNode & layout = resultLayout();
+	auto addLabel = [this](const std::shared_ptr<CLabel> & label)
+	{
+		if(label)
+			labels.push_back(label);
+	};
 
-	background = std::make_shared<CPicture>(ImagePath::builtin("CPRESULT"));
-	background->setPlayerColor(owner.playerID);
+	background = std::make_shared<CPicture>(WidgetLayout::image(layout["background"], ImagePath::builtin("CPRESULT")));
+	if(layout["background"].isNull())
+		background->setPlayerColor(owner.playerID);
 	pos = center(background->pos);
 
+	const bool buttonBorder = layout["buttonBorder"].isNull() || layout["buttonBorder"].Bool();
+	const std::optional<ColorRGBA> borderColor = buttonBorder ? std::optional<ColorRGBA>(jadeTheme ? ColorRGBA(154, 176, 161) : Colors::METALLIC_GOLD) : std::nullopt;
+
 	exit = std::make_shared<CButton>(Point(384, 505), AnimationPath::builtin("iok6432.def"), std::make_pair("", ""), [this](){ bExitf();}, EShortcut::GLOBAL_ACCEPT);
-	exit->setBorderColor(jadeTheme ? ColorRGBA(154, 176, 161) : Colors::METALLIC_GOLD);
+	exit->setBorderColor(borderColor);
+	WidgetLayout::applyButton(exit, layout["exit"]);
 
 	auto battle = owner.cb->getBattle(br.battleID);
 	const auto * attackerPlayer = GAME->server().client->gameInfo().getPlayerState(battle->sideToPlayer(BattleSide::ATTACKER));
@@ -60,31 +99,24 @@ BattleResultWindow::BattleResultWindow(const BattleResult & br, CPlayerInterface
 	if((allowReplay || owner.cb->getStartInfo()->extraOptionsInfo.unlimitedReplay) && onlyOnePlayerHuman)
 	{
 		repeat = std::make_shared<CButton>(Point(24, 505), AnimationPath::builtin("icn6432.def"), std::make_pair("", ""), [this](){ bRepeatf();}, EShortcut::GLOBAL_CANCEL);
-		repeat->setBorderColor(jadeTheme ? ColorRGBA(154, 176, 161) : Colors::METALLIC_GOLD);
-		labels.push_back(std::make_shared<CLabel>(232, 520, FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->translate("vcmi.battleResultsWindow.applyResultsLabel")));
+		repeat->setBorderColor(borderColor);
+		WidgetLayout::applyButton(repeat, layout["repeat"]);
+		addLabel(resultLabel(layout["applyLabel"], Point(232, 520), FONT_MEDIUM, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->translate("vcmi.battleResultsWindow.applyResultsLabel")));
 	}
 
-	if(br.winner == BattleSide::ATTACKER)
+	// 两边“胜利/失败”：布局给了 winColor/loseColor 时按胜负着色
+	for(auto side : {BattleSide::ATTACKER, BattleSide::DEFENDER})
 	{
-		labels.push_back(std::make_shared<CLabel>(59, 124, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[410]));
-	}
-	else
-	{
-		labels.push_back(std::make_shared<CLabel>(59, 124, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[411]));
-	}
-
-	if(br.winner == BattleSide::DEFENDER)
-	{
-		labels.push_back(std::make_shared<CLabel>(412, 124, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[410]));
-	}
-	else
-	{
-		labels.push_back(std::make_shared<CLabel>(408, 124, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[411]));
+		const bool sideWon = br.winner == side;
+		const int s = static_cast<int>(side);
+		const Point fallback = side == BattleSide::ATTACKER ? Point(59, 124) : Point(sideWon ? 412 : 408, 124);
+		const ColorRGBA color = WidgetLayout::color(layout[sideWon ? "winColor" : "loseColor"], Colors::WHITE);
+		addLabel(resultLabel(resultSide(layout["sideResult"], s), fallback, FONT_SMALL, ETextAlignment::CENTER, color, LIBRARY->generaltexth->allTexts[sideWon ? 410 : 411]));
 	}
 
-	labels.push_back(std::make_shared<CLabel>(232, 302, FONT_BIG, ETextAlignment::CENTER, Colors::YELLOW,  LIBRARY->generaltexth->allTexts[407]));
-	labels.push_back(std::make_shared<CLabel>(232, 332, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[408]));
-	labels.push_back(std::make_shared<CLabel>(232, 428, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[409]));
+	addLabel(resultLabel(layout["casualtiesTitle"], Point(232, 302), FONT_BIG, ETextAlignment::CENTER, Colors::YELLOW,  LIBRARY->generaltexth->allTexts[407]));
+	addLabel(resultLabel(layout["attackerLabel"], Point(232, 332), FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[408]));
+	addLabel(resultLabel(layout["defenderLabel"], Point(232, 428), FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[409]));
 
 	std::array<std::string, 2> sideNames = {"N/A", "N/A"};
 
@@ -92,10 +124,11 @@ BattleResultWindow::BattleResultWindow(const BattleResult & br, CPlayerInterface
 	{
 		auto heroInfo = owner.cb->getBattle(br.battleID)->battleGetHeroInfo(i);
 		const std::array xs = {21, 392};
+		const Point portrait = WidgetLayout::point(resultSide(layout["portraits"], static_cast<int>(i)), Point(xs[static_cast<int>(i)], 38));
 
 		if(heroInfo.portraitSource.isValid()) //attacking hero
 		{
-			icons.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("PortraitsLarge"), heroInfo.getIconIndex(), 0, xs[static_cast<int>(i)], 38));
+			icons.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("PortraitsLarge"), heroInfo.getIconIndex(), 0, portrait.x, portrait.y));
 			sideNames[static_cast<int>(i)] = heroInfo.name.toString(&GAME->translator());
 		}
 		else
@@ -113,20 +146,24 @@ BattleResultWindow::BattleResultWindow(const BattleResult & br, CPlayerInterface
 
 			if(best != stacks.end()) //should be always but to be safe...
 			{
-				icons.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("TWCRPORT"), (*best)->unitType()->getIconIndex(), 0, xs[static_cast<int>(i)], 38));
+				icons.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("TWCRPORT"), (*best)->unitType()->getIconIndex(), 0, portrait.x, portrait.y));
 				sideNames[static_cast<int>(i)] = (*best)->unitType()->getNamePluralTranslated();
 			}
 		}
 	}
 
 	//printing attacker and defender's names
-	labels.push_back(std::make_shared<CLabel>(89, 37, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, sideNames[0]));
-	labels.push_back(std::make_shared<CLabel>(381, 53, FONT_SMALL, ETextAlignment::BOTTOMRIGHT, Colors::WHITE, sideNames[1]));
+	addLabel(resultLabel(resultSide(layout["names"], 0), Point(89, 37), FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, sideNames[0]));
+	addLabel(resultLabel(resultSide(layout["names"], 1), Point(381, 53), FONT_SMALL, ETextAlignment::BOTTOMRIGHT, Colors::WHITE, sideNames[1]));
 
 	//printing casualties
 	static constexpr int iconWidth = 32;
 	static constexpr int maxIconGap = 10;
 	static constexpr int maxCasualtiesWidth = 380; // width of casualties frame on background image
+	const ImagePath casualtyFrame = WidgetLayout::image(layout["casualtyFrame"], ImagePath());
+	const Point casualtyFrameOffset = WidgetLayout::point(layout["casualtyFrameOffset"], Point());
+	const ColorRGBA countColor = WidgetLayout::color(layout["countColor"], Colors::WHITE);
+	const ColorRGBA emptyColor = WidgetLayout::color(layout["emptyColor"], Colors::WHITE);
 
 	for(auto step : {BattleSide::ATTACKER, BattleSide::DEFENDER})
 	{
@@ -137,22 +174,31 @@ BattleResultWindow::BattleResultWindow(const BattleResult & br, CPlayerInterface
 				shownCasualties.push_back(elem);
 		}
 
+		// 布局 "casualties": [{x: 中心, y: 头像顶, w: 最宽, gap: 最大间距}, …]
+		const JsonNode & row = resultSide(layout["casualties"], static_cast<int>(step));
+		const int centerX = row["x"].isNull() ? 235 : row["x"].Integer();
+		const int rowY = row["y"].isNull() ? 344 + static_cast<int>(step) * 97 : row["y"].Integer();
+		const int rowWidth = row["w"].isNull() ? maxCasualtiesWidth : row["w"].Integer();
+		const int rowGap = row["gap"].isNull() ? maxIconGap : row["gap"].Integer();
+
 		if(shownCasualties.empty())
 		{
-			labels.push_back(std::make_shared<CLabel>(235, 360 + 97 * static_cast<int>(step), FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, LIBRARY->generaltexth->allTexts[523]));
+			labels.push_back(std::make_shared<CLabel>(centerX, rowY + 16, FONT_SMALL, ETextAlignment::CENTER, emptyColor, LIBRARY->generaltexth->allTexts[523]));
 		}
 		else
 		{
 			int casualties = shownCasualties.size();
 			// negative gap if icons can't fit into frame - overlap icons instead
-			int iconGap = casualties > 1 ? std::min((maxCasualtiesWidth - casualties * iconWidth) / (casualties - 1), maxIconGap) : 0;
-			int xPos = 235 - (casualties * iconWidth + (casualties - 1) * iconGap) / 2;
-			int yPos = 344 + static_cast<int>(step) * 97;
+			int iconGap = casualties > 1 ? std::min((rowWidth - casualties * iconWidth) / (casualties - 1), rowGap) : 0;
+			int xPos = centerX - (casualties * iconWidth + (casualties - 1) * iconGap) / 2;
+			int yPos = rowY;
 			for(int i = 0; i < casualties; ++i)
 			{
 				const auto * creature = shownCasualties[i].first.toEntity(LIBRARY);
+				if(!casualtyFrame.empty())
+					casualtyFrames.push_back(std::make_shared<CPicture>(casualtyFrame, xPos + casualtyFrameOffset.x, yPos + casualtyFrameOffset.y));
 				icons.push_back(std::make_shared<CAnimImage>(AnimationPath::builtin("CPRSMALL"), creature->getIconIndex(), 0, xPos, yPos));
-				labels.push_back(std::make_shared<CLabel>(xPos + iconWidth / 2, yPos + 42, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE, std::to_string(shownCasualties[i].second)));
+				labels.push_back(std::make_shared<CLabel>(xPos + iconWidth / 2, yPos + 42, FONT_SMALL, ETextAlignment::CENTER, countColor, std::to_string(shownCasualties[i].second)));
 				xPos += iconWidth + iconGap;
 			}
 		}
@@ -160,15 +206,25 @@ BattleResultWindow::BattleResultWindow(const BattleResult & br, CPlayerInterface
 
 	auto resources = getResources(br);
 
-	description = std::make_shared<CTextBox>(resources.resultText.toString(&GAME->translator()), Rect(69, 203, 330, 68), 0, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE);
-	if(jadeTheme)
+	const JsonNode & artwork = layout["artwork"];
+	if(artwork.isStruct())
+	{
+		const bool won = br.winner == battle->battleGetMySide();
+		resultArtwork = std::make_shared<CPicture>(WidgetLayout::image(artwork[won ? "victory" : "defeat"], ImagePath()), WidgetLayout::point(artwork, Point()));
+	}
+	else if(jadeTheme)
 	{
 		const bool won = br.winner == battle->battleGetMySide();
 		resultArtwork = std::make_shared<CPicture>(ImagePath::builtin(won ? "cultivation/ui/y700-windows/victory" : "cultivation/ui/y700-windows/defeat"), 195, 75);
 		labels.push_back(std::make_shared<CLabel>(235, 177, FONT_BIG, ETextAlignment::CENTER, ColorRGBA(243, 240, 231), LIBRARY->generaltexth->translate(won ? "cultivation.windows.victory" : "cultivation.windows.defeat")));
 	}
-	else
+	else if(layout["video"].isNull() || layout["video"].Bool())
 		videoPlayer = std::make_shared<VideoWidget>(Point(107, 70), resources.prologueVideo, resources.loopedVideo, false);
+
+	// 说明文字建在题图之后，题图里留了放说明的空当时字压在题图上面
+	const JsonNode & descLayout = layout["description"];
+	description = std::make_shared<CTextBox>(resources.resultText.toString(&GAME->translator()), WidgetLayout::rect(descLayout, Rect(69, 203, 330, 68)), 0, FONT_SMALL, ETextAlignment::CENTER, WidgetLayout::color(descLayout["color"], Colors::WHITE));
+
 
 	if(!resources.musicSet.empty())
 		ENGINE->music().playMusicFromSet(resources.musicSet, false, true);

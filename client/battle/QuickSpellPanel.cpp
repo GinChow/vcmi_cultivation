@@ -13,6 +13,7 @@
 #include "BattleFieldController.h"
 #include "BattleInterface.h"
 #include "BattleWindow.h"
+#include "BattleTheme.h"
 
 #include "../GameEngine.h"
 #include "events/InputHandler.h"
@@ -44,8 +45,9 @@ QuickSpellPanel::QuickSpellPanel(BattleInterface & owner)
 	jadeTheme = JsonNode(JsonPath::builtin("config/widgets/BattleWindow2.json"))["jadeTheme"].Bool();
 	horizontal = jadeTheme && ENGINE->screenDimensions().y >= 720;
 	pos = horizontal ? Rect(0, 0, 800, 60) : Rect(0, 0, 52, 600);
-	background = std::make_shared<CFilledTexture>(ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/texture" : "DIBOXBCK"), pos);
-	rect = std::make_shared<TransparentFilledRectangle>(Rect(0, 0, pos.w + 1, pos.h + 1), ColorRGBA(0, 0, 0, 0), jadeTheme ? ColorRGBA(201, 205, 190, 0) : ColorRGBA(241, 216, 120, 255));
+	// 主题键 "panelTexture"（底纹）、"panelBorder"（描边色）
+	background = std::make_shared<CFilledTexture>(BattleTheme::image("panelTexture", jadeTheme ? "cultivation/ui/jade/texture" : "DIBOXBCK"), pos);
+	rect = std::make_shared<TransparentFilledRectangle>(Rect(0, 0, pos.w + 1, pos.h + 1), ColorRGBA(0, 0, 0, 0), BattleTheme::color("panelBorder", jadeTheme ? ColorRGBA(201, 205, 190, 0) : ColorRGBA(241, 216, 120, 255)));
 
 	create();
 }
@@ -140,7 +142,7 @@ void QuickSpellPanel::create()
 				owner.castThisSpell(id);
 		};
 
-		auto button = std::make_shared<CButton>(slot, AnimationPath::builtin(jadeTheme ? "cultivation/ui/jade/skill" : "spellint"), CButton::tooltip(hoverText), callback);
+		auto button = std::make_shared<CButton>(slot, BattleTheme::animation("quickSpellButton", jadeTheme ? "cultivation/ui/jade/skill" : "spellint"), CButton::tooltip(hoverText), callback);
 		if(!jadeTheme || id != SpellID::NONE)
 			button->setOverlay(std::make_shared<CAnimImage>(AnimationPath::builtin("spellint"), id != SpellID::NONE ? id.num + 1 : 0));
 		button->addPopupCallback([this, i, hero](){

@@ -9,6 +9,7 @@
  */
 #include "StdInc.h"
 #include "StackQueue.h"
+#include "BattleTheme.h"
 
 #include "BattleActionsController.h"
 #include "BattleFieldController.h"
@@ -59,7 +60,7 @@ StackQueue::StackQueue(bool Embedded, BattleInterface & owner)
 		pos.x += 0;
 		pos.y -= pos.h;
 
-		background = std::make_shared<CFilledTexture>(ImagePath::builtin(jadeTheme ? "cultivation/ui/jade/texture" : "DIBOXBCK"), Rect(0, 0, pos.w, pos.h));
+		background = std::make_shared<CFilledTexture>(BattleTheme::image("panelTexture", jadeTheme ? "cultivation/ui/jade/texture" : "DIBOXBCK"), Rect(0, 0, pos.w, pos.h));
 	}
 
 	stackBoxes.resize(queueSize);
@@ -241,7 +242,7 @@ void StackQueue::StackBox::showAll(Canvas & to)
 	}
 
 	if(isBoundUnitHighlighted())
-		to.drawBorder(background->pos, owner->jadeTheme ? ColorRGBA(164, 67, 54) : Colors::CYAN, 2);
+		to.drawBorder(background->pos, BattleTheme::color("queueActive", owner->jadeTheme ? ColorRGBA(164, 67, 54) : Colors::CYAN), 2);
 }
 
 void StackQueue::StackBox::show(Canvas & to)
@@ -249,7 +250,7 @@ void StackQueue::StackBox::show(Canvas & to)
 	CIntObject::show(to);
 
 	if(isBoundUnitHighlighted())
-		to.drawBorder(background->pos, owner->jadeTheme ? ColorRGBA(164, 67, 54) : Colors::CYAN, 2);
+		to.drawBorder(background->pos, BattleTheme::color("queueActive", owner->jadeTheme ? ColorRGBA(164, 67, 54) : Colors::CYAN), 2);
 }
 
 BattleHex StackQueue::StackBox::getBoundUnitHex() const

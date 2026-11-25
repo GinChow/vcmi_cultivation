@@ -41,6 +41,8 @@ private:
 	std::vector<std::shared_ptr<CLabel>> labels;
 	std::shared_ptr<CButton> exit;
 	std::shared_ptr<CButton> repeat;
+	/// 折损兵头像下的框（模组布局 "casualtyFrame"），先于头像建、画在下面
+	std::vector<std::shared_ptr<CPicture>> casualtyFrames;
 	std::vector<std::shared_ptr<CAnimImage>> icons;
 	std::shared_ptr<CTextBox> description;
 	std::shared_ptr<VideoWidget> videoPlayer;

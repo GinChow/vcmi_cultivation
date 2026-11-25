@@ -9,6 +9,7 @@
  */
 #include "StdInc.h"
 #include "BattleStacksController.h"
+#include "BattleTheme.h"
 
 #include "BattleActionsController.h"
 #include "BattleAnimationClasses.h"
@@ -398,12 +399,13 @@ void BattleStacksController::showStackAmountBox(Canvas & canvas, const CStack * 
 		double healthMaxRatio = std::min(healthMaxStack / healthMaxType, 1.0);
 		double healthRemaining = std::max(getDisplayedStackHealth(stack) - (displayedCount - 1) * healthMaxStack, .0) * healthMaxRatio;
 		Rect r(boxPosition.x, boxPosition.y - 3, amountBG->width(), 4);
-		canvas.drawColor(r, Colors::RED);
-		canvas.drawColor(Rect(r.x, r.y, (r.w / healthMaxStack) * healthRemaining, r.h), Colors::GREEN);
-		canvas.drawBorder(r, Colors::YELLOW);
+		// 主题键 "healthMissing"（已损）、"healthFill"（剩余）、"healthBorder"（描边）
+		canvas.drawColor(r, BattleTheme::color("healthMissing", Colors::RED));
+		canvas.drawColor(Rect(r.x, r.y, (r.w / healthMaxStack) * healthRemaining, r.h), BattleTheme::color("healthFill", Colors::GREEN));
+		canvas.drawBorder(r, BattleTheme::color("healthBorder", Colors::YELLOW));
 	}
 	canvas.draw(amountBG, boxPosition);
-	canvas.drawText(textPosition, EFonts::FONT_TINY, Colors::WHITE, ETextAlignment::CENTER, TextOperations::formatMetric(displayedCount, 4));
+	canvas.drawText(textPosition, EFonts::FONT_TINY, BattleTheme::color("amountText", Colors::WHITE), ETextAlignment::CENTER, TextOperations::formatMetric(displayedCount, 4));
 }
 
 void BattleStacksController::showStack(Canvas & canvas, const CStack * stack)
