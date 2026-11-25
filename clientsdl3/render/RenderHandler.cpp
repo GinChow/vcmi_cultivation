@@ -162,6 +162,8 @@ void RenderHandler::initFromJson(AnimationLayoutMap & source, const JsonNode & c
 	base["margins"] = config["margins"];
 	base["width"] = config["width"];
 	base["height"] = config["height"];
+	// 最多加载到几倍图（见 ScalableImageShared::forEachLayer）
+	base["maxScale"] = config["maxScale"];
 
 	for(const JsonNode & group : config["sequences"].Vector())
 	{
@@ -281,6 +283,17 @@ std::shared_ptr<ScalableImageShared> RenderHandler::loadImageImpl(const ImageLoc
 	}
 
 	auto sdlImage = loadImageFromFileUncached(locator);
+	// 动画 JSON 给了整张画布尺寸（width、height）时，帧图是裁过透明边的小图，margins 是它在画布上的左上角：
+	// 摆回画布原位，否则各帧都贴在画布左上角（模拟器的武侠角色就是这样存的）
+	if(locator.fullSize.x > 0 && locator.fullSize.y > 0)
+	{
+		auto bitmap = std::dynamic_pointer_cast<SDLImageShared>(sdlImage);
+		if(bitmap)
+		{
+			bitmap->setMargins(bitmap->contentRect().topLeft() + locator.margins);
+			bitmap->setFullSize(locator.fullSize);
+		}
+	}
 	auto scaledImage = std::make_shared<ScalableImageShared>(locator, sdlImage);
 
 	storeCachedImage(locator, scaledImage);
@@ -465,6 +478,13 @@ std::shared_ptr<SDLImageShared> RenderHandler::loadScaledImage(const ImageLocato
 
 	if(img)
 	{
+		// 裁过透明边的帧图摆回画布原位，画布尺寸与边距按这一档倍数放大（同 loadImageImpl）
+		if(locator.fullSize.x > 0 && locator.fullSize.y > 0)
+		{
+			img->setMargins(img->contentRect().topLeft() + locator.margins * locator.scalingFactor);
+			img->setFullSize(locator.fullSize * locator.scalingFactor);
+		}
+
 		// TODO: Performance improvement - Run algorithm on optimized ("trimmed") images
 		// Not implemented yet because different frame image sizes seems to cause wobbeling shadow -> needs a way around this
 		if(isShadow && generateShadow)
@@ -643,7 +663,9 @@ void RenderHandler::onLibraryLoadingFinished(const Services * services)
 	assert(animationLayouts.empty());
 	assetGenerator->initialize();
 	updateGeneratedAssets();
-	preloadPaletteShiftedFrames();
+	// 战斗模拟器（--battle-scenario）不进大地图，不用预载地形、河流的调色板动画帧
+	if(!settings["session"]["manualBattle"].Bool())
+		preloadPaletteShiftedFrames();
 
 	addImageListEntries(services->creatures());
 	addImageListEntries(services->heroTypes());

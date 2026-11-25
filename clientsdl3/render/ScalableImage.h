@@ -65,6 +65,8 @@ class ScalableImageShared final : public ICacheableAsset, public std::enable_sha
 
 		/// Upscaled overlay (player color, selection highlight) of our image, may be null
 		FlippedImages overlay;
+		/// 选中描边（悬停兵种时的轮廓）按需加载过没有：平时不画就不加载，省下兵种每帧一张描边图的内存
+		bool selectionOverlayPrepared = false;
 
 		/// Upscaled grayscale version of body, for special effects in combat (e.g clone / petrify / berserk)
 		FlippedImages bodyGrayscale;
@@ -98,7 +100,7 @@ class ScalableImageShared final : public ICacheableAsset, public std::enable_sha
 
 	/// True while any variant needed for this draw is still being upscaled, in which case
 	/// only the 1x image may be used
-	bool anyVariantLoading(int scalingFactor, const ScalableImageParameters & parameters) const;
+	bool anyVariantLoading(int scalingFactor, const ScalableImageParameters & parameters, bool overlayVisible) const;
 
 	void loadScaledImages(int8_t scalingFactor, PlayerColor color);
 

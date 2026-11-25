@@ -236,7 +236,7 @@ ScalableImageShared::ScalableImageShared(const SharedImageLocator & locator, con
 	scaled[1].body[0] = baseImage;
 	assert(scaled[1].body[0] != nullptr);
 
-	loadScaledImages(ENGINE->screenHandler().getScalingFactor(), PlayerColor::CANNOT_DETERMINE);
+	loadScaledImages(std::min(ENGINE->screenHandler().getScalingFactor(), locator.maxScale), PlayerColor::CANNOT_DETERMINE);
 }
 
 Point ScalableImageShared::dimensions() const
@@ -282,7 +282,7 @@ const ScalableImageShared::ImageType & ScalableImageShared::selectFlipped(Flippe
 	return images[index];
 }
 
-bool ScalableImageShared::anyVariantLoading(int scalingFactor, const ScalableImageParameters & parameters) const
+bool ScalableImageShared::anyVariantLoading(int scalingFactor, const ScalableImageParameters & parameters, bool overlayVisible) const
 {
 	const auto & variant = scaled.at(scalingFactor);
 
@@ -291,7 +291,8 @@ bool ScalableImageShared::anyVariantLoading(int scalingFactor, const ScalableIma
 	if (parameters.player != PlayerColor::CANNOT_DETERMINE && isLoading(variant.playerColored.at(1 + parameters.player.getNum())))
 		return true;
 
-	return isLoading(variant.shadow.at(0)) || isLoading(variant.body.at(0)) || isLoading(variant.overlay.at(0)) || isLoading(variant.bodyGrayscale.at(0));
+	// 这一帧不画描边层时，描边还在放大也不用等它
+	return isLoading(variant.shadow.at(0)) || isLoading(variant.body.at(0)) || (overlayVisible && isLoading(variant.overlay.at(0))) || isLoading(variant.bodyGrayscale.at(0));
 }
 
 template<typename DrawScaled, typename DrawNative>
@@ -299,6 +300,17 @@ bool ScalableImageShared::forEachLayer(int scalingFactor, const ScalableImagePar
 {
 	// either the caller mirrors as it draws and gets the plain image, or it gets a mirrored copy
 	const ImageFlip flip = mirrorWhileDrawing ? ImageFlip{parameters.flipVertical, parameters.flipHorizontal} : ImageFlip{};
+
+	// 模组帧图的 maxScale 限定最多加载到几倍图（模拟器的武侠角色只给到 2 倍，3 倍是没裁过的整张画布）：
+	// 取不超过它的那一档，再拉伸到屏幕倍数去画。drawScaled 按屏幕倍数（调用方传进来的 scalingFactor）计算目标尺寸
+	const int outputScale = scalingFactor;
+	scalingFactor = std::min(scalingFactor, locator.maxScale);
+	const uint8_t overlayAlpha = static_cast<int>(parameters.alphaValue) * parameters.ovelayColorMultiplier.a / 255;
+	const bool overlayVisible = overlayAlpha != ColorRGBA::ALPHA_TRANSPARENT;
+	const auto & drawLayer = [&](const ImageType & image, const ColorRGBA & color, uint8_t alpha, const ImageFlip & layerFlip)
+	{
+		return scalingFactor == outputScale ? drawNative(image, color, alpha, layerFlip) : drawScaled(image, color, alpha, layerFlip);
+	};
 
 	// something is being drawn from us again after the memory cache gave us up - build back what
 	// it takes. The upscale runs on a worker, so the check below stands in until it lands.
@@ -308,12 +320,20 @@ bool ScalableImageShared::forEachLayer(int scalingFactor, const ScalableImagePar
 		loadScaledImages(scalingFactor, parameters.player);
 	}
 
+	// 选中描边（悬停兵种时的轮廓）第一次要画时才加载
+	if(overlayVisible && !scaled[scalingFactor].selectionOverlayPrepared
+		&& (locator.layer == EImageBlitMode::ONLY_SELECTION || locator.layer == EImageBlitMode::WITH_SHADOW_AND_SELECTION))
+	{
+		scaled[scalingFactor].selectionOverlayPrepared = true;
+		scaled[scalingFactor].overlay[0] = loadOrGenerateImage(EImageBlitMode::ONLY_SELECTION, scalingFactor, PlayerColor::CANNOT_DETERMINE, scaled[1].overlay[0]);
+	}
+
 	const auto & pick = [&](FlippedImages & images) -> const ImageType &
 	{
 		return mirrorWhileDrawing ? images[0] : selectFlipped(images, parameters);
 	};
 
-	if (anyVariantLoading(scalingFactor, parameters))
+	if (anyVariantLoading(scalingFactor, parameters, overlayVisible))
 	{
 		// upscaling is still running - the 1x image is stretched to stand in for it
 		RenderHandler::notifyPlaceholderDrawn();
@@ -330,24 +350,24 @@ bool ScalableImageShared::forEachLayer(int scalingFactor, const ScalableImagePar
 	bool drawn = true;
 
 	if (variant.shadow.at(0))
-		drawn = drawNative(pick(variant.shadow), Colors::WHITE_TRUE, parameters.alphaValue, flip) && drawn;
+		drawn = drawLayer(pick(variant.shadow), Colors::WHITE_TRUE, parameters.alphaValue, flip) && drawn;
 
 	if (parameters.player != PlayerColor::CANNOT_DETERMINE && variant.playerColored.at(1 + parameters.player.getNum()))
 	{
 		// the player-coloured variant has never been mirrored - keep it that way here
-		drawn = drawNative(variant.playerColored.at(1 + parameters.player.getNum()), Colors::WHITE_TRUE, parameters.alphaValue, ImageFlip{}) && drawn;
+		drawn = drawLayer(variant.playerColored.at(1 + parameters.player.getNum()), Colors::WHITE_TRUE, parameters.alphaValue, ImageFlip{}) && drawn;
 	}
 	else
 	{
 		if (variant.body.at(0))
-			drawn = drawNative(pick(variant.body), parameters.colorMultiplier, parameters.alphaValue, flip) && drawn;
+			drawn = drawLayer(pick(variant.body), parameters.colorMultiplier, parameters.alphaValue, flip) && drawn;
 
 		if (variant.bodyGrayscale.at(0) && parameters.effectColorMultiplier.a != ColorRGBA::ALPHA_TRANSPARENT)
-			drawn = drawNative(pick(variant.bodyGrayscale), parameters.effectColorMultiplier, parameters.alphaValue, flip) && drawn;
+			drawn = drawLayer(pick(variant.bodyGrayscale), parameters.effectColorMultiplier, parameters.alphaValue, flip) && drawn;
 	}
 
-	if (variant.overlay.at(0))
-		drawn = drawNative(pick(variant.overlay), parameters.ovelayColorMultiplier, static_cast<int>(parameters.alphaValue) * parameters.ovelayColorMultiplier.a / 255, flip) && drawn;
+	if (overlayVisible && variant.overlay.at(0))
+		drawn = drawLayer(pick(variant.overlay), parameters.ovelayColorMultiplier, overlayAlpha, flip) && drawn;
 
 	return drawn;
 }
@@ -576,6 +596,8 @@ std::shared_ptr<const ISharedImage> ScalableImageShared::loadOrGenerateImage(EIm
 	loadingLocator.defFile = locator.defFile;
 	loadingLocator.generateShadow = locator.generateShadow;
 	loadingLocator.generateOverlay = locator.generateOverlay;
+	loadingLocator.fullSize = locator.fullSize;
+	loadingLocator.margins = locator.margins;
 	loadingLocator.defFrame = locator.defFrame;
 	loadingLocator.defGroup = locator.defGroup;
 	loadingLocator.layer = mode;
@@ -604,7 +626,7 @@ std::shared_ptr<const ISharedImage> ScalableImageShared::loadOrGenerateImage(EIm
 	}
 
 	// alternatively, find largest pre-scaled image, load it and rescale to desired scaling
-	for (int8_t scaling = 4; scaling > 0; --scaling)
+	for (int8_t scaling = static_cast<int8_t>(locator.maxScale); scaling > 0; --scaling)
 	{
 		loadingLocator.scalingFactor = scaling;
 		auto loadedImage = ENGINE->renderHandler().loadScaledImage(loadingLocator);
@@ -732,10 +754,7 @@ void ScalableImageShared::loadScaledImages(int8_t scalingFactor, PlayerColor col
 			case EImageBlitMode::WITH_SHADOW_AND_FLAG_COLOR:
 				scaled[scalingFactor].overlay[0] = loadOrGenerateImage(EImageBlitMode::ONLY_FLAG_COLOR, scalingFactor, PlayerColor::CANNOT_DETERMINE, scaled[1].overlay[0]);
 				break;
-			case EImageBlitMode::ONLY_SELECTION:
-			case EImageBlitMode::WITH_SHADOW_AND_SELECTION:
-				scaled[scalingFactor].overlay[0] = loadOrGenerateImage(EImageBlitMode::ONLY_SELECTION, scalingFactor, PlayerColor::CANNOT_DETERMINE, scaled[1].overlay[0]);
-				break;
+			// 选中描边不在这里加载：forEachLayer() 第一次要画描边时才加载
 			default:
 				break;
 		}
@@ -744,12 +763,12 @@ void ScalableImageShared::loadScaledImages(int8_t scalingFactor, PlayerColor col
 
 void ScalableImageShared::preparePlayerColoredImage(PlayerColor color)
 {
-	loadScaledImages(ENGINE->screenHandler().getScalingFactor(), color);
+	loadScaledImages(std::min(ENGINE->screenHandler().getScalingFactor(), locator.maxScale), color);
 }
 
 void ScalableImageShared::prepareEffectImage()
 {
-	int scalingFactor = ENGINE->screenHandler().getScalingFactor();
+	int scalingFactor = std::min(ENGINE->screenHandler().getScalingFactor(), locator.maxScale);
 
 	if (scaled[scalingFactor].bodyGrayscale[0] == nullptr)
 	{
