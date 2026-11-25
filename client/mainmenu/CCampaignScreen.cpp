@@ -25,6 +25,7 @@
 #include "../widgets/ObjectLists.h"
 #include "../widgets/TextControls.h"
 #include "../widgets/VideoWidget.h"
+#include "../widgets/WidgetLayout.h"
 #include "../windows/GUIClasses.h"
 #include "../windows/InfoWindows.h"
 #include "../windows/CWindowObject.h"
@@ -42,8 +43,16 @@
 #include "../../lib/texts/CompositeTranslator.h"
 #include "../GameInstance.h"
 
+/// 征途选择布局（模组换皮用，如 cultivation-ui 的 config/widgets/menuScreens.json 里的 "campaignScreen" 节）：
+/// 战役按钮的可点范围、悬停时的光框图、是否显示原版黄色悬停名、悬停时底部的简介卷（名字 + 战役简介）。
+/// 背景、各战役图与位置仍由 config/campaignSets.json 给（模组可整体覆盖）。没有布局文件时全按原版。
+static const JsonNode & campaignLayout()
+{
+	return WidgetLayout::cached("config/widgets/menuScreens.json")["campaignScreen"];
+}
+
 CCampaignScreen::CCampaignScreen(const JsonNode & config, std::string name)
-	: CWindowObject(BORDERED), campaignSet(name)
+	: CWindowObject(WidgetLayout::windowOptions(campaignLayout()["window"], BORDERED)), campaignSet(name)
 {
 	OBJECT_CONSTRUCTION;
 	
@@ -83,9 +92,22 @@ CCampaignScreen::CCampaignScreen(const JsonNode & config, std::string name)
 	
 	for (const auto& node : campaigns)
 	{
-		auto button = std::make_shared<CCampaignButton>(node, config, campaignSet);
+		auto button = std::make_shared<CCampaignButton>(node, config, campaignSet,
+			[this](const std::string & title, const std::string & description, bool on){ showCampaignInfo(title, description, on); });
 		button->enable();
 		campButtons.push_back(button);
+	}
+
+	// 悬停时底部的简介卷：底图、战役名、简介正文，平时隐藏
+	const auto & info = campaignLayout()["info"];
+	if(info.isStruct())
+	{
+		infoBackground = std::make_shared<CPicture>(WidgetLayout::image(info["image"], ImagePath()), WidgetLayout::point(info, Point()));
+		infoTitle = WidgetLayout::label(info["title"], Point(), FONT_BIG, ETextAlignment::CENTER, Colors::YELLOW);
+		const auto & textNode = info["text"];
+		infoText = std::make_shared<CMultiLineLabel>(WidgetLayout::rect(textNode, Rect()), WidgetLayout::font(textNode["font"], FONT_SMALL),
+			WidgetLayout::alignment(textNode["alignment"], ETextAlignment::TOPCENTER), WidgetLayout::color(textNode["color"], Colors::WHITE), "");
+		showCampaignInfo("", "", false);
 	}
 
 	maxPages = (campaigns.size() + campaignsPerPage - 1) / campaignsPerPage;
@@ -141,15 +163,37 @@ std::shared_ptr<CButton> CCampaignScreen::createExitButton(const JsonNode & butt
 	return std::make_shared<CButton>(Point((int)button["x"].Float(), (int)button["y"].Float()), AnimationPath::fromJson(button["name"]), help, [this](){ close();}, EShortcut::GLOBAL_CANCEL);
 }
 
-CCampaignScreen::CCampaignButton::CCampaignButton(const JsonNode & config, const JsonNode & parentConfig, std::string campaignSet)
-	: campaignSet(campaignSet)
+void CCampaignScreen::showCampaignInfo(const std::string & title, const std::string & description, bool on)
+{
+	if(!infoBackground)
+		return;
+
+	for(CIntObject * widget : std::initializer_list<CIntObject *>{infoBackground.get(), infoTitle.get(), infoText.get()})
+	{
+		if(on)
+			widget->enable();
+		else
+			widget->disable();
+	}
+	if(on)
+	{
+		infoTitle->setText(title);
+		infoText->setText(description);
+	}
+	redraw();
+}
+
+CCampaignScreen::CCampaignButton::CCampaignButton(const JsonNode & config, const JsonNode & parentConfig, std::string campaignSet, HoverCallback onHover)
+	: campaignSet(campaignSet), onHover(std::move(onHover))
 {
 	OBJECT_CONSTRUCTION;
 
+	const auto & layout = campaignLayout();
 	pos.x += static_cast<int>(config["x"].Float());
 	pos.y += static_cast<int>(config["y"].Float());
-	pos.w = 200;
-	pos.h = 116;
+	// 原版战役图 200×116；换皮后（如竖幅挂轴）按布局给的可点范围
+	pos.w = layout["buttonSize"]["w"].isNumber() ? static_cast<int>(layout["buttonSize"]["w"].Integer()) : 200;
+	pos.h = layout["buttonSize"]["h"].isNumber() ? static_cast<int>(layout["buttonSize"]["h"].Integer()) : 116;
 
 	campFile = config["file"].String();
 	videoPath = VideoPath::fromJson(config["video"]);
@@ -163,6 +207,7 @@ CCampaignScreen::CCampaignButton::CCampaignButton(const JsonNode & config, const
 		CompositeTranslator translator;
 		translator.install(header->getTexts());
 		hoverText = header->getNameTranslated(&translator);
+		descriptionText = header->getDescriptionTranslated(&translator);
 
 		if (persistentStorage["completedCampaigns"][header->getFilename()].Bool())
 			status = CCampaignScreen::COMPLETED;
@@ -189,8 +234,20 @@ CCampaignScreen::CCampaignButton::CCampaignButton(const JsonNode & config, const
 	{
 		addUsedEvents(LCLICK | HOVER);
 		graphicsImage = std::make_shared<CPicture>(ImagePath::fromJson(config["image"]));
-		hoverLabel = std::make_shared<CLabel>(pos.w / 2, pos.h + 20, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, "");
-		parent->addChild(hoverLabel.get());
+		// 布局 "hoverLabel": false 时不要原版图下方的黄色战役名（换皮后名字画在图上，悬停简介另有简介卷）
+		if(!layout["hoverLabel"].isBool() || layout["hoverLabel"].Bool())
+		{
+			hoverLabel = std::make_shared<CLabel>(pos.w / 2, pos.h + 20, FONT_MEDIUM, ETextAlignment::CENTER, Colors::YELLOW, "");
+			parent->addChild(hoverLabel.get());
+		}
+		// 悬停光框：画在按钮外圈，换下时要整窗重画才擦得掉，所以按钮重画一律交给窗口
+		const auto & glow = layout["hoverImage"];
+		if(glow["image"].isString())
+		{
+			hoverImage = std::make_shared<CPicture>(WidgetLayout::image(glow["image"], ImagePath()), WidgetLayout::point(glow, Point()));
+			hoverImage->disable();
+			setRedrawParent(true);
+		}
 	}
 
 	if(status == CCampaignScreen::COMPLETED)
@@ -210,6 +267,18 @@ void CCampaignScreen::CCampaignButton::hover(bool on)
 		videoPlayer = std::make_shared<VideoWidget>(Point(), videoPath, false);
 	else
 		videoPlayer.reset();
+
+	if(hoverImage)
+	{
+		if(on)
+			hoverImage->enable();
+		else
+			hoverImage->disable();
+	}
+	if(onHover)
+		onHover(hoverText, descriptionText, on);
+	if(hoverImage)
+		redraw();
 
 	if(hoverLabel)
 	{
