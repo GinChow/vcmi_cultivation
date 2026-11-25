@@ -201,6 +201,8 @@ class CStackWindow : public CWindowObject
 	void submitSelection();
 
 	void init();
+	/// 卷轴样式（模组布局 "creature"."scroll"）时在窗口外沿画宣纸卷轴边框
+	void showAll(Canvas & to) override;
 	void initCommanderLevelUpData(CPlayerInterface * askedInterface, const CCommanderInstance * commander, const std::vector<ui32> & skills, bool moreLevels, QuestionID question);
 	void answer(ui32 selection);
 	void showStackExperienceDetailsWindow();

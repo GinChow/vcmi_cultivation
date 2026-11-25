@@ -14,6 +14,7 @@
 struct ArtifactLocation;
 
 class CListBoxWithCallback;
+class CSlider;
 
 class CArtifactsOfHeroBackpack : public CArtifactsOfHeroBase
 {
@@ -24,6 +25,8 @@ public:
 	void updateBackpackSlots() override;
 	size_t getActiveSlotRowsNum();
 	size_t getSlotsNum();
+	/// 储物格多于一屏时的竖滑条（换皮用），没有滑条时为空
+	std::shared_ptr<CSlider> getSlider() const;
 
 protected:
 	std::shared_ptr<CListBoxWithCallback> backpackListBox;

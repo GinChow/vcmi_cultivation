@@ -19,11 +19,18 @@ public:
 	CHeroBackpackWindow(const CGHeroInstance * hero, const std::vector<CArtifactsOfHeroPtr> & artsSets);
 	void notFocusedClick() override;
 	void keyPressed(EShortcut key) override;
+	void updateArtifacts() override;
 	
 protected:
 	std::shared_ptr<CArtifactsOfHeroBackpack> arts;
 	std::vector<std::shared_ptr<CButton>> buttons;
+	/// 模组布局给了 "title"、"close" 时才有：修士名与件数、关闭按钮
+	std::shared_ptr<CLabel> title;
+	std::shared_ptr<CButton> closeButton;
+	const CGHeroInstance * hero;
 	const int windowMargin = 5;
+
+	void updateTitle();
 };
 
 class CHeroQuickBackpackWindow : public CWindowWithArtifacts

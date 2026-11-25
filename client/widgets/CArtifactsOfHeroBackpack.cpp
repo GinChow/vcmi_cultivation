@@ -75,6 +75,11 @@ size_t CArtifactsOfHeroBackpack::getSlotsNum()
 	return backpack.size();
 }
 
+std::shared_ptr<CSlider> CArtifactsOfHeroBackpack::getSlider() const
+{
+	return backpackListBox ? backpackListBox->getSlider() : nullptr;
+}
+
 void CArtifactsOfHeroBackpack::initAOHbackpack(size_t slots, bool slider)
 {
 	OBJECT_CONSTRUCTION;

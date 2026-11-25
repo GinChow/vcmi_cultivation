@@ -24,6 +24,8 @@
 #include "../widgets/Images.h"
 #include "../widgets/TextControls.h"
 #include "../widgets/ObjectLists.h"
+#include "../widgets/WidgetLayout.h"
+#include "CMessage.h"
 #include "GUIClasses.h"
 #include "InfoWindows.h"
 #include "../gui/WindowHandler.h"
@@ -47,6 +49,34 @@
 #include "../../lib/texts/CGeneralTextHandler.h"
 #include "../../lib/texts/TextOperations.h"
 #include "../../lib/texts/Languages.h"
+#include "../../lib/json/JsonNode.h"
+
+/// 弟子详情（兵种信息）窗口的模组布局：gameWindows.json 的 "creature" 节，没有时为空节点、一律按原版。
+/// "scroll": true 时改用信息弹窗的宣纸卷轴（底纹、八块边框，见 config/widgets/infoWindow.json）；
+/// "colors": 原版写死字色换色（见 WidgetLayout::remapColor）；"bonusSource": 特性来源字色与框色、"outline": false 不描黑边；
+/// "buttons": {"dismiss", "exit", "upgrade"} 换图换位（见 WidgetLayout::applyButton）
+static const JsonNode & creatureLayout()
+{
+	return WidgetLayout::cached("config/widgets/gameWindows.json")["creature"];
+}
+
+static bool creatureScroll()
+{
+	return creatureLayout()["scroll"].Bool() && CMessage::infoWindowStyle().custom;
+}
+
+/// 卷轴样式不画原版金边、不要矩形投影（卷轴边框画在窗口外沿）
+static int creatureWindowOptions(int options)
+{
+	if(creatureScroll())
+		return (options & ~CWindowObject::BORDERED) | CWindowObject::SHADOW_DISABLED;
+	return options;
+}
+
+static ColorRGBA creatureColor(const ColorRGBA & original)
+{
+	return WidgetLayout::remapColor(creatureLayout()["colors"], original);
+}
 
 
 class UnitView
@@ -304,11 +334,23 @@ CStackWindow::BonusLineSection::BonusLineSection(CStackWindow * owner, size_t li
 		EFonts f = FONT_TINY;
 		Point pText = p + Point(4, 38);
 
+		// 布局 "bonusSource": {"colors": {"artifact"/"creature"/"spell"/"hero"/"experience"/"commander"/"other": [r,g,b]}, "outline": false}
+		const JsonNode & sourceLayout = creatureLayout()["bonusSource"];
+		static const std::map<BonusSource, std::string> sourceKeys = {
+			{BonusSource::ARTIFACT, "artifact"}, {BonusSource::ARTIFACT_INSTANCE, "artifact"}, {BonusSource::CREATURE_ABILITY, "creature"},
+			{BonusSource::SPELL_EFFECT, "spell"}, {BonusSource::SECONDARY_SKILL, "hero"}, {BonusSource::HERO_SPECIAL, "hero"},
+			{BonusSource::STACK_EXPERIENCE, "experience"}, {BonusSource::COMMANDER, "commander"}};
+		const std::string sourceKey = sourceKeys.count(bi.bonusSource) ? sourceKeys.at(bi.bonusSource) : "other";
+		c = WidgetLayout::color(sourceLayout["colors"][sourceKey], c);
+
 		// 1px Black border
-		bonusSource[leftRight].push_back(std::make_shared<CLabel>(pText.x - 1, pText.y, f, ETextAlignment::TOPLEFT, Colors::BLACK, t, maxLen));
-		bonusSource[leftRight].push_back(std::make_shared<CLabel>(pText.x + 1, pText.y, f, ETextAlignment::TOPLEFT, Colors::BLACK, t, maxLen));
-		bonusSource[leftRight].push_back(std::make_shared<CLabel>(pText.x, pText.y - 1, f, ETextAlignment::TOPLEFT, Colors::BLACK, t, maxLen));
-		bonusSource[leftRight].push_back(std::make_shared<CLabel>(pText.x, pText.y + 1, f, ETextAlignment::TOPLEFT, Colors::BLACK, t, maxLen));
+		if(sourceLayout["outline"].isNull() || sourceLayout["outline"].Bool())
+		{
+			bonusSource[leftRight].push_back(std::make_shared<CLabel>(pText.x - 1, pText.y, f, ETextAlignment::TOPLEFT, Colors::BLACK, t, maxLen));
+			bonusSource[leftRight].push_back(std::make_shared<CLabel>(pText.x + 1, pText.y, f, ETextAlignment::TOPLEFT, Colors::BLACK, t, maxLen));
+			bonusSource[leftRight].push_back(std::make_shared<CLabel>(pText.x, pText.y - 1, f, ETextAlignment::TOPLEFT, Colors::BLACK, t, maxLen));
+			bonusSource[leftRight].push_back(std::make_shared<CLabel>(pText.x, pText.y + 1, f, ETextAlignment::TOPLEFT, Colors::BLACK, t, maxLen));
+		}
 		bonusSource[leftRight].push_back(std::make_shared<CLabel>(pText.x, pText.y, f, ETextAlignment::TOPLEFT, c, t, maxLen));
 
 		frame[leftRight] = std::make_shared<GraphicalPrimitiveCanvas>(Rect(p.x, p.y, 52, 52));
@@ -326,7 +368,7 @@ CStackWindow::BonusLineSection::BonusLineSection(CStackWindow * owner, size_t li
 			if (!bi.imagePath.empty())
 				icon[leftRight] = std::make_shared<CPicture>(bi.imagePath, position.x, position.y);
 
-			description[leftRight] = std::make_shared<CMultiLineLabel>(Rect(position.x + 60, position.y, 137, 50), FONT_TINY, ETextAlignment::TOPLEFT, Colors::WHITE, bi.description);
+			description[leftRight] = std::make_shared<CMultiLineLabel>(Rect(position.x + 60, position.y, 137, 50), FONT_TINY, ETextAlignment::TOPLEFT, creatureColor(Colors::WHITE), bi.description);
 			drawBonusSource(leftRight, Point(position.x - 1, position.y - 1), bi);
 		}
 	}
@@ -372,6 +414,7 @@ CStackWindow::ButtonsSection::ButtonsSection(CStackWindow * owner, int yOffset)
 			GAME->interface()->showYesNoDialog(LIBRARY->generaltexth->allTexts[12], onDismiss, nullptr);
 		};
 		dismiss = std::make_shared<CButton>(Point(5, 5),AnimationPath::builtin("IVIEWCR2.DEF"), LIBRARY->generaltexth->zelp[445], onClick, EShortcut::HERO_DISMISS);
+		WidgetLayout::applyButton(dismiss, creatureLayout()["buttons"]["dismiss"]);
 	}
 
 	if(stackWindow->info->upgradeInfo && !stackWindow->info->commander)
@@ -414,7 +457,7 @@ CStackWindow::ButtonsSection::ButtonsSection(CStackWindow * owner, int yOffset)
 			// Center upgrade buttons between Dismiss and Exit, leaving unused space for touch snapping.
 			const int upgradeButtonX = 202 - (static_cast<int>(buttonsToCreate) - 1) * 28 + static_cast<int>(buttonIndex) * 56;
 
-			auto upgradeBtn = std::make_shared<CButton>(Point(upgradeButtonX, 5), AnimationPath::builtin("stackWindow/upgradeButton"), LIBRARY->generaltexth->zelp[446], onClick);
+			auto upgradeBtn = std::make_shared<CButton>(Point(upgradeButtonX, 5), WidgetLayout::animation(creatureLayout()["buttons"]["upgrade"]["image"], AnimationPath::builtin("stackWindow/upgradeButton")), LIBRARY->generaltexth->zelp[446], onClick);
 
 			upgradeBtn->setOverlay(std::make_shared<CAnimImage>(AnimationPath::builtin("CPRSMALL"), LIBRARY->creh->objects[upgradeInfo.info.getAvailableUpgrades()[buttonIndex]]->getIconIndex()));
 
@@ -448,6 +491,7 @@ CStackWindow::ButtonsSection::ButtonsSection(CStackWindow * owner, int yOffset)
 	}
 
 	exit = std::make_shared<CButton>(Point(382, 5), AnimationPath::builtin("hsbtns.def"), LIBRARY->generaltexth->zelp[447], [this](){ stackWindow->submitSelection(); }, EShortcut::GLOBAL_RETURN);
+	WidgetLayout::applyButton(exit, creatureLayout()["buttons"]["exit"]);
 }
 
 CStackWindow::CommanderMainSection::CommanderMainSection(CStackWindow * owner, int yOffset)
@@ -635,7 +679,7 @@ CStackWindow::MainSection::MainSection(CStackWindow * owner, int yOffset, bool s
 		animation->setAmount(stackWindow->info->creatureCount);
 	}
 
-	name = std::make_shared<CLabel>(215, 13, FONT_SMALL, ETextAlignment::CENTER, Colors::YELLOW,
+	name = std::make_shared<CLabel>(215, 13, FONT_SMALL, ETextAlignment::CENTER, creatureColor(Colors::YELLOW),
 		stackWindow->info->getName() + (stackWindow->info->commander && !stackWindow->info->commander->alive ? (" {red|(" + LIBRARY->generaltexth->translate("vcmi.battleWindow.killed") + ")}") : "")
 	);
 
@@ -733,7 +777,7 @@ CStackWindow::MainSection::MainSection(CStackWindow * owner, int yOffset, bool s
 				});
 		}
 		expLabel = std::make_shared<CLabel>(
-				pos.x + 20, pos.y + 55, FONT_SMALL, ETextAlignment::CENTER, Colors::WHITE,
+				pos.x + 20, pos.y + 55, FONT_SMALL, ETextAlignment::CENTER, creatureColor(Colors::WHITE),
 				TextOperations::formatMetric(stack->getAverageExperience(), 6));
 	}
 
@@ -778,7 +822,7 @@ ImagePath CStackWindow::MainSection::getBackgroundName(bool showExp, bool showAr
 void CStackWindow::MainSection::addStatLabel(EStat index, int64_t value1, int64_t value2)
 {
 	const auto title = statNames.at(static_cast<size_t>(index));
-	stats.push_back(std::make_shared<CLabel>(145, 32 + (int)index*19, FONT_SMALL, ETextAlignment::TOPLEFT, Colors::WHITE, title));
+	stats.push_back(std::make_shared<CLabel>(145, 32 + (int)index*19, FONT_SMALL, ETextAlignment::TOPLEFT, creatureColor(Colors::WHITE), title));
 
 	const bool useRange = value1 != value2;
 
@@ -787,7 +831,7 @@ void CStackWindow::MainSection::addStatLabel(EStat index, int64_t value1, int64_
 	if(useRange)
 		value.replaceNumber(value2);
 
-	stats.push_back(std::make_shared<CLabel>(307, 48 + static_cast<int>(index) * 19, FONT_SMALL, ETextAlignment::BOTTOMRIGHT, Colors::WHITE, value.toString(&GAME->translator())));
+	stats.push_back(std::make_shared<CLabel>(307, 48 + static_cast<int>(index) * 19, FONT_SMALL, ETextAlignment::BOTTOMRIGHT, creatureColor(Colors::WHITE), value.toString(&GAME->translator())));
 }
 
 void CStackWindow::MainSection::addStatLabel(EStat index, int64_t value)
@@ -796,7 +840,7 @@ void CStackWindow::MainSection::addStatLabel(EStat index, int64_t value)
 }
 
 CStackWindow::CStackWindow(const CStack * stack, bool popup)
-	: CWindowObject(BORDERED | (popup ? RCLICK_POPUP : 0)),
+	: CWindowObject(creatureWindowOptions(BORDERED | (popup ? RCLICK_POPUP : 0))),
 	info(std::make_unique<UnitView>())
 {
 	info->stack = stack;
@@ -809,7 +853,7 @@ CStackWindow::CStackWindow(const CStack * stack, bool popup)
 }
 
 CStackWindow::CStackWindow(const CCreature * creature, bool popup)
-	: CWindowObject(BORDERED | (popup ? RCLICK_POPUP : 0)),
+	: CWindowObject(creatureWindowOptions(BORDERED | (popup ? RCLICK_POPUP : 0))),
 	info(std::make_unique<UnitView>())
 {
 	info->creature = creature;
@@ -818,7 +862,7 @@ CStackWindow::CStackWindow(const CCreature * creature, bool popup)
 }
 
 CStackWindow::CStackWindow(const CStackInstance * stack, bool popup)
-	: CWindowObject(BORDERED | (popup ? RCLICK_POPUP : 0)),
+	: CWindowObject(creatureWindowOptions(BORDERED | (popup ? RCLICK_POPUP : 0))),
 	info(std::make_unique<UnitView>())
 {
 	info->stackNode = stack;
@@ -830,7 +874,7 @@ CStackWindow::CStackWindow(const CStackInstance * stack, bool popup)
 }
 
 CStackWindow::CStackWindow(const CStackInstance * stack, std::function<void()> dismiss, const UpgradeInfo & upgradeInfo, std::function<void(CreatureID)> callback)
-	: CWindowObject(BORDERED),
+	: CWindowObject(creatureWindowOptions(BORDERED)),
 	info(std::make_unique<UnitView>())
 {
 	info->stackNode = stack;
@@ -850,7 +894,7 @@ CStackWindow::CStackWindow(const CStackInstance * stack, std::function<void()> d
 }
 
 CStackWindow::CStackWindow(const CCommanderInstance * commander, bool popup)
-	: CWindowObject(BORDERED | (popup ? RCLICK_POPUP : 0)),
+	: CWindowObject(creatureWindowOptions(BORDERED | (popup ? RCLICK_POPUP : 0))),
 	info(std::make_unique<UnitView>())
 {
 	info->stackNode = commander;
@@ -863,7 +907,7 @@ CStackWindow::CStackWindow(const CCommanderInstance * commander, bool popup)
 }
 
 CStackWindow::CStackWindow(CPlayerInterface * askedInterface, const CCommanderInstance * commander, const std::vector<ui32> & skills, bool moreLevels, QuestionID question)
-	: CWindowObject(BORDERED),
+	: CWindowObject(creatureWindowOptions(BORDERED)),
 	info(std::make_unique<UnitView>())
 {
 	initCommanderLevelUpData(askedInterface, commander, skills, moreLevels, question);
@@ -934,7 +978,7 @@ void CStackWindow::init()
 {
 	OBJECT_CONSTRUCTION;
 
-	backgroundTexture = std::make_shared<CFilledTexture>(ImagePath::builtin("DIBOXBCK"), pos);
+	backgroundTexture = std::make_shared<CFilledTexture>(creatureScroll() ? CMessage::infoWindowStyle().background : ImagePath::builtin("DIBOXBCK"), pos);
 
 	if(!info->stackNode)
 	{
@@ -955,6 +999,13 @@ void CStackWindow::init()
 
 	backgroundTexture->pos = pos;
 	addUsedEvents(KEYBOARD);
+}
+
+void CStackWindow::showAll(Canvas & to)
+{
+	CWindowObject::showAll(to);
+	if(creatureScroll())
+		CMessage::drawInfoWindowBorder(GAME->interface() ? GAME->interface()->playerID : PlayerColor(1), to, pos.x, pos.y, pos.w, pos.h);
 }
 
 void CStackWindow::keyPressed(EShortcut key)
