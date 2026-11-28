@@ -231,7 +231,15 @@ ImageLocator RenderHandler::getLocatorForAnimationFrame(const AnimationPath & pa
 
 	const auto & locator = layout.at(group).at(frame);
 	if (locator.image || locator.defFile)
-		return locator;
+	{
+		// 布局按路径缓存，模组 JSON 帧记的是第一次加载时的模式。缓存的和本次请求的都是像素格式模式
+		// （不透明、透明色、简单）时按本次请求，免得先被不透明模式加载过的真彩色图之后都不做混合（见 CAnimation::getImageLocator）
+		const auto pixelFormatOnly = [](EImageBlitMode m){ return m == EImageBlitMode::OPAQUE || m == EImageBlitMode::COLORKEY || m == EImageBlitMode::SIMPLE; };
+		ImageLocator result = locator;
+		if(pixelFormatOnly(result.layer) && pixelFormatOnly(mode))
+			result.layer = mode;
+		return result;
+	}
 
 	return ImageLocator(path, frame, group, mode);
 }

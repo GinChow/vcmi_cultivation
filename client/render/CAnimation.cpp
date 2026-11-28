@@ -227,9 +227,12 @@ ImageLocator CAnimation::getImageLocator(size_t frame, size_t group) const
 		{
 			// 动画布局按文件路径缓存（RenderHandler::getAnimationLayout），模组 JSON 帧的定位里记的是第一次加载这个动画时的模式。
 			// 大地图物件会按本体、影子、玩家旗三种模式分别加载同一个动画，这里要换成本次请求的层，
-			// 否则影子层、旗帜层拿到的都是本体：真彩色图的 -SHADOW、-OVERLAY 从不读取，被占领的建筑不显示旗帜
+			// 否则影子层、旗帜层拿到的都是本体：真彩色图的 -SHADOW、-OVERLAY 从不读取，被占领的建筑不显示旗帜。
+			// 缓存的和本次请求的都是像素格式模式（不透明、透明色、简单）时也换成本次请求的：开局大厅总会建出纯战斗页，
+			// 它以不透明模式先加载了宝物图标 ARTIFACT，模组换成的真彩色宝物图标在局内说明窗、宝物格里也按不透明画，
+			// 不做混合，透明处把窗口纸面抠穿、露出后面的地图（2026-11-28）
 			ImageLocator result = locator;
-			if(selectsSpriteLayer(mode))
+			if(selectsSpriteLayer(mode) || !selectsSpriteLayer(result.layer))
 				result.layer = mode;
 			return result;
 		}
